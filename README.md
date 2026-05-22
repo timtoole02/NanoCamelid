@@ -32,6 +32,7 @@ We aren't building a general-purpose engine. We are building an **Edge Appliance
 cargo run -- probe
 cargo run -- inspect /path/to/model.gguf
 cargo run --release -- bench q8-dot [iterations] [runs]
+NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot [iterations] [runs]
 ```
 
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).

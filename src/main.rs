@@ -115,6 +115,11 @@ fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
         Some(neon) => {
             println!("neon_available: true");
             println!("dotprod_feature_detected: {}", q8::dotprod_available());
+            println!(
+                "sdot_candidate_requested: {}",
+                q8::sdot_candidate_requested()
+            );
+            println!("sdot_candidate_enabled: {}", q8::sdot_candidate_enabled());
             println!("neon_checksum: {}", neon.checksum);
             println!(
                 "neon_total_ms: {:.3}",
@@ -144,6 +149,39 @@ fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
         None => {
             println!("neon_available: false");
             println!("dotprod_feature_detected: {}", q8::dotprod_available());
+            println!(
+                "sdot_candidate_requested: {}",
+                q8::sdot_candidate_requested()
+            );
+            println!("sdot_candidate_enabled: {}", q8::sdot_candidate_enabled());
+        }
+    }
+
+    if let Some(sdot) = &report.sdot {
+        println!("sdot_checksum: {}", sdot.checksum);
+        println!(
+            "sdot_total_ms: {:.3}",
+            sdot.total_elapsed().as_secs_f64() * 1000.0
+        );
+        println!(
+            "sdot_min_ns_per_block: {:.2}",
+            report.sdot_min_ns_per_block().unwrap_or_default()
+        );
+        println!(
+            "sdot_median_ns_per_block: {:.2}",
+            report.sdot_median_ns_per_block().unwrap_or_default()
+        );
+        println!(
+            "sdot_min_speedup: {:.2}x",
+            report.sdot_min_speedup().unwrap_or_default()
+        );
+        println!(
+            "sdot_median_speedup: {:.2}x",
+            report.sdot_median_speedup().unwrap_or_default()
+        );
+        if sdot.checksum != report.scalar.checksum {
+            eprintln!("sdot checksum mismatch");
+            return ExitCode::FAILURE;
         }
     }
 
@@ -165,9 +203,24 @@ fn q8_dot_json(report: &q8::DotBenchmarkReport) -> String {
             report.neon_median_speedup().unwrap_or_default()
         )
     }).unwrap_or_default();
+    let sdot_json = report
+        .sdot
+        .as_ref()
+        .map(|sdot| {
+            format!(
+                ",\"sdot\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6},\"min_speedup\":{:.6},\"median_speedup\":{:.6}}}",
+                sdot.checksum,
+                duration_ms_json(&sdot.elapsed_runs),
+                report.sdot_min_ns_per_block().unwrap_or_default(),
+                report.sdot_median_ns_per_block().unwrap_or_default(),
+                report.sdot_min_speedup().unwrap_or_default(),
+                report.sdot_median_speedup().unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
 
     format!(
-        "{{\"benchmark\":\"q8-dot\",\"iterations\":{},\"runs\":{},\"blocks_per_iteration\":{},\"elements_per_iteration\":{},\"scalar\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6}}},\"neon_available\":{},\"dotprod_feature_detected\":{}{}}}",
+        "{{\"benchmark\":\"q8-dot\",\"iterations\":{},\"runs\":{},\"blocks_per_iteration\":{},\"elements_per_iteration\":{},\"scalar\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6}}},\"neon_available\":{},\"dotprod_feature_detected\":{},\"sdot_candidate_requested\":{},\"sdot_candidate_enabled\":{}{}{}}}",
         report.iterations,
         report.runs,
         report.blocks_per_iteration,
@@ -178,7 +231,10 @@ fn q8_dot_json(report: &q8::DotBenchmarkReport) -> String {
         report.scalar_median_ns_per_block(),
         report.neon.is_some(),
         q8::dotprod_available(),
-        neon_json
+        q8::sdot_candidate_requested(),
+        q8::sdot_candidate_enabled(),
+        neon_json,
+        sdot_json
     )
 }
 
