@@ -4,6 +4,7 @@ use std::{
 };
 
 pub const DEFAULT_DOT_BENCH_ITERATIONS: usize = 2_000;
+pub const DEFAULT_DOT_BENCH_RUNS: usize = 5;
 
 const Q8_BLOCK_SIZE: usize = 32;
 const BENCH_BLOCKS: usize = 1_024;
@@ -12,10 +13,11 @@ const BENCH_ELEMENTS: usize = Q8_BLOCK_SIZE * BENCH_BLOCKS;
 #[derive(Debug)]
 pub struct DotBenchmarkReport {
     pub iterations: usize,
+    pub runs: usize,
     pub blocks_per_iteration: usize,
     pub elements_per_iteration: usize,
-    pub scalar: TimedDot,
-    pub neon: Option<TimedDot>,
+    pub scalar: DotTimingSummary,
+    pub neon: Option<DotTimingSummary>,
 }
 
 #[derive(Debug)]
@@ -24,39 +26,76 @@ pub struct TimedDot {
     pub elapsed: Duration,
 }
 
+#[derive(Debug)]
+pub struct DotTimingSummary {
+    pub checksum: i64,
+    pub elapsed_runs: Vec<Duration>,
+}
+
 impl DotBenchmarkReport {
-    pub fn scalar_ns_per_block(&self) -> f64 {
+    pub fn scalar_min_ns_per_block(&self) -> f64 {
         ns_per_block(
-            self.scalar.elapsed,
+            self.scalar.min_elapsed(),
             self.iterations,
             self.blocks_per_iteration,
         )
     }
 
-    pub fn neon_ns_per_block(&self) -> Option<f64> {
-        self.neon
-            .as_ref()
-            .map(|neon| ns_per_block(neon.elapsed, self.iterations, self.blocks_per_iteration))
+    pub fn scalar_median_ns_per_block(&self) -> f64 {
+        ns_per_block(
+            self.scalar.median_elapsed(),
+            self.iterations,
+            self.blocks_per_iteration,
+        )
     }
 
-    pub fn neon_speedup(&self) -> Option<f64> {
-        self.neon_ns_per_block()
-            .map(|neon_ns| self.scalar_ns_per_block() / neon_ns)
+    pub fn neon_min_ns_per_block(&self) -> Option<f64> {
+        self.neon.as_ref().map(|neon| {
+            ns_per_block(
+                neon.min_elapsed(),
+                self.iterations,
+                self.blocks_per_iteration,
+            )
+        })
+    }
+
+    pub fn neon_median_ns_per_block(&self) -> Option<f64> {
+        self.neon.as_ref().map(|neon| {
+            ns_per_block(
+                neon.median_elapsed(),
+                self.iterations,
+                self.blocks_per_iteration,
+            )
+        })
+    }
+
+    pub fn neon_min_speedup(&self) -> Option<f64> {
+        self.neon_min_ns_per_block()
+            .map(|neon_ns| self.scalar_min_ns_per_block() / neon_ns)
+    }
+
+    pub fn neon_median_speedup(&self) -> Option<f64> {
+        self.neon_median_ns_per_block()
+            .map(|neon_ns| self.scalar_median_ns_per_block() / neon_ns)
     }
 }
 
-pub fn bench_dot(iterations: usize) -> DotBenchmarkReport {
+pub fn bench_dot_runs(iterations: usize, runs: usize) -> DotBenchmarkReport {
     let lhs = deterministic_q8_values(BENCH_ELEMENTS, 17);
     let rhs = deterministic_q8_values(BENCH_ELEMENTS, 91);
 
-    let scalar = time_dot(iterations, || {
+    let scalar = time_dot_runs(iterations, runs, || {
         dot_i8_scalar(black_box(&lhs), black_box(&rhs))
     });
-    let neon = neon_available()
-        .then(|| time_dot(iterations, || dot_i8_neon(black_box(&lhs), black_box(&rhs))));
+    let neon = neon_available().then(|| {
+        time_dot_runs(iterations, runs, || {
+            dot_i8_neon(black_box(&lhs), black_box(&rhs))
+        })
+    });
 
     DotBenchmarkReport {
         iterations,
+        runs,
         blocks_per_iteration: BENCH_BLOCKS,
         elements_per_iteration: BENCH_ELEMENTS,
         scalar,
@@ -108,6 +147,41 @@ pub fn dot_i8_neon(lhs: &[i8], rhs: &[i8]) -> i32 {
     }
 
     dot_i8_scalar(lhs, rhs)
+}
+
+impl DotTimingSummary {
+    pub fn total_elapsed(&self) -> Duration {
+        self.elapsed_runs.iter().sum()
+    }
+
+    pub fn min_elapsed(&self) -> Duration {
+        self.elapsed_runs.iter().copied().min().unwrap_or_default()
+    }
+
+    pub fn median_elapsed(&self) -> Duration {
+        let mut runs = self.elapsed_runs.clone();
+        runs.sort_unstable();
+        runs.get(runs.len() / 2).copied().unwrap_or_default()
+    }
+}
+
+fn time_dot_runs(iterations: usize, runs: usize, mut dot: impl FnMut() -> i32) -> DotTimingSummary {
+    let mut checksum = None;
+    let mut elapsed_runs = Vec::with_capacity(runs);
+
+    for _ in 0..runs {
+        let timed = time_dot(iterations, &mut dot);
+        match checksum {
+            Some(expected) => assert_eq!(timed.checksum, expected),
+            None => checksum = Some(timed.checksum),
+        }
+        elapsed_runs.push(timed.elapsed);
+    }
+
+    DotTimingSummary {
+        checksum: checksum.unwrap_or_default(),
+        elapsed_runs,
+    }
 }
 
 fn time_dot(iterations: usize, mut dot: impl FnMut() -> i32) -> TimedDot {
@@ -169,7 +243,7 @@ unsafe fn dot_i8_neon_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{bench_dot, dot_i8_neon, dot_i8_scalar};
+    use super::{bench_dot_runs, dot_i8_neon, dot_i8_scalar};
 
     #[test]
     fn scalar_dot_handles_signed_q8_values() {
@@ -189,7 +263,7 @@ mod tests {
 
     #[test]
     fn q8_dot_benchmark_preserves_checksum_parity() {
-        let report = bench_dot(2);
+        let report = bench_dot_runs(2, 2);
 
         if let Some(neon) = report.neon {
             assert_eq!(neon.checksum, report.scalar.checksum);

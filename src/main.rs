@@ -25,7 +25,11 @@ fn main() -> ExitCode {
                     .nth(3)
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(q8::DEFAULT_DOT_BENCH_ITERATIONS);
-                bench_q8_dot(iterations)
+                let runs = env::args()
+                    .nth(4)
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
+                bench_q8_dot(iterations, runs)
             }
             Some(other) => {
                 eprintln!("unknown benchmark: {other}");
@@ -56,7 +60,7 @@ fn print_usage() {
     println!("Usage:");
     println!("  nanocamelid probe    Print host CPU and runtime feature information");
     println!("  nanocamelid inspect <model.gguf>");
-    println!("  nanocamelid bench q8-dot [iterations]");
+    println!("  nanocamelid bench q8-dot [iterations] [runs]");
 }
 
 fn print_probe() {
@@ -76,38 +80,61 @@ fn print_probe() {
     println!("runtime_dotprod: {}", runtime_dotprod());
 }
 
-fn bench_q8_dot(iterations: usize) -> ExitCode {
+fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
     if iterations == 0 {
         eprintln!("iterations must be greater than zero");
         return ExitCode::from(2);
     }
+    if runs == 0 {
+        eprintln!("runs must be greater than zero");
+        return ExitCode::from(2);
+    }
 
-    let report = q8::bench_dot(iterations);
+    let report = q8::bench_dot_runs(iterations, runs);
 
     println!("NanoCamelid Q8 dot benchmark");
     println!("iterations: {}", report.iterations);
+    println!("runs: {}", report.runs);
     println!("blocks_per_iteration: {}", report.blocks_per_iteration);
     println!("elements_per_iteration: {}", report.elements_per_iteration);
     println!("scalar_checksum: {}", report.scalar.checksum);
     println!(
         "scalar_total_ms: {:.3}",
-        report.scalar.elapsed.as_secs_f64() * 1000.0
+        report.scalar.total_elapsed().as_secs_f64() * 1000.0
     );
-    println!("scalar_ns_per_block: {:.2}", report.scalar_ns_per_block());
+    println!(
+        "scalar_min_ns_per_block: {:.2}",
+        report.scalar_min_ns_per_block()
+    );
+    println!(
+        "scalar_median_ns_per_block: {:.2}",
+        report.scalar_median_ns_per_block()
+    );
 
     match &report.neon {
         Some(neon) => {
             println!("neon_available: true");
             println!("dotprod_feature_detected: {}", q8::dotprod_available());
             println!("neon_checksum: {}", neon.checksum);
-            println!("neon_total_ms: {:.3}", neon.elapsed.as_secs_f64() * 1000.0);
             println!(
-                "neon_ns_per_block: {:.2}",
-                report.neon_ns_per_block().unwrap_or_default()
+                "neon_total_ms: {:.3}",
+                neon.total_elapsed().as_secs_f64() * 1000.0
             );
             println!(
-                "neon_speedup: {:.2}x",
-                report.neon_speedup().unwrap_or_default()
+                "neon_min_ns_per_block: {:.2}",
+                report.neon_min_ns_per_block().unwrap_or_default()
+            );
+            println!(
+                "neon_median_ns_per_block: {:.2}",
+                report.neon_median_ns_per_block().unwrap_or_default()
+            );
+            println!(
+                "neon_min_speedup: {:.2}x",
+                report.neon_min_speedup().unwrap_or_default()
+            );
+            println!(
+                "neon_median_speedup: {:.2}x",
+                report.neon_median_speedup().unwrap_or_default()
             );
             if neon.checksum != report.scalar.checksum {
                 eprintln!("neon checksum mismatch");
@@ -120,7 +147,47 @@ fn bench_q8_dot(iterations: usize) -> ExitCode {
         }
     }
 
+    println!("json: {}", q8_dot_json(&report));
+
     ExitCode::SUCCESS
+}
+
+fn q8_dot_json(report: &q8::DotBenchmarkReport) -> String {
+    let scalar_runs = duration_ms_json(&report.scalar.elapsed_runs);
+    let neon_json = report.neon.as_ref().map(|neon| {
+        format!(
+            ",\"neon\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6},\"min_speedup\":{:.6},\"median_speedup\":{:.6}}}",
+            neon.checksum,
+            duration_ms_json(&neon.elapsed_runs),
+            report.neon_min_ns_per_block().unwrap_or_default(),
+            report.neon_median_ns_per_block().unwrap_or_default(),
+            report.neon_min_speedup().unwrap_or_default(),
+            report.neon_median_speedup().unwrap_or_default()
+        )
+    }).unwrap_or_default();
+
+    format!(
+        "{{\"benchmark\":\"q8-dot\",\"iterations\":{},\"runs\":{},\"blocks_per_iteration\":{},\"elements_per_iteration\":{},\"scalar\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6}}},\"neon_available\":{},\"dotprod_feature_detected\":{}{}}}",
+        report.iterations,
+        report.runs,
+        report.blocks_per_iteration,
+        report.elements_per_iteration,
+        report.scalar.checksum,
+        scalar_runs,
+        report.scalar_min_ns_per_block(),
+        report.scalar_median_ns_per_block(),
+        report.neon.is_some(),
+        q8::dotprod_available(),
+        neon_json
+    )
+}
+
+fn duration_ms_json(durations: &[std::time::Duration]) -> String {
+    let values = durations
+        .iter()
+        .map(|duration| format!("{:.6}", duration.as_secs_f64() * 1000.0))
+        .collect::<Vec<_>>();
+    format!("[{}]", values.join(","))
 }
 
 fn inspect_gguf(path: &Path) -> ExitCode {

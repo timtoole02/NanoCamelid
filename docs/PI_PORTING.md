@@ -32,7 +32,7 @@ NanoCamelid is not a direct copy of Camelid. It is a Raspberry Pi focused extrac
 - `cargo test`
 - `cargo run -- probe` on Raspberry Pi 5
 - `cargo run -- inspect <model.gguf>` against a local small-model GGUF
-- `cargo run --release -- bench q8-dot` on Raspberry Pi 5 for scalar vs NEON Q8 dot timing
+- `cargo run --release -- bench q8-dot` on Raspberry Pi 5 for repeated scalar vs NEON Q8 dot timing and JSON output
 - One exact model-row parity artifact before any support claim
 
 ## Pi Workspace Layout
@@ -40,7 +40,7 @@ NanoCamelid is not a direct copy of Camelid. It is a Raspberry Pi focused extrac
 Suggested development layout on a dedicated Linux filesystem:
 
 ```text
-/mnt/nanocamelid/
+<nanocamelid-workspace>/
   src/          # repositories
   models/       # local GGUF files, never committed
   benchmarks/   # benchmark outputs and notes
