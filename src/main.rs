@@ -1,4 +1,5 @@
 mod gguf;
+mod q8;
 
 use std::{env, fs, path::Path, process::ExitCode};
 
@@ -14,6 +15,25 @@ fn main() -> ExitCode {
             Some(path) => inspect_gguf(Path::new(&path)),
             None => {
                 eprintln!("missing GGUF path");
+                print_usage();
+                ExitCode::from(2)
+            }
+        },
+        Some("bench") => match env::args().nth(2).as_deref() {
+            Some("q8-dot") => {
+                let iterations = env::args()
+                    .nth(3)
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(q8::DEFAULT_DOT_BENCH_ITERATIONS);
+                bench_q8_dot(iterations)
+            }
+            Some(other) => {
+                eprintln!("unknown benchmark: {other}");
+                print_usage();
+                ExitCode::from(2)
+            }
+            None => {
+                eprintln!("missing benchmark name");
                 print_usage();
                 ExitCode::from(2)
             }
@@ -36,6 +56,7 @@ fn print_usage() {
     println!("Usage:");
     println!("  nanocamelid probe    Print host CPU and runtime feature information");
     println!("  nanocamelid inspect <model.gguf>");
+    println!("  nanocamelid bench q8-dot [iterations]");
 }
 
 fn print_probe() {
@@ -53,6 +74,53 @@ fn print_probe() {
     println!("cpu_features: {}", features.unwrap_or("unknown"));
     println!("runtime_neon: {}", runtime_neon());
     println!("runtime_dotprod: {}", runtime_dotprod());
+}
+
+fn bench_q8_dot(iterations: usize) -> ExitCode {
+    if iterations == 0 {
+        eprintln!("iterations must be greater than zero");
+        return ExitCode::from(2);
+    }
+
+    let report = q8::bench_dot(iterations);
+
+    println!("NanoCamelid Q8 dot benchmark");
+    println!("iterations: {}", report.iterations);
+    println!("blocks_per_iteration: {}", report.blocks_per_iteration);
+    println!("elements_per_iteration: {}", report.elements_per_iteration);
+    println!("scalar_checksum: {}", report.scalar.checksum);
+    println!(
+        "scalar_total_ms: {:.3}",
+        report.scalar.elapsed.as_secs_f64() * 1000.0
+    );
+    println!("scalar_ns_per_block: {:.2}", report.scalar_ns_per_block());
+
+    match &report.neon {
+        Some(neon) => {
+            println!("neon_available: true");
+            println!("dotprod_feature_detected: {}", q8::dotprod_available());
+            println!("neon_checksum: {}", neon.checksum);
+            println!("neon_total_ms: {:.3}", neon.elapsed.as_secs_f64() * 1000.0);
+            println!(
+                "neon_ns_per_block: {:.2}",
+                report.neon_ns_per_block().unwrap_or_default()
+            );
+            println!(
+                "neon_speedup: {:.2}x",
+                report.neon_speedup().unwrap_or_default()
+            );
+            if neon.checksum != report.scalar.checksum {
+                eprintln!("neon checksum mismatch");
+                return ExitCode::FAILURE;
+            }
+        }
+        None => {
+            println!("neon_available: false");
+            println!("dotprod_feature_detected: {}", q8::dotprod_available());
+        }
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn inspect_gguf(path: &Path) -> ExitCode {

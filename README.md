@@ -31,8 +31,9 @@ We aren't building a general-purpose engine. We are building an **Edge Appliance
 ```bash
 cargo run -- probe
 cargo run -- inspect /path/to/model.gguf
+cargo run --release -- bench q8-dot
 ```
 
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
 
-*This project is currently in its early 'Nano' phase. Stay tuned for the first benchmark results.*
+*This project is currently in its early 'Nano' phase. Benchmark output is hardware-local and should be treated as evidence for the specific Pi/configuration where it was captured.*
