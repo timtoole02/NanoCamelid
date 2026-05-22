@@ -1,4 +1,6 @@
-use std::{env, fs, process::ExitCode};
+mod gguf;
+
+use std::{env, fs, path::Path, process::ExitCode};
 
 fn main() -> ExitCode {
     let command = env::args().nth(1);
@@ -8,6 +10,14 @@ fn main() -> ExitCode {
             print_probe();
             ExitCode::SUCCESS
         }
+        Some("inspect") => match env::args().nth(2) {
+            Some(path) => inspect_gguf(Path::new(&path)),
+            None => {
+                eprintln!("missing GGUF path");
+                print_usage();
+                ExitCode::from(2)
+            }
+        },
         Some("-h" | "--help") | None => {
             print_usage();
             ExitCode::SUCCESS
@@ -25,6 +35,7 @@ fn print_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid probe    Print host CPU and runtime feature information");
+    println!("  nanocamelid inspect <model.gguf>");
 }
 
 fn print_probe() {
@@ -42,6 +53,40 @@ fn print_probe() {
     println!("cpu_features: {}", features.unwrap_or("unknown"));
     println!("runtime_neon: {}", runtime_neon());
     println!("runtime_dotprod: {}", runtime_dotprod());
+}
+
+fn inspect_gguf(path: &Path) -> ExitCode {
+    match gguf::inspect(path) {
+        Ok(summary) => {
+            println!("NanoCamelid GGUF inspect");
+            println!("path: {}", path.display());
+            println!("version: {}", summary.version);
+            println!("tensor_count: {}", summary.tensor_count);
+            println!("metadata_count: {}", summary.metadata_count);
+
+            if !summary.important_metadata.is_empty() {
+                println!();
+                println!("metadata:");
+                for entry in &summary.important_metadata {
+                    println!("  {}: {}", entry.key, entry.value);
+                }
+            }
+
+            if !summary.tensor_types.is_empty() {
+                println!();
+                println!("tensor_types:");
+                for entry in &summary.tensor_types {
+                    println!("  {}: {}", entry.name, entry.count);
+                }
+            }
+
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("inspect failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cpu_model(cpuinfo: &str) -> Option<&str> {

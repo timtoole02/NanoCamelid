@@ -31,6 +31,7 @@ NanoCamelid is not a direct copy of Camelid. It is a Raspberry Pi focused extrac
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
 - `cargo run -- probe` on Raspberry Pi 5
+- `cargo run -- inspect <model.gguf>` against a local small-model GGUF
 - One exact model-row parity artifact before any support claim
 
 ## Pi Workspace Layout

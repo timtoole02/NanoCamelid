@@ -30,6 +30,7 @@ We aren't building a general-purpose engine. We are building an **Edge Appliance
 
 ```bash
 cargo run -- probe
+cargo run -- inspect /path/to/model.gguf
 ```
 
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
