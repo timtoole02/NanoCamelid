@@ -20,11 +20,18 @@ We aren't building a general-purpose engine. We are building an **Edge Appliance
 
 ## 📦 Roadmap
 
+- [x] Add a Raspberry Pi host probe for ARM64/NEON feature discovery.
 - [ ] Implement specialized NEON matrix multiplication kernels.
 - [ ] Port core Camelid logic with ARM-specific static dispatch.
 - [ ] Optimize 1B parameter models (Llama 3.2) for "instant" response times.
 - [ ] Benchmarking vs. llama.cpp on Pi 5.
 
 ## 🤝 Getting Started
+
+```bash
+cargo run -- probe
+```
+
+For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
 
 *This project is currently in its early 'Nano' phase. Stay tuned for the first benchmark results.*
