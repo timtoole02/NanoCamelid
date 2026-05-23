@@ -1,6 +1,6 @@
 use std::{env, fs, path::Path, process::ExitCode};
 
-use nanocamelid::{gguf, q8};
+use nanocamelid::{gguf, q8, model, inference, tokenizer};
 
 fn main() -> ExitCode {
     let command = env::args().nth(1);
@@ -18,6 +18,23 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("generate") => {
+            let model_path = env::args().nth(2);
+            let prompt = env::args().nth(3);
+            if model_path.is_none() || prompt.is_none() {
+                eprintln!("missing GGUF model path or prompt");
+                print_usage();
+                ExitCode::from(2)
+            } else {
+                let temp = env::args().nth(4)
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let max_tokens = env::args().nth(5)
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(128);
+                run_generation(Path::new(&model_path.unwrap()), &prompt.unwrap(), temp, max_tokens)
+            }
+        }
         Some("bench") => match env::args().nth(2).as_deref() {
             Some("q8-dot") => {
                 let iterations = env::args()
@@ -57,9 +74,11 @@ fn print_usage() {
     println!("NanoCamelid");
     println!();
     println!("Usage:");
-    println!("  nanocamelid probe    Print host CPU and runtime feature information");
-    println!("  nanocamelid inspect <model.gguf>");
-    println!("  nanocamelid bench q8-dot [iterations] [runs]");
+    println!("  nanocamelid probe                            Print host CPU and runtime feature information");
+    println!("  nanocamelid inspect <model.gguf>             Inspect GGUF metadata and tensor layouts");
+    println!("  nanocamelid generate <model.gguf> <prompt> [temp] [max_tokens]");
+    println!("                                               Generate text from prompt on Raspberry Pi 5");
+    println!("  nanocamelid bench q8-dot [iterations] [runs] Benchmark Q8 dot product kernels");
 }
 
 fn print_probe() {
@@ -376,6 +395,141 @@ fn value_after_colon<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 fn device_model(model: &str) -> Option<&str> {
     let trimmed = model.trim_matches(char::from(0)).trim();
     (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
+    println!("Loading GGUF file: {}...", model_path.display());
+    let gguf = match gguf::read_file(model_path) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Failed to read GGUF: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let config = match model::LlamaModelConfig::from_gguf(&gguf) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to parse config: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Architecture: LLaMA");
+    println!("Vocab size: {}", config.vocab_size);
+    println!("Layers: {}", config.block_count);
+    println!("Embedding width: {}", config.embedding_length);
+    println!("Attention heads: {}", config.attention_head_count);
+
+    let tokenizer = match tokenizer::Tokenizer::from_gguf(&gguf) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Failed to load tokenizer: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("Loading model weights into memory...");
+    let started_load = std::time::Instant::now();
+    let weights = match model::LlamaWeights::load(model_path, &config, &gguf) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to load weights: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Weights loaded in {:.2}s", started_load.elapsed().as_secs_f64());
+
+    let prompt_tokens = match tokenizer.encode(prompt, true, true) {
+        Ok(tokens) => tokens,
+        Err(e) => {
+            eprintln!("Failed to tokenize prompt: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Prompt tokens: {:?}", prompt_tokens);
+
+    let mut cache = inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+    let mut ws = inference::LlamaWorkspace::new(&config);
+    let selector = q8::Q8DotKernelSelector::from_env();
+    
+    println!("Selected dot-product kernel: {}", selector.selected.name());
+    println!("\nGenerating response:\n");
+
+    let mut input_token = 0;
+    let mut pos = 0;
+    
+    // Decode prompt tokens (prefill path)
+    for &token in &prompt_tokens {
+        input_token = token as usize;
+        inference::forward_pass(
+            input_token,
+            pos,
+            &config,
+            &weights,
+            &mut cache,
+            &mut ws,
+            selector,
+            gguf.metadata_f32("llama.rope.scaling.factor"),
+            gguf.metadata_u32("llama.rope.scaling.original_context_length").map(|v| v as f32),
+            gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
+            gguf.metadata_f32("llama.rope.scaling.high_freq_factor"),
+        );
+        pos += 1;
+    }
+
+    // Now generate the next tokens
+    let mut generated_count = 0;
+    let mut generated_tokens = Vec::new();
+    let mut last_printed_len = 0;
+    let start_gen = std::time::Instant::now();
+
+    loop {
+        let next_token = inference::sample_logits(&ws.logits, temp);
+        
+        if Some(next_token as u32) == tokenizer.special.eos 
+            || Some(next_token as u32) == tokenizer.special.eot
+            || pos >= config.context_length 
+            || generated_count >= max_tokens 
+        {
+            break;
+        }
+
+        generated_tokens.push(next_token as u32);
+        if let Ok(full_text) = tokenizer.decode(&generated_tokens, true) {
+            if full_text.len() > last_printed_len {
+                print!("{}", &full_text[last_printed_len..]);
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                last_printed_len = full_text.len();
+            }
+        }
+
+        input_token = next_token;
+        inference::forward_pass(
+            input_token,
+            pos,
+            &config,
+            &weights,
+            &mut cache,
+            &mut ws,
+            selector,
+            gguf.metadata_f32("llama.rope.scaling.factor"),
+            gguf.metadata_u32("llama.rope.scaling.original_context_length").map(|v| v as f32),
+            gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
+            gguf.metadata_f32("llama.rope.scaling.high_freq_factor"),
+        );
+
+        pos += 1;
+        generated_count += 1;
+    }
+
+    let elapsed = start_gen.elapsed().as_secs_f64();
+    println!("\n\nGenerated {} tokens in {:.2}s ({:.2} tokens/sec)", 
+        generated_count, 
+        elapsed, 
+        generated_count as f64 / elapsed
+    );
+
+    ExitCode::SUCCESS
 }
 
 #[cfg(target_arch = "aarch64")]
