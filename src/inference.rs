@@ -1,6 +1,20 @@
 use crate::model::{LlamaModelConfig, LlamaWeights};
-use crate::q8::{Q8DotKernelSelector, Q8_0Block};
+use crate::q8::{Q8_0Block, Q8DotKernelSelector};
 use rayon::prelude::*;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RopeScaling {
+    pub factor: Option<f32>,
+    pub original_context_length: Option<f32>,
+    pub low_freq_factor: Option<f32>,
+    pub high_freq_factor: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LlamaRuntimeOptions {
+    pub q8_selector: Q8DotKernelSelector,
+    pub rope_scaling: RopeScaling,
+}
 
 pub struct LlamaKvCache {
     pub k_cache: Vec<f32>, // block_count * context_length * kv_width
@@ -57,7 +71,10 @@ pub struct LlamaWorkspace {
 
 impl LlamaWorkspace {
     pub fn new(config: &LlamaModelConfig) -> Self {
-        let max_size = config.vocab_size.max(config.feed_forward_length).max(config.embedding_length);
+        let max_size = config
+            .vocab_size
+            .max(config.feed_forward_length)
+            .max(config.embedding_length);
         Self {
             norm_x: vec![0.0; config.embedding_length],
             q: vec![0.0; config.embedding_length],
@@ -93,10 +110,7 @@ pub fn apply_rope(
     head_dim: usize,
     rope_dim: usize,
     freq_base: f32,
-    scaling_factor: Option<f32>,
-    original_context_len: Option<f32>,
-    low_freq_factor: Option<f32>,
-    high_freq_factor: Option<f32>,
+    rope_scaling: RopeScaling,
 ) {
     for head in 0..head_count {
         let head_start = head * head_dim;
@@ -107,9 +121,12 @@ pub fn apply_rope(
             let mut theta = freq_base.powf(-((i * 2) as f32) / rope_dim as f32);
 
             // Apply Llama 3 / 3.2 scaled RoPE if config is present
-            if let (Some(factor), Some(orig_len), Some(low), Some(high)) = 
-                (scaling_factor, original_context_len, low_freq_factor, high_freq_factor) 
-            {
+            if let (Some(factor), Some(orig_len), Some(low), Some(high)) = (
+                rope_scaling.factor,
+                rope_scaling.original_context_length,
+                rope_scaling.low_freq_factor,
+                rope_scaling.high_freq_factor,
+            ) {
                 let wavelength = (2.0 * std::f32::consts::PI) / theta;
                 let low_freq_wavelength = orig_len / low;
                 let high_freq_wavelength = orig_len / high;
@@ -152,7 +169,7 @@ pub fn quantize_f32_to_q8_0(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
             let inv_scale = 1.0 / scale;
             for i in 0..32 {
                 let q = (chunk[i] * inv_scale).round();
-                x_i8[b * 32 + i] = q.max(-127.0).min(127.0) as i8;
+                x_i8[b * 32 + i] = q.clamp(-127.0, 127.0) as i8;
             }
         } else {
             for i in 0..32 {
@@ -229,7 +246,7 @@ pub fn matmul_f32(out: &mut [f32], x: &[f32], w: &[f32], rows: usize, cols: usiz
 pub fn silu(x: &mut [f32]) {
     for val in x.iter_mut() {
         let sigmoid = 1.0 / (1.0 + (-*val).exp());
-        *val = *val * sigmoid;
+        *val *= sigmoid;
     }
 }
 
@@ -260,11 +277,7 @@ pub fn forward_pass<'a>(
     weights: &LlamaWeights,
     cache: &mut LlamaKvCache,
     ws: &'a mut LlamaWorkspace,
-    selector: Q8DotKernelSelector,
-    rope_scaling_factor: Option<f32>,
-    rope_scaling_original_context_length: Option<f32>,
-    rope_scaling_low_freq_factor: Option<f32>,
-    rope_scaling_high_freq_factor: Option<f32>,
+    options: LlamaRuntimeOptions,
 ) -> &'a [f32] {
     // 1. Embedding lookup
     let emb_start = token_id * config.embedding_length;
@@ -280,15 +293,44 @@ pub fn forward_pass<'a>(
         let mut residual = x.clone();
 
         // RMSNorm
-        rms_norm(&mut ws.norm_x, &x, &layer.attention_norm, config.rms_norm_epsilon);
+        rms_norm(
+            &mut ws.norm_x,
+            &x,
+            &layer.attention_norm,
+            config.rms_norm_epsilon,
+        );
 
         // Quantize normalized activations for Q8 matmul
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
 
         // Q, K, V Projections
-        matmul_q8_0(&mut ws.q, &ws.x_i8, &ws.x_scales, &layer.wq, config.embedding_length, config.embedding_length, selector);
-        matmul_q8_0(&mut ws.k, &ws.x_i8, &ws.x_scales, &layer.wk, config.kv_width, config.embedding_length, selector);
-        matmul_q8_0(&mut ws.v, &ws.x_i8, &ws.x_scales, &layer.wav, config.kv_width, config.embedding_length, selector);
+        matmul_q8_0(
+            &mut ws.q,
+            &ws.x_i8,
+            &ws.x_scales,
+            &layer.wq,
+            config.embedding_length,
+            config.embedding_length,
+            options.q8_selector,
+        );
+        matmul_q8_0(
+            &mut ws.k,
+            &ws.x_i8,
+            &ws.x_scales,
+            &layer.wk,
+            config.kv_width,
+            config.embedding_length,
+            options.q8_selector,
+        );
+        matmul_q8_0(
+            &mut ws.v,
+            &ws.x_i8,
+            &ws.x_scales,
+            &layer.wav,
+            config.kv_width,
+            config.embedding_length,
+            options.q8_selector,
+        );
 
         // Apply RoPE
         apply_rope(
@@ -298,10 +340,7 @@ pub fn forward_pass<'a>(
             config.head_dim,
             config.head_dim, // rope_dim defaults to head_dim
             config.rope_freq_base,
-            rope_scaling_factor,
-            rope_scaling_original_context_length,
-            rope_scaling_low_freq_factor,
-            rope_scaling_high_freq_factor,
+            options.rope_scaling,
         );
 
         apply_rope(
@@ -311,10 +350,7 @@ pub fn forward_pass<'a>(
             config.head_dim,
             config.head_dim,
             config.rope_freq_base,
-            rope_scaling_factor,
-            rope_scaling_original_context_length,
-            rope_scaling_low_freq_factor,
-            rope_scaling_high_freq_factor,
+            options.rope_scaling,
         );
 
         // Store to KV Cache
@@ -337,8 +373,9 @@ pub fn forward_pass<'a>(
 
             // Compute scores against all positions p = 0..=pos
             for p in 0..=pos {
-                let k_head = &k_cache[p * cache.kv_width + kv_h * config.head_dim .. p * cache.kv_width + (kv_h + 1) * config.head_dim];
-                
+                let k_head = &k_cache[p * cache.kv_width + kv_h * config.head_dim
+                    ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
+
                 let mut score = 0.0;
                 for i in 0..config.head_dim {
                     score += q_head[i] * k_head[i];
@@ -352,7 +389,8 @@ pub fn forward_pass<'a>(
             // Weighted sum of V
             let out_head = &mut ws.attn_output[h * config.head_dim..(h + 1) * config.head_dim];
             for p in 0..=pos {
-                let v_head = &v_cache[p * cache.kv_width + kv_h * config.head_dim .. p * cache.kv_width + (kv_h + 1) * config.head_dim];
+                let v_head = &v_cache[p * cache.kv_width + kv_h * config.head_dim
+                    ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
                 let weight = ws.attn_scores[p];
                 for i in 0..config.head_dim {
                     out_head[i] += weight * v_head[i];
@@ -362,7 +400,15 @@ pub fn forward_pass<'a>(
 
         // Projection O (wo)
         quantize_f32_to_q8_0(&ws.attn_output, &mut ws.x_i8, &mut ws.x_scales);
-        matmul_q8_0(&mut x, &ws.x_i8, &ws.x_scales, &layer.wo, config.embedding_length, config.embedding_length, selector);
+        matmul_q8_0(
+            &mut x,
+            &ws.x_i8,
+            &ws.x_scales,
+            &layer.wo,
+            config.embedding_length,
+            config.embedding_length,
+            options.q8_selector,
+        );
 
         // Residual addition
         for i in 0..config.embedding_length {
@@ -379,8 +425,24 @@ pub fn forward_pass<'a>(
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
 
         // Gate (w1) & Up (w3) matmuls
-        matmul_q8_0(&mut ws.ffn_gate, &ws.x_i8, &ws.x_scales, &layer.w1, config.feed_forward_length, config.embedding_length, selector);
-        matmul_q8_0(&mut ws.ffn_up, &ws.x_i8, &ws.x_scales, &layer.w3, config.feed_forward_length, config.embedding_length, selector);
+        matmul_q8_0(
+            &mut ws.ffn_gate,
+            &ws.x_i8,
+            &ws.x_scales,
+            &layer.w1,
+            config.feed_forward_length,
+            config.embedding_length,
+            options.q8_selector,
+        );
+        matmul_q8_0(
+            &mut ws.ffn_up,
+            &ws.x_i8,
+            &ws.x_scales,
+            &layer.w3,
+            config.feed_forward_length,
+            config.embedding_length,
+            options.q8_selector,
+        );
 
         // SiLU activation on Gate
         silu(&mut ws.ffn_gate);
@@ -392,7 +454,15 @@ pub fn forward_pass<'a>(
 
         // Down projection (w2)
         quantize_f32_to_q8_0(&ws.ffn_gate_up, &mut ws.x_i8, &mut ws.x_scales);
-        matmul_q8_0(&mut x, &ws.x_i8, &ws.x_scales, &layer.w2, config.embedding_length, config.feed_forward_length, selector);
+        matmul_q8_0(
+            &mut x,
+            &ws.x_i8,
+            &ws.x_scales,
+            &layer.w2,
+            config.embedding_length,
+            config.feed_forward_length,
+            options.q8_selector,
+        );
 
         // Residual addition
         for i in 0..config.embedding_length {
@@ -401,15 +471,34 @@ pub fn forward_pass<'a>(
     }
 
     // 3. Final RMSNorm
-    rms_norm(&mut ws.norm_x, &x, &weights.output_norm, config.rms_norm_epsilon);
+    rms_norm(
+        &mut ws.norm_x,
+        &x,
+        &weights.output_norm,
+        config.rms_norm_epsilon,
+    );
 
     // 4. Logits Projection
     if let Some(out_proj) = &weights.output_projection {
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
-        matmul_q8_0(&mut ws.logits, &ws.x_i8, &ws.x_scales, out_proj, config.vocab_size, config.embedding_length, selector);
+        matmul_q8_0(
+            &mut ws.logits,
+            &ws.x_i8,
+            &ws.x_scales,
+            out_proj,
+            config.vocab_size,
+            config.embedding_length,
+            options.q8_selector,
+        );
     } else {
         // Tied embeddings (multiply norm_x by token_embeddings transposed)
-        matmul_f32(&mut ws.logits, &ws.norm_x, &weights.token_embeddings, config.vocab_size, config.embedding_length);
+        matmul_f32(
+            &mut ws.logits,
+            &ws.norm_x,
+            &weights.token_embeddings,
+            config.vocab_size,
+            config.embedding_length,
+        );
     }
 
     &ws.logits

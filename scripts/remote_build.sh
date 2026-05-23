@@ -3,8 +3,10 @@
 set -euo pipefail
 
 PI_HOST="${1:-}"
-SSH_KEY="${2:-/Users/timtoole/Documents/cert/pi5_tooleman_ed25519}"
-PI_USER="${3:-tooleman}"
+SSH_KEY="${2:-${NANOCAMELID_SSH_KEY:-}}"
+PI_USER="${3:-${NANOCAMELID_PI_USER:-$USER}}"
+PI_WORKSPACE="${NANOCAMELID_REMOTE_WORKSPACE:-/mnt/nanocamelid}"
+PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
 
 if [[ -z "$PI_HOST" ]]; then
   echo "Usage: $0 <pi-ip-or-hostname> [ssh-key-path] [pi-username]" >&2
@@ -12,16 +14,17 @@ if [[ -z "$PI_HOST" ]]; then
 fi
 
 if [[ ! -f "$SSH_KEY" ]]; then
-  SSH_OPT=""
+  SSH_OPTS=()
 else
-  SSH_OPT="-i $SSH_KEY"
+  SSH_OPTS=(-i "$SSH_KEY")
 fi
 
 echo "Deploying latest changes first..."
 "$(dirname "$0")/deploy.sh" "$PI_HOST" "$SSH_KEY" "$PI_USER"
 
 echo "Building NanoCamelid on ${PI_USER}@${PI_HOST}..."
-ssh ${SSH_OPT} "${PI_USER}@${PI_HOST}" bash << 'EOF'
+ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
+  "PI_WORKSPACE='$PI_WORKSPACE' PI_REPO='$PI_REPO' bash" << 'EOF'
   # Export Cargo path to make sure cargo commands work in non-interactive shells
   export PATH="$HOME/.cargo/bin:$PATH"
   if [ -f "$HOME/.cargo/env" ]; then
@@ -29,18 +32,32 @@ ssh ${SSH_OPT} "${PI_USER}@${PI_HOST}" bash << 'EOF'
   fi
 
   # Source environment variables if they exist
-  if [ -f ~/nanocamelid/env.sh ]; then
-    source ~/nanocamelid/env.sh
+  if [ -f "$PI_WORKSPACE/env.sh" ]; then
+    source "$PI_WORKSPACE/env.sh"
   fi
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/nanocamelid/target}"
+  mkdir -p "$CARGO_TARGET_DIR"
 
-  cd ~/nanocamelid/src/NanoCamelid
+  cd "$PI_REPO"
 
   # If bootstrap has not been run, run it to prepare workspace directories
-  if [ ! -d ../../benchmarks ]; then
+  if [ ! -d "$PI_WORKSPACE/benchmarks" ] || [ ! -d "$CARGO_TARGET_DIR" ]; then
     chmod +x ./scripts/pi/bootstrap.sh
     ./scripts/pi/bootstrap.sh
-    source ~/nanocamelid/env.sh
+    source "$PI_WORKSPACE/env.sh"
+    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/nanocamelid/target}"
   fi
+
+  echo "==> Cargo target dir: $CARGO_TARGET_DIR"
+
+  echo "==> Checking format..."
+  cargo fmt -- --check
+
+  echo "==> Running tests..."
+  cargo test
+
+  echo "==> Running clippy..."
+  cargo clippy --all-targets -- -D warnings
 
   echo "==> Running cargo check..."
   cargo check

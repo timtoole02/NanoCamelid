@@ -2,13 +2,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     fs::{self, File},
-    io::{self, ErrorKind, Read},
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const DEFAULT_ALIGNMENT: u64 = 32;
-const GGML_MAX_NAME: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum GgufMetadataValue {
@@ -330,7 +329,9 @@ pub fn inspect(path: &Path) -> Result<GgufSummary, GgufError> {
 
     let mut type_counts = BTreeMap::new();
     for tensor in &file.tensors {
-        *type_counts.entry(tensor.tensor_type.name().to_owned()).or_insert(0) += 1;
+        *type_counts
+            .entry(tensor.tensor_type.name().to_owned())
+            .or_insert(0) += 1;
     }
 
     Ok(GgufSummary {
@@ -406,7 +407,9 @@ pub fn read_file(path: &Path) -> Result<GgufFile, GgufError> {
 
     let data_start_offset = align_to(reader.position(), alignment)?;
     if data_start_offset > file_len {
-        return Err(GgufError::InvalidTensor("aligned tensor data start overflows file".to_owned()));
+        return Err(GgufError::InvalidTensor(
+            "aligned tensor data start overflows file".to_owned(),
+        ));
     }
 
     let mut tensors = Vec::with_capacity(raw_tensors.len());
@@ -629,7 +632,11 @@ fn usize_from_u64(value: u64, name: &'static str) -> Result<usize, GgufError> {
     usize::try_from(value).map_err(|_| GgufError::ValueTooLarge(name))
 }
 
-fn tensor_nbytes(name: &str, dimensions: &[u64], tensor_type: GgufTensorType) -> Result<u64, GgufError> {
+fn tensor_nbytes(
+    name: &str,
+    dimensions: &[u64],
+    tensor_type: GgufTensorType,
+) -> Result<u64, GgufError> {
     let (block_size, type_size) = tensor_type.layout().ok_or_else(|| {
         GgufError::InvalidTensor(format!(
             "tensor {name} has unknown or removed GGML type {tensor_type:?}"

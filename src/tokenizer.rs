@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
-use crate::gguf::{GgufFile, GgufTensorType};
+use crate::gguf::GgufFile;
 
 pub type TokenId = u32;
 
@@ -189,11 +189,14 @@ impl Tokenizer {
         if model == TokenizerModel::Gpt2Bpe {
             let pre_tokenizer = file.metadata_string("tokenizer.ggml.pre");
             if pre_tokenizer != Some("llama-bpe") {
-                return Err(format!("unsupported GPT-2/BPE pre-tokenizer: {pre_tokenizer:?}"));
+                return Err(format!(
+                    "unsupported GPT-2/BPE pre-tokenizer: {pre_tokenizer:?}"
+                ));
             }
         }
 
-        let token_texts = file.metadata_array_strings("tokenizer.ggml.tokens")
+        let token_texts = file
+            .metadata_array_strings("tokenizer.ggml.tokens")
             .ok_or_else(|| "tokenizer.ggml.tokens missing or invalid".to_owned())?;
         if token_texts.is_empty() {
             return Err("tokenizer.ggml.tokens must not be empty".to_string());
@@ -349,10 +352,11 @@ impl Tokenizer {
         parse_special: bool,
     ) -> Result<Vec<TokenId>, String> {
         let mut out = Vec::new();
-        if add_special && self.config.add_bos {
-            if let Some(bos) = self.special.bos {
-                out.push(bos);
-            }
+        if add_special
+            && self.config.add_bos
+            && let Some(bos) = self.special.bos
+        {
+            out.push(bos);
         }
 
         match self.model {
@@ -369,10 +373,11 @@ impl Tokenizer {
             }
         }
 
-        if add_special && self.config.add_eos {
-            if let Some(eos) = self.special.eos {
-                out.push(eos);
-            }
+        if add_special
+            && self.config.add_eos
+            && let Some(eos) = self.special.eos
+        {
+            out.push(eos);
         }
         Ok(out)
     }
@@ -389,9 +394,10 @@ impl Tokenizer {
             if remove_special && self.is_special(*id) {
                 continue;
             }
-            let token = self.tokens.get(*id as usize).ok_or_else(|| {
-                format!("token id {id} out of range")
-            })?;
+            let token = self
+                .tokens
+                .get(*id as usize)
+                .ok_or_else(|| format!("token id {id} out of range"))?;
             if token.kind == TokenKind::Control && remove_special {
                 continue;
             }
@@ -415,16 +421,14 @@ impl Tokenizer {
         let mut byte_start = 0;
 
         while byte_start < text.len() {
-            if parse_special {
-                if let Some((token_text, token_len)) =
+            if parse_special
+                && let Some((token_text, token_len)) =
                     self.longest_control_token_at(text, byte_start)
-                {
-                    if let Some(id) = self.token_to_id.get(token_text) {
-                        out.push(*id);
-                        byte_start += token_len;
-                        continue;
-                    }
-                }
+                && let Some(id) = self.token_to_id.get(token_text)
+            {
+                out.push(*id);
+                byte_start += token_len;
+                continue;
             }
 
             let byte_end = if parse_special {
@@ -471,9 +475,10 @@ impl Tokenizer {
             if remove_special && self.is_special(*id) {
                 continue;
             }
-            let token = self.tokens.get(*id as usize).ok_or_else(|| {
-                format!("token id {id} out of range")
-            })?;
+            let token = self
+                .tokens
+                .get(*id as usize)
+                .ok_or_else(|| format!("token id {id} out of range"))?;
             if remove_special && token.kind == TokenKind::Control {
                 continue;
             }
@@ -489,9 +494,7 @@ impl Tokenizer {
             }
         }
 
-        String::from_utf8(bytes).map_err(|_| {
-            "GPT-2/BPE decode produced invalid UTF-8".to_string()
-        })
+        String::from_utf8(bytes).map_err(|_| "GPT-2/BPE decode produced invalid UTF-8".to_string())
     }
 
     fn normalize_spm_text(&self, text: &str, parse_special: bool) -> String {
@@ -606,31 +609,22 @@ impl Tokenizer {
         let mut out = Vec::new();
         let mut byte_start = 0;
         while byte_start < piece.len() {
-            if parse_special {
-                if let Some((token_text, token_len)) =
+            if parse_special
+                && let Some((token_text, token_len)) =
                     self.longest_control_token_at(piece, byte_start)
+                && let Some(id) = self.token_to_id.get(token_text)
+            {
+                out.push(*id);
+                byte_start += token_len;
+                let rest = &piece[byte_start..];
+                let next_is_control = self.longest_control_token_at(piece, byte_start).is_some();
+                if self.config.add_space_prefix
+                    && self.should_insert_dummy_after_control(token_text, rest, next_is_control)
+                    && let Some(dummy_prefix) = self.token_to_id.get(&SPM_SPACE.to_string())
                 {
-                    if let Some(id) = self.token_to_id.get(token_text) {
-                        out.push(*id);
-                        byte_start += token_len;
-                        let rest = &piece[byte_start..];
-                        let next_is_control =
-                            self.longest_control_token_at(piece, byte_start).is_some();
-                        if self.config.add_space_prefix
-                            && self.should_insert_dummy_after_control(
-                                token_text,
-                                rest,
-                                next_is_control,
-                            )
-                        {
-                            if let Some(dummy_prefix) = self.token_to_id.get(&SPM_SPACE.to_string())
-                            {
-                                out.push(*dummy_prefix);
-                            }
-                        }
-                        continue;
-                    }
+                    out.push(*dummy_prefix);
                 }
+                continue;
             }
 
             let byte_end = if parse_special {
@@ -724,7 +718,11 @@ impl Tokenizer {
         symbols
     }
 
-    fn encode_unknown_symbol_bytes(&self, symbol: &str, out: &mut Vec<TokenId>) -> Result<(), String> {
+    fn encode_unknown_symbol_bytes(
+        &self,
+        symbol: &str,
+        out: &mut Vec<TokenId>,
+    ) -> Result<(), String> {
         for byte in symbol.as_bytes() {
             let id = self
                 .byte_token_to_id
@@ -733,11 +731,7 @@ impl Tokenizer {
                 .or(self.special.unk);
             match id {
                 Some(id) => out.push(id),
-                None => {
-                    return Err(format!(
-                        "SPM byte fallback token <0x{byte:02X}> is missing"
-                    ))
-                }
+                None => return Err(format!("SPM byte fallback token <0x{byte:02X}> is missing")),
             }
         }
         Ok(())
@@ -781,9 +775,7 @@ impl Tokenizer {
                 .iter()
                 .find(|(idx, _)| *idx == byte_start)
                 .map(|(_, ch)| *ch)
-                .ok_or_else(|| {
-                    "internal UTF-8 tokenizer cursor error".to_string()
-                })?;
+                .ok_or_else(|| "internal UTF-8 tokenizer cursor error".to_string())?;
             let mut buf = [0u8; 4];
             self.encode_unknown_symbol_bytes(ch.encode_utf8(&mut buf), &mut out)?;
             byte_start += ch.len_utf8();
@@ -1016,10 +1008,12 @@ fn bpe_char_to_byte(ch: char) -> Option<u8> {
 }
 
 fn validate_token_id(name: &str, id: Option<TokenId>, len: usize) -> Result<(), String> {
-    if let Some(id) = id {
-        if id as usize >= len {
-            return Err(format!("{name} token id {id} out of range for vocab size {len}"));
-        }
+    if let Some(id) = id
+        && id as usize >= len
+    {
+        return Err(format!(
+            "{name} token id {id} out of range for vocab size {len}"
+        ));
     }
     Ok(())
 }
@@ -1036,9 +1030,8 @@ fn flush_bytes(bytes: &mut Vec<u8>, text: &mut String) -> Result<(), String> {
     if bytes.is_empty() {
         return Ok(());
     }
-    let decoded = String::from_utf8(std::mem::take(bytes)).map_err(|_| {
-        "byte fallback produced invalid UTF-8".to_string()
-    })?;
+    let decoded = String::from_utf8(std::mem::take(bytes))
+        .map_err(|_| "byte fallback produced invalid UTF-8".to_string())?;
     text.push_str(&decoded);
     Ok(())
 }
