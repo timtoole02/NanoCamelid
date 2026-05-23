@@ -3,108 +3,195 @@ use std::{env, fs, path::Path, process::ExitCode};
 use nanocamelid::{gguf, inference, model, q8, tokenizer};
 
 fn main() -> ExitCode {
-    let command = env::args().nth(1);
+    let args = env::args().skip(1).collect::<Vec<_>>();
 
-    match command.as_deref() {
+    if let Some(help_topic) = help_topic_for_args(&args) {
+        print_help(help_topic);
+        return ExitCode::SUCCESS;
+    }
+
+    match args.first().map(String::as_str) {
+        Some("help") => {
+            let topic = args.get(1).map(String::as_str).unwrap_or_default();
+            eprintln!("unknown help topic: {topic}");
+            print_help(HelpTopic::TopLevel);
+            ExitCode::from(2)
+        }
         Some("probe") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Probe);
+                return ExitCode::SUCCESS;
+            }
             print_probe();
             ExitCode::SUCCESS
         }
-        Some("inspect") => match env::args().nth(2) {
-            Some(path) => inspect_gguf(Path::new(&path)),
-            None => {
-                eprintln!("missing GGUF path");
-                print_usage();
-                ExitCode::from(2)
+        Some("inspect") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Inspect);
+                return ExitCode::SUCCESS;
             }
-        },
-        Some("generate") => {
-            let model_path = env::args().nth(2);
-            let prompt = env::args().nth(3);
-            match (model_path, prompt) {
-                (Some(model_path), Some(prompt)) => {
-                    let temp = env::args()
-                        .nth(4)
-                        .and_then(|v| v.parse::<f32>().ok())
-                        .unwrap_or(0.0);
-                    let max_tokens = env::args()
-                        .nth(5)
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(128);
-                    run_generation(Path::new(&model_path), &prompt, temp, max_tokens)
-                }
-                _ => {
-                    eprintln!("missing GGUF model path or prompt");
-                    print_usage();
+            match args.get(1) {
+                Some(path) => inspect_gguf(Path::new(path)),
+                None => {
+                    eprintln!("missing GGUF path");
+                    print_help(HelpTopic::Inspect);
                     ExitCode::from(2)
                 }
             }
         }
-        Some("bench") => match env::args().nth(2).as_deref() {
-            Some("q8-dot") => {
-                let iterations = env::args()
-                    .nth(3)
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(q8::DEFAULT_DOT_BENCH_ITERATIONS);
-                let runs = env::args()
-                    .nth(4)
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
-                bench_q8_dot(iterations, runs)
+        Some("generate") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Generate);
+                return ExitCode::SUCCESS;
             }
-            Some(other) => {
-                eprintln!("unknown benchmark: {other}");
-                print_usage();
-                ExitCode::from(2)
-            }
-            None => {
-                eprintln!("missing benchmark name");
-                print_usage();
-                ExitCode::from(2)
-            }
-        },
-        Some("smoke") => match env::args().nth(2).as_deref() {
-            Some("q8-model") => {
-                let model_path = env::args()
-                    .nth(3)
-                    .or_else(|| env::var("NANOCAMELID_SMOKE_GGUF").ok());
-                let prompt = env::args().nth(4).unwrap_or_else(|| "Hello".to_owned());
-                let max_tokens = env::args()
-                    .nth(5)
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(1);
 
-                match model_path {
-                    Some(path) => smoke_q8_model(Path::new(&path), &prompt, max_tokens),
-                    None => {
-                        eprintln!(
-                            "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF"
-                        );
-                        print_usage();
-                        ExitCode::from(2)
-                    }
+            match (args.get(1), args.get(2)) {
+                (Some(model_path), Some(prompt)) => {
+                    let temp = args
+                        .get(3)
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(0.0);
+                    let max_tokens = args
+                        .get(4)
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(128);
+                    run_generation(Path::new(model_path), prompt, temp, max_tokens)
+                }
+                _ => {
+                    eprintln!("missing GGUF model path or prompt");
+                    print_help(HelpTopic::Generate);
+                    ExitCode::from(2)
                 }
             }
-            Some(other) => {
-                eprintln!("unknown smoke: {other}");
-                print_usage();
-                ExitCode::from(2)
+        }
+        Some("bench") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Bench);
+                return ExitCode::SUCCESS;
             }
-            None => {
-                eprintln!("missing smoke name");
-                print_usage();
-                ExitCode::from(2)
+
+            match args.get(1).map(String::as_str) {
+                Some("q8-dot") => {
+                    let iterations = args
+                        .get(2)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(q8::DEFAULT_DOT_BENCH_ITERATIONS);
+                    let runs = args
+                        .get(3)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
+                    bench_q8_dot(iterations, runs)
+                }
+                Some(other) => {
+                    eprintln!("unknown benchmark: {other}");
+                    print_help(HelpTopic::Bench);
+                    ExitCode::from(2)
+                }
+                None => {
+                    eprintln!("missing benchmark name");
+                    print_help(HelpTopic::Bench);
+                    ExitCode::from(2)
+                }
             }
-        },
-        Some("-h" | "--help") | None => {
-            print_usage();
+        }
+        Some("smoke") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Smoke);
+                return ExitCode::SUCCESS;
+            }
+
+            match args.get(1).map(String::as_str) {
+                Some("q8-model") => {
+                    let model_path = args
+                        .get(2)
+                        .cloned()
+                        .or_else(|| env::var("NANOCAMELID_SMOKE_GGUF").ok());
+                    let prompt = args.get(3).map(String::as_str).unwrap_or("Hello");
+                    let max_tokens = args
+                        .get(4)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(1);
+
+                    match model_path {
+                        Some(path) => smoke_q8_model(Path::new(&path), prompt, max_tokens),
+                        None => {
+                            eprintln!(
+                                "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF"
+                            );
+                            print_help(HelpTopic::Smoke);
+                            ExitCode::from(2)
+                        }
+                    }
+                }
+                Some(other) => {
+                    eprintln!("unknown smoke: {other}");
+                    print_help(HelpTopic::Smoke);
+                    ExitCode::from(2)
+                }
+                None => {
+                    eprintln!("missing smoke name");
+                    print_help(HelpTopic::Smoke);
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some(other) if is_help_flag(other) => {
+            print_help(HelpTopic::TopLevel);
+            ExitCode::SUCCESS
+        }
+        None => {
+            print_help(HelpTopic::TopLevel);
             ExitCode::SUCCESS
         }
         Some(other) => {
             eprintln!("unknown command: {other}");
-            print_usage();
+            print_help(HelpTopic::TopLevel);
             ExitCode::from(2)
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HelpTopic {
+    TopLevel,
+    Probe,
+    Inspect,
+    Generate,
+    Bench,
+    Smoke,
+}
+
+fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
+    match args.first().map(String::as_str) {
+        Some("-h" | "--help") | Some("help") if args.len() == 1 => Some(HelpTopic::TopLevel),
+        Some("help") => help_topic_named(args.get(1).map(String::as_str).unwrap_or_default()),
+        _ => None,
+    }
+}
+
+fn help_topic_named(name: &str) -> Option<HelpTopic> {
+    match name {
+        "probe" => Some(HelpTopic::Probe),
+        "inspect" => Some(HelpTopic::Inspect),
+        "generate" => Some(HelpTopic::Generate),
+        "bench" => Some(HelpTopic::Bench),
+        "smoke" => Some(HelpTopic::Smoke),
+        _ => None,
+    }
+}
+
+fn is_help_flag(value: &str) -> bool {
+    matches!(value, "-h" | "--help")
+}
+
+fn print_help(topic: HelpTopic) {
+    match topic {
+        HelpTopic::TopLevel => print_usage(),
+        HelpTopic::Probe => print_probe_usage(),
+        HelpTopic::Inspect => print_inspect_usage(),
+        HelpTopic::Generate => print_generate_usage(),
+        HelpTopic::Bench => print_bench_usage(),
+        HelpTopic::Smoke => print_smoke_usage(),
     }
 }
 
@@ -112,20 +199,105 @@ fn print_usage() {
     println!("NanoCamelid");
     println!();
     println!("Usage:");
+    println!("  nanocamelid <command> [args]");
+    println!();
+    println!("Commands:");
     println!(
-        "  nanocamelid probe                            Print host CPU and runtime feature information"
+        "  probe                                     Print host CPU and runtime feature information"
     );
     println!(
-        "  nanocamelid inspect <model.gguf>             Inspect GGUF metadata and tensor layouts"
+        "  inspect <model.gguf>                      Inspect GGUF metadata and tensor layouts"
     );
+    println!("  generate <model.gguf> <prompt> [temp] [max_tokens]");
+    println!(
+        "                                            Generate text from prompt on Raspberry Pi 5"
+    );
+    println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
+    println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
+    println!(
+        "                                            Compare scalar vs selected Q8 model logits and greedy generation"
+    );
+    println!("  help [command]                            Show top-level or subcommand help");
+    println!();
+    println!("Run `nanocamelid help <command>` or `nanocamelid <command> --help` for details.");
+}
+
+fn print_probe_usage() {
+    println!("NanoCamelid probe");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid probe");
+    println!();
+    println!("Print host CPU model, feature flags, and runtime SIMD detection.");
+}
+
+fn print_inspect_usage() {
+    println!("NanoCamelid inspect");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid inspect <model.gguf>");
+    println!();
+    println!("Inspect GGUF metadata, tensor types, and the first tensor layouts.");
+}
+
+fn print_generate_usage() {
+    println!("NanoCamelid generate");
+    println!();
+    println!("Usage:");
     println!("  nanocamelid generate <model.gguf> <prompt> [temp] [max_tokens]");
+    println!();
+    println!("Args:");
+    println!("  <model.gguf>                              Path to the GGUF model file");
     println!(
-        "                                               Generate text from prompt on Raspberry Pi 5"
+        "  <prompt>                                  Prompt text to prefill before generation"
     );
-    println!("  nanocamelid bench q8-dot [iterations] [runs] Benchmark Q8 dot product kernels");
+    println!("  [temp]                                    Sampling temperature, default 0.0");
+    println!("  [max_tokens]                              Maximum tokens to generate, default 128");
+}
+
+fn print_bench_usage() {
+    println!("NanoCamelid bench");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid bench q8-dot [iterations] [runs]");
+    println!();
+    println!("Args:");
+    println!(
+        "  [iterations]                              Blocks per run, default {}",
+        q8::DEFAULT_DOT_BENCH_ITERATIONS
+    );
+    println!(
+        "  [runs]                                    Repeated timing samples, default {}",
+        q8::DEFAULT_DOT_BENCH_RUNS
+    );
+    println!();
+    println!("Env:");
+    println!("  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot selection");
+    println!(
+        "  NANOCAMELID_Q8_DOT_SDOT                   Enable SDOT candidate benchmarking when supported"
+    );
+}
+
+fn print_smoke_usage() {
+    println!("NanoCamelid smoke");
+    println!();
+    println!("Usage:");
     println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!(
-        "                                               Compare scalar vs selected Q8 model logits and greedy generation"
+        "  nanocamelid smoke q8-model [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set"
+    );
+    println!();
+    println!("Args:");
+    println!("  <model.gguf>                              Path to the GGUF model file");
+    println!("  [prompt]                                  Prompt text, default \"Hello\"");
+    println!(
+        "  [max_tokens]                              Greedy tokens to generate after parity, default 1"
+    );
+    println!();
+    println!("Env:");
+    println!("  NANOCAMELID_SMOKE_GGUF                    Default GGUF path for smoke validation");
+    println!(
+        "  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot kernel selection"
     );
 }
 
@@ -818,7 +990,10 @@ fn runtime_dotprod() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cpu_features, cpu_model, device_model, validate_prompt_fits_context};
+    use super::{
+        HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
+        is_help_flag, validate_prompt_fits_context,
+    };
 
     #[test]
     fn parses_aarch64_cpuinfo() {
@@ -868,5 +1043,54 @@ flags\t\t: sse4_2 avx2
             validate_prompt_fits_context(129, 128),
             Err("prompt requires 129 tokens but model context length is 128".to_owned())
         );
+    }
+
+    #[test]
+    fn help_topic_named_maps_supported_commands() {
+        assert_eq!(help_topic_named("probe"), Some(HelpTopic::Probe));
+        assert_eq!(help_topic_named("inspect"), Some(HelpTopic::Inspect));
+        assert_eq!(help_topic_named("generate"), Some(HelpTopic::Generate));
+        assert_eq!(help_topic_named("bench"), Some(HelpTopic::Bench));
+        assert_eq!(help_topic_named("smoke"), Some(HelpTopic::Smoke));
+        assert_eq!(help_topic_named("unknown"), None);
+    }
+
+    #[test]
+    fn help_topic_for_args_detects_top_level_help() {
+        assert_eq!(
+            help_topic_for_args(&["--help".to_owned()]),
+            Some(HelpTopic::TopLevel)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned()]),
+            Some(HelpTopic::TopLevel)
+        );
+    }
+
+    #[test]
+    fn help_topic_for_args_detects_subcommand_help() {
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "bench".to_owned()]),
+            Some(HelpTopic::Bench)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "smoke".to_owned()]),
+            Some(HelpTopic::Smoke)
+        );
+    }
+
+    #[test]
+    fn help_topic_for_args_leaves_unknown_topics_to_main_parser() {
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "mystery".to_owned()]),
+            None
+        );
+    }
+
+    #[test]
+    fn help_flag_recognizes_short_and_long_variants() {
+        assert!(is_help_flag("-h"));
+        assert!(is_help_flag("--help"));
+        assert!(!is_help_flag("help"));
     }
 }
