@@ -35,6 +35,10 @@ cargo run --release -- bench q8-dot [iterations] [runs]
 NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot [iterations] [runs]
 ```
 
+The Q8 dot benchmark prints repeated scalar/NEON timing, a JSON summary line, and
+when the default-off SDOT candidate is enabled, direct SDOT-vs-NEON ratios for
+retaining or rejecting the kernel on the target Pi.
+
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
 
 *This project is currently in its early 'Nano' phase. Benchmark output is hardware-local and should be treated as evidence for the specific Pi/configuration where it was captured.*

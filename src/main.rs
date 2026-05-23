@@ -179,6 +179,16 @@ fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
             "sdot_median_speedup: {:.2}x",
             report.sdot_median_speedup().unwrap_or_default()
         );
+        if report.neon.is_some() {
+            println!(
+                "sdot_vs_neon_min_speedup: {:.2}x",
+                report.sdot_vs_neon_min_speedup().unwrap_or_default()
+            );
+            println!(
+                "sdot_vs_neon_median_speedup: {:.2}x",
+                report.sdot_vs_neon_median_speedup().unwrap_or_default()
+            );
+        }
         if sdot.checksum != report.scalar.checksum {
             eprintln!("sdot checksum mismatch");
             return ExitCode::FAILURE;
@@ -208,13 +218,15 @@ fn q8_dot_json(report: &q8::DotBenchmarkReport) -> String {
         .as_ref()
         .map(|sdot| {
             format!(
-                ",\"sdot\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6},\"min_speedup\":{:.6},\"median_speedup\":{:.6}}}",
+                ",\"sdot\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6},\"min_speedup\":{:.6},\"median_speedup\":{:.6},\"vs_neon_min_speedup\":{:.6},\"vs_neon_median_speedup\":{:.6}}}",
                 sdot.checksum,
                 duration_ms_json(&sdot.elapsed_runs),
                 report.sdot_min_ns_per_block().unwrap_or_default(),
                 report.sdot_median_ns_per_block().unwrap_or_default(),
                 report.sdot_min_speedup().unwrap_or_default(),
-                report.sdot_median_speedup().unwrap_or_default()
+                report.sdot_median_speedup().unwrap_or_default(),
+                report.sdot_vs_neon_min_speedup().unwrap_or_default(),
+                report.sdot_vs_neon_median_speedup().unwrap_or_default()
             )
         })
         .unwrap_or_default();

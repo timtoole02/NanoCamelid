@@ -111,6 +111,18 @@ impl DotBenchmarkReport {
         self.sdot_median_ns_per_block()
             .map(|sdot_ns| self.scalar_median_ns_per_block() / sdot_ns)
     }
+
+    pub fn sdot_vs_neon_min_speedup(&self) -> Option<f64> {
+        self.neon_min_ns_per_block()
+            .zip(self.sdot_min_ns_per_block())
+            .map(|(neon_ns, sdot_ns)| neon_ns / sdot_ns)
+    }
+
+    pub fn sdot_vs_neon_median_speedup(&self) -> Option<f64> {
+        self.neon_median_ns_per_block()
+            .zip(self.sdot_median_ns_per_block())
+            .map(|(neon_ns, sdot_ns)| neon_ns / sdot_ns)
+    }
 }
 
 pub fn bench_dot_runs(iterations: usize, runs: usize) -> DotBenchmarkReport {
