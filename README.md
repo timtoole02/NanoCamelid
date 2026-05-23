@@ -41,4 +41,8 @@ retaining or rejecting the kernel on the target Pi.
 
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
 
+## License
+
+NanoCamelid is licensed under the MIT License. See [`LICENSE`](LICENSE).
+
 *This project is currently in its early 'Nano' phase. Benchmark output is hardware-local and should be treated as evidence for the specific Pi/configuration where it was captured.*
