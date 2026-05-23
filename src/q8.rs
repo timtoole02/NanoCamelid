@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fmt,
     hint::black_box,
     time::{Duration, Instant},
 };
@@ -8,8 +8,9 @@ pub const DEFAULT_DOT_BENCH_ITERATIONS: usize = 2_000;
 pub const DEFAULT_DOT_BENCH_RUNS: usize = 5;
 pub const DOT_KERNEL_ENV: &str = "NANOCAMELID_Q8_DOT_KERNEL";
 pub const SDOT_CANDIDATE_ENV: &str = "NANOCAMELID_Q8_DOT_SDOT";
+pub const Q8_BLOCK_SIZE: usize = 32;
+pub const Q8_0_BLOCK_BYTES: usize = 2 + Q8_BLOCK_SIZE;
 
-const Q8_BLOCK_SIZE: usize = 32;
 const BENCH_BLOCKS: usize = 1_024;
 const BENCH_ELEMENTS: usize = Q8_BLOCK_SIZE * BENCH_BLOCKS;
 
@@ -51,6 +52,30 @@ pub struct DotTimingSummary {
     pub checksum: i64,
     pub elapsed_runs: Vec<Duration>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q8_0Block {
+    scale_bits: u16,
+    values: [i8; Q8_BLOCK_SIZE],
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Q8BlockError {
+    MisalignedLength { bytes: usize, block_bytes: usize },
+}
+
+impl fmt::Display for Q8BlockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MisalignedLength { bytes, block_bytes } => write!(
+                f,
+                "Q8_0 byte length {bytes} is not aligned to {block_bytes}-byte blocks"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Q8BlockError {}
 
 impl DotBenchmarkReport {
     pub fn scalar_min_ns_per_block(&self) -> f64 {
@@ -140,6 +165,69 @@ impl DotBenchmarkReport {
             .zip(self.sdot_median_ns_per_block())
             .map(|(neon_ns, sdot_ns)| neon_ns / sdot_ns)
     }
+}
+
+impl Q8_0Block {
+    pub fn from_bytes(bytes: &[u8; Q8_0_BLOCK_BYTES]) -> Self {
+        let scale_bits = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let mut values = [0_i8; Q8_BLOCK_SIZE];
+        for (value, &byte) in values.iter_mut().zip(&bytes[2..]) {
+            *value = i8::from_le_bytes([byte]);
+        }
+
+        Self { scale_bits, values }
+    }
+
+    pub fn from_parts(scale_bits: u16, values: [i8; Q8_BLOCK_SIZE]) -> Self {
+        Self { scale_bits, values }
+    }
+
+    pub fn scale_bits(&self) -> u16 {
+        self.scale_bits
+    }
+
+    pub fn scale_f32(&self) -> f32 {
+        f16_bits_to_f32(self.scale_bits)
+    }
+
+    pub fn values(&self) -> &[i8; Q8_BLOCK_SIZE] {
+        &self.values
+    }
+
+    pub fn dot_i32(&self, rhs: &Self) -> i32 {
+        dot_i8_scalar(&self.values, &rhs.values)
+    }
+
+    pub fn scaled_dot_f32(&self, rhs: &Self) -> f32 {
+        self.scale_f32() * rhs.scale_f32() * self.dot_i32(rhs) as f32
+    }
+}
+
+pub fn decode_q8_0_blocks(bytes: &[u8]) -> Result<Vec<Q8_0Block>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(Q8_0_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: Q8_0_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(Q8_0_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; Q8_0_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees Q8_0 block length");
+            Q8_0Block::from_bytes(bytes)
+        })
+        .collect())
+}
+
+pub fn dot_q8_0_blocks_scalar(lhs: &[Q8_0Block], rhs: &[Q8_0Block]) -> f32 {
+    assert_eq!(lhs.len(), rhs.len());
+    lhs.iter()
+        .zip(rhs)
+        .map(|(left, right)| left.scaled_dot_f32(right))
+        .sum()
 }
 
 pub fn bench_dot_runs(iterations: usize, runs: usize) -> DotBenchmarkReport {
@@ -407,6 +495,32 @@ fn ns_per_block(elapsed: Duration, iterations: usize, blocks_per_iteration: usiz
     elapsed.as_secs_f64() * 1_000_000_000.0 / (iterations * blocks_per_iteration) as f64
 }
 
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = (u32::from(bits & 0x8000)) << 16;
+    let exponent = (bits >> 10) & 0x1f;
+    let fraction = u32::from(bits & 0x03ff);
+
+    match exponent {
+        0 if fraction == 0 => f32::from_bits(sign),
+        0 => {
+            let mut mantissa = fraction;
+            let mut exponent = -14_i32;
+            while (mantissa & 0x0400) == 0 {
+                mantissa <<= 1;
+                exponent -= 1;
+            }
+            mantissa &= 0x03ff;
+            let f32_exponent = u32::try_from(exponent + 127).expect("subnormal exponent fits");
+            f32::from_bits(sign | (f32_exponent << 23) | (mantissa << 13))
+        }
+        0x1f => f32::from_bits(sign | 0x7f80_0000 | (fraction << 13)),
+        _ => {
+            let f32_exponent = u32::from(exponent) + (127 - 15);
+            f32::from_bits(sign | (f32_exponent << 23) | (fraction << 13))
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 unsafe fn dot_i8_neon_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
     use std::arch::aarch64::{
@@ -472,8 +586,9 @@ unsafe fn dot_i8_sdot_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Q8DotKernel, Q8DotKernelSelector, RuntimeFeatures, bench_dot_runs, dot_i8_neon,
-        dot_i8_scalar, dot_i8_sdot,
+        Q8_0_BLOCK_BYTES, Q8_0Block, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector,
+        RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon, dot_i8_scalar,
+        dot_i8_sdot, dot_q8_0_blocks_scalar, f16_bits_to_f32,
     };
 
     #[test]
@@ -556,6 +671,54 @@ mod tests {
         if let Some(sdot) = report.sdot {
             assert_eq!(sdot.checksum, report.scalar.checksum);
         }
+    }
+
+    #[test]
+    fn q8_0_block_decodes_gguf_layout() {
+        let mut bytes = [0_u8; Q8_0_BLOCK_BYTES];
+        bytes[..2].copy_from_slice(&0x3800_u16.to_le_bytes());
+        for (idx, byte) in bytes[2..].iter_mut().enumerate() {
+            *byte = (idx as i8 - 16).to_le_bytes()[0];
+        }
+
+        let block = Q8_0Block::from_bytes(&bytes);
+
+        assert_eq!(Q8_BLOCK_SIZE, 32);
+        assert_eq!(block.scale_bits(), 0x3800);
+        assert_eq!(block.scale_f32(), 0.5);
+        assert_eq!(block.values()[0], -16);
+        assert_eq!(block.values()[31], 15);
+    }
+
+    #[test]
+    fn q8_0_block_decoder_rejects_partial_blocks() {
+        assert_eq!(
+            decode_q8_0_blocks(&[0; Q8_0_BLOCK_BYTES - 1]),
+            Err(Q8BlockError::MisalignedLength {
+                bytes: Q8_0_BLOCK_BYTES - 1,
+                block_bytes: Q8_0_BLOCK_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn q8_0_block_dot_matches_scaled_scalar_reference() {
+        let lhs = Q8_0Block::from_parts(0x4000, [2; Q8_BLOCK_SIZE]);
+        let rhs = Q8_0Block::from_parts(0x3800, [-3; Q8_BLOCK_SIZE]);
+
+        assert_eq!(lhs.dot_i32(&rhs), -192);
+        assert_eq!(lhs.scaled_dot_f32(&rhs), -192.0);
+        assert_eq!(dot_q8_0_blocks_scalar(&[lhs], &[rhs]), -192.0);
+    }
+
+    #[test]
+    fn f16_scale_decoder_covers_q8_scale_edges() {
+        assert_eq!(f16_bits_to_f32(0x0000), 0.0);
+        assert_eq!(f16_bits_to_f32(0x8000), -0.0);
+        assert_eq!(f16_bits_to_f32(0x3c00), 1.0);
+        assert_eq!(f16_bits_to_f32(0xbc00), -1.0);
+        assert_eq!(f16_bits_to_f32(0x0400), 0.000061035156);
+        assert_eq!(f16_bits_to_f32(0x7c00), f32::INFINITY);
     }
 
     #[test]

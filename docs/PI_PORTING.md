@@ -34,6 +34,8 @@ NanoCamelid is not a direct copy of Camelid. It is a Raspberry Pi focused extrac
 - `cargo run -- inspect <model.gguf>` against a local small-model GGUF
 - `cargo run --release -- bench q8-dot` on Raspberry Pi 5 for repeated scalar vs NEON Q8 dot timing and JSON output
 - `NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot` on Raspberry Pi 5 before retaining the default-off SDOT candidate; use the SDOT-vs-NEON ratios as the kernel decision signal
+- Q8_0 block layout tests must keep 34-byte blocks, f16 scale expansion, signed
+  i8 payload decoding, and scalar scaled-dot behavior stable
 - One exact model-row parity artifact before any support claim
 
 ## Pi Workspace Layout

@@ -62,5 +62,10 @@ NanoCamelid currently has:
 - ARM64 NEON benchmark path
 - default-off ARM64 SDOT benchmark path
 - repeated-run JSON benchmark output
+- reusable library modules for GGUF/Q8 code
+- Q8_0 block constants, 34-byte block decoding, f16 scale expansion, and scalar
+  scaled block-dot reference tests
 
-The next durable slice should be the kernel selector and Q8 block/layout boundary, not another standalone benchmark.
+The next durable slice should wire the Q8_0 block boundary into GGUF tensor
+descriptor reads, then add shape-specific scalar/NEON/SDOT parity tests before
+using an optimized kernel in a model path.

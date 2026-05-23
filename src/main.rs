@@ -1,7 +1,6 @@
-mod gguf;
-mod q8;
-
 use std::{env, fs, path::Path, process::ExitCode};
+
+use nanocamelid::{gguf, q8};
 
 fn main() -> ExitCode {
     let command = env::args().nth(1);

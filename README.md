@@ -21,6 +21,7 @@ We aren't building a general-purpose engine. We are building an **Edge Appliance
 ## 📦 Roadmap
 
 - [x] Add a Raspberry Pi host probe for ARM64/NEON feature discovery.
+- [x] Add a Q8_0 block/layout boundary with scalar reference dot math.
 - [ ] Implement specialized NEON matrix multiplication kernels.
 - [ ] Port core Camelid logic with ARM-specific static dispatch.
 - [ ] Optimize 1B parameter models (Llama 3.2) for "instant" response times.
@@ -41,6 +42,10 @@ when the default-off SDOT candidate is enabled, direct SDOT-vs-NEON ratios for
 retaining or rejecting the kernel on the target Pi. `NANOCAMELID_Q8_DOT_KERNEL`
 selects the dispatch path under measurement and defaults to scalar unless an
 explicit requested kernel passes runtime feature checks.
+
+The reusable runtime surface now lives in the library crate (`nanocamelid::q8`
+and `nanocamelid::gguf`) so Pi runners can share the GGUF/Q8 boundaries instead
+of coupling everything to the CLI binary.
 
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
 For the Camelid-derived implementation map, see
