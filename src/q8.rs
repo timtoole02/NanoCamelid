@@ -6,11 +6,26 @@ use std::{
 
 pub const DEFAULT_DOT_BENCH_ITERATIONS: usize = 2_000;
 pub const DEFAULT_DOT_BENCH_RUNS: usize = 5;
+pub const DOT_KERNEL_ENV: &str = "NANOCAMELID_Q8_DOT_KERNEL";
 pub const SDOT_CANDIDATE_ENV: &str = "NANOCAMELID_Q8_DOT_SDOT";
 
 const Q8_BLOCK_SIZE: usize = 32;
 const BENCH_BLOCKS: usize = 1_024;
 const BENCH_ELEMENTS: usize = Q8_BLOCK_SIZE * BENCH_BLOCKS;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Q8DotKernel {
+    Scalar,
+    Neon,
+    Sdot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Q8DotKernelSelector {
+    pub requested: Option<Q8DotKernel>,
+    pub selected: Q8DotKernel,
+    pub fallback_reason: Option<&'static str>,
+}
 
 #[derive(Debug)]
 pub struct DotBenchmarkReport {
@@ -18,6 +33,8 @@ pub struct DotBenchmarkReport {
     pub runs: usize,
     pub blocks_per_iteration: usize,
     pub elements_per_iteration: usize,
+    pub kernel_selector: Q8DotKernelSelector,
+    pub selected: DotTimingSummary,
     pub scalar: DotTimingSummary,
     pub neon: Option<DotTimingSummary>,
     pub sdot: Option<DotTimingSummary>,
@@ -128,9 +145,13 @@ impl DotBenchmarkReport {
 pub fn bench_dot_runs(iterations: usize, runs: usize) -> DotBenchmarkReport {
     let lhs = deterministic_q8_values(BENCH_ELEMENTS, 17);
     let rhs = deterministic_q8_values(BENCH_ELEMENTS, 91);
+    let kernel_selector = Q8DotKernelSelector::from_env();
 
     let scalar = time_dot_runs(iterations, runs, || {
         dot_i8_scalar(black_box(&lhs), black_box(&rhs))
+    });
+    let selected = time_dot_runs(iterations, runs, || {
+        dot_i8_with_selector(black_box(&lhs), black_box(&rhs), kernel_selector)
     });
     let neon = neon_available().then(|| {
         time_dot_runs(iterations, runs, || {
@@ -148,9 +169,99 @@ pub fn bench_dot_runs(iterations: usize, runs: usize) -> DotBenchmarkReport {
         runs,
         blocks_per_iteration: BENCH_BLOCKS,
         elements_per_iteration: BENCH_ELEMENTS,
+        kernel_selector,
+        selected,
         scalar,
         neon,
         sdot,
+    }
+}
+
+impl Q8DotKernel {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar",
+            Self::Neon => "neon",
+            Self::Sdot => "sdot",
+        }
+    }
+}
+
+impl Q8DotKernelSelector {
+    pub fn from_env() -> Self {
+        let requested = env::var(DOT_KERNEL_ENV)
+            .ok()
+            .as_deref()
+            .and_then(parse_requested_kernel);
+
+        Self::for_request(
+            requested,
+            RuntimeFeatures::detect(),
+            sdot_candidate_requested(),
+        )
+    }
+
+    fn for_request(
+        requested: Option<Q8DotKernel>,
+        features: RuntimeFeatures,
+        sdot_candidate_enabled: bool,
+    ) -> Self {
+        match requested {
+            None | Some(Q8DotKernel::Scalar) => Self {
+                requested,
+                selected: Q8DotKernel::Scalar,
+                fallback_reason: None,
+            },
+            Some(Q8DotKernel::Neon) if features.neon => Self {
+                requested,
+                selected: Q8DotKernel::Neon,
+                fallback_reason: None,
+            },
+            Some(Q8DotKernel::Neon) => Self {
+                requested,
+                selected: Q8DotKernel::Scalar,
+                fallback_reason: Some("neon_unavailable"),
+            },
+            Some(Q8DotKernel::Sdot) if !sdot_candidate_enabled => Self {
+                requested,
+                selected: Q8DotKernel::Scalar,
+                fallback_reason: Some("sdot_candidate_not_enabled"),
+            },
+            Some(Q8DotKernel::Sdot) if features.dotprod => Self {
+                requested,
+                selected: Q8DotKernel::Sdot,
+                fallback_reason: None,
+            },
+            Some(Q8DotKernel::Sdot) => Self {
+                requested,
+                selected: Q8DotKernel::Scalar,
+                fallback_reason: Some("dotprod_unavailable"),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeFeatures {
+    neon: bool,
+    dotprod: bool,
+}
+
+impl RuntimeFeatures {
+    fn detect() -> Self {
+        Self {
+            neon: neon_available(),
+            dotprod: dotprod_available(),
+        }
+    }
+}
+
+fn parse_requested_kernel(value: &str) -> Option<Q8DotKernel> {
+    match value {
+        "scalar" | "SCALAR" => Some(Q8DotKernel::Scalar),
+        "neon" | "NEON" => Some(Q8DotKernel::Neon),
+        "sdot" | "SDOT" => Some(Q8DotKernel::Sdot),
+        _ => None,
     }
 }
 
@@ -160,6 +271,14 @@ pub fn dot_i8_scalar(lhs: &[i8], rhs: &[i8]) -> i32 {
         .zip(rhs)
         .map(|(&left, &right)| i32::from(left) * i32::from(right))
         .sum()
+}
+
+pub fn dot_i8_with_selector(lhs: &[i8], rhs: &[i8], selector: Q8DotKernelSelector) -> i32 {
+    match selector.selected {
+        Q8DotKernel::Scalar => dot_i8_scalar(lhs, rhs),
+        Q8DotKernel::Neon => dot_i8_neon(lhs, rhs),
+        Q8DotKernel::Sdot => dot_i8_sdot(lhs, rhs),
+    }
 }
 
 pub fn dotprod_available() -> bool {
@@ -352,7 +471,10 @@ unsafe fn dot_i8_sdot_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{bench_dot_runs, dot_i8_neon, dot_i8_scalar, dot_i8_sdot};
+    use super::{
+        Q8DotKernel, Q8DotKernelSelector, RuntimeFeatures, bench_dot_runs, dot_i8_neon,
+        dot_i8_scalar, dot_i8_sdot,
+    };
 
     #[test]
     fn scalar_dot_handles_signed_q8_values() {
@@ -379,14 +501,76 @@ mod tests {
     }
 
     #[test]
+    fn q8_kernel_selector_defaults_to_scalar() {
+        let selector = Q8DotKernelSelector::for_request(
+            None,
+            RuntimeFeatures {
+                neon: true,
+                dotprod: true,
+            },
+            false,
+        );
+
+        assert_eq!(selector.selected, Q8DotKernel::Scalar);
+        assert_eq!(selector.fallback_reason, None);
+    }
+
+    #[test]
+    fn q8_kernel_selector_falls_back_when_neon_is_unavailable() {
+        let selector = Q8DotKernelSelector::for_request(
+            Some(Q8DotKernel::Neon),
+            RuntimeFeatures {
+                neon: false,
+                dotprod: true,
+            },
+            false,
+        );
+
+        assert_eq!(selector.selected, Q8DotKernel::Scalar);
+        assert_eq!(selector.fallback_reason, Some("neon_unavailable"));
+    }
+
+    #[test]
+    fn q8_kernel_selector_keeps_sdot_default_off() {
+        let selector = Q8DotKernelSelector::for_request(
+            Some(Q8DotKernel::Sdot),
+            RuntimeFeatures {
+                neon: true,
+                dotprod: true,
+            },
+            false,
+        );
+
+        assert_eq!(selector.selected, Q8DotKernel::Scalar);
+        assert_eq!(selector.fallback_reason, Some("sdot_candidate_not_enabled"));
+    }
+
+    #[test]
     fn q8_dot_benchmark_preserves_checksum_parity() {
         let report = bench_dot_runs(2, 2);
 
+        assert_eq!(report.selected.checksum, report.scalar.checksum);
         if let Some(neon) = report.neon {
             assert_eq!(neon.checksum, report.scalar.checksum);
         }
         if let Some(sdot) = report.sdot {
             assert_eq!(sdot.checksum, report.scalar.checksum);
+        }
+    }
+
+    #[test]
+    fn simd_candidates_match_scalar_across_q8_shapes() {
+        for len in [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 257] {
+            let lhs: Vec<i8> = (0..len)
+                .map(|idx| ((idx * 17 + 3) % 127) as i8 - 63)
+                .collect();
+            let rhs: Vec<i8> = (0..len)
+                .map(|idx| ((idx * 19 + 7) % 127) as i8 - 63)
+                .collect();
+            let scalar = dot_i8_scalar(&lhs, &rhs);
+
+            assert_eq!(dot_i8_neon(&lhs, &rhs), scalar, "len={len}");
+            assert_eq!(dot_i8_sdot(&lhs, &rhs), scalar, "len={len}");
         }
     }
 }

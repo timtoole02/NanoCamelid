@@ -33,11 +33,14 @@ cargo run -- probe
 cargo run -- inspect /path/to/model.gguf
 cargo run --release -- bench q8-dot [iterations] [runs]
 NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot [iterations] [runs]
+NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot [iterations] [runs]
 ```
 
 The Q8 dot benchmark prints repeated scalar/NEON timing, a JSON summary line, and
 when the default-off SDOT candidate is enabled, direct SDOT-vs-NEON ratios for
-retaining or rejecting the kernel on the target Pi.
+retaining or rejecting the kernel on the target Pi. `NANOCAMELID_Q8_DOT_KERNEL`
+selects the dispatch path under measurement and defaults to scalar unless an
+explicit requested kernel passes runtime feature checks.
 
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
 For the Camelid-derived implementation map, see

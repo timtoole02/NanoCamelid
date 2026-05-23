@@ -97,6 +97,26 @@ fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
     println!("runs: {}", report.runs);
     println!("blocks_per_iteration: {}", report.blocks_per_iteration);
     println!("elements_per_iteration: {}", report.elements_per_iteration);
+    println!(
+        "kernel_selector_requested: {}",
+        report
+            .kernel_selector
+            .requested
+            .map(q8::Q8DotKernel::name)
+            .unwrap_or("default")
+    );
+    println!(
+        "kernel_selector_selected: {}",
+        report.kernel_selector.selected.name()
+    );
+    if let Some(reason) = report.kernel_selector.fallback_reason {
+        println!("kernel_selector_fallback: {reason}");
+    }
+    println!("selected_checksum: {}", report.selected.checksum);
+    println!(
+        "selected_total_ms: {:.3}",
+        report.selected.total_elapsed().as_secs_f64() * 1000.0
+    );
     println!("scalar_checksum: {}", report.scalar.checksum);
     println!(
         "scalar_total_ms: {:.3}",
@@ -110,6 +130,10 @@ fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
         "scalar_median_ns_per_block: {:.2}",
         report.scalar_median_ns_per_block()
     );
+    if report.selected.checksum != report.scalar.checksum {
+        eprintln!("selected kernel checksum mismatch");
+        return ExitCode::FAILURE;
+    }
 
     match &report.neon {
         Some(neon) => {
@@ -230,13 +254,17 @@ fn q8_dot_json(report: &q8::DotBenchmarkReport) -> String {
             )
         })
         .unwrap_or_default();
+    let kernel_json = kernel_selector_json(report);
+    let suffix_json = format!("{kernel_json}{neon_json}{sdot_json}");
 
     format!(
-        "{{\"benchmark\":\"q8-dot\",\"iterations\":{},\"runs\":{},\"blocks_per_iteration\":{},\"elements_per_iteration\":{},\"scalar\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6}}},\"neon_available\":{},\"dotprod_feature_detected\":{},\"sdot_candidate_requested\":{},\"sdot_candidate_enabled\":{}{}{}}}",
+        "{{\"benchmark\":\"q8-dot\",\"iterations\":{},\"runs\":{},\"blocks_per_iteration\":{},\"elements_per_iteration\":{},\"selected\":{{\"checksum\":{},\"run_ms\":{}}},\"scalar\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6}}},\"neon_available\":{},\"dotprod_feature_detected\":{},\"sdot_candidate_requested\":{},\"sdot_candidate_enabled\":{}{}}}",
         report.iterations,
         report.runs,
         report.blocks_per_iteration,
         report.elements_per_iteration,
+        report.selected.checksum,
+        duration_ms_json(&report.selected.elapsed_runs),
         report.scalar.checksum,
         scalar_runs,
         report.scalar_min_ns_per_block(),
@@ -245,8 +273,24 @@ fn q8_dot_json(report: &q8::DotBenchmarkReport) -> String {
         q8::dotprod_available(),
         q8::sdot_candidate_requested(),
         q8::sdot_candidate_enabled(),
-        neon_json,
-        sdot_json
+        suffix_json
+    )
+}
+
+fn kernel_selector_json(report: &q8::DotBenchmarkReport) -> String {
+    format!(
+        ",\"kernel_selector\":{{\"requested\":{},\"selected\":\"{}\",\"fallback_reason\":{}}}",
+        report
+            .kernel_selector
+            .requested
+            .map(|kernel| format!("\"{}\"", kernel.name()))
+            .unwrap_or_else(|| "null".to_string()),
+        report.kernel_selector.selected.name(),
+        report
+            .kernel_selector
+            .fallback_reason
+            .map(|reason| format!("\"{reason}\""))
+            .unwrap_or_else(|| "null".to_string())
     )
 }
 
