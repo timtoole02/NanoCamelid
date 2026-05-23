@@ -71,11 +71,19 @@ pub struct Q8_0RowReader {
     pub blocks_per_row: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Q8RowDotReport {
+    pub scalar: i32,
+    pub selected: i32,
+    pub kernel_selector: Q8DotKernelSelector,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum Q8BlockError {
     MisalignedLength { bytes: usize, block_bytes: usize },
     InvalidTensorType { name: String },
     InvalidTensorShape { name: String, dimensions: Vec<u64> },
+    ColumnMismatch { lhs: usize, rhs: usize },
     RowOutOfBounds { row: usize, rows: usize },
     ValueTooLarge(&'static str),
     OffsetOverflow,
@@ -92,6 +100,9 @@ impl fmt::Display for Q8BlockError {
             Self::InvalidTensorType { name } => write!(f, "tensor {name} is not Q8_0"),
             Self::InvalidTensorShape { name, dimensions } => {
                 write!(f, "tensor {name} has invalid Q8_0 shape {dimensions:?}")
+            }
+            Self::ColumnMismatch { lhs, rhs } => {
+                write!(f, "Q8_0 row column mismatch: lhs={lhs}, rhs={rhs}")
             }
             Self::RowOutOfBounds { row, rows } => {
                 write!(f, "Q8_0 row {row} is out of bounds for {rows} rows")
@@ -334,6 +345,33 @@ impl Q8_0RowReader {
         }
         Ok(values)
     }
+}
+
+pub fn dot_q8_0_rows_i32<R: Read + Seek>(
+    reader: &mut R,
+    lhs: &Q8_0RowReader,
+    lhs_row: usize,
+    rhs: &Q8_0RowReader,
+    rhs_row: usize,
+    kernel_selector: Q8DotKernelSelector,
+) -> Result<Q8RowDotReport, Q8BlockError> {
+    if lhs.columns != rhs.columns {
+        return Err(Q8BlockError::ColumnMismatch {
+            lhs: lhs.columns,
+            rhs: rhs.columns,
+        });
+    }
+
+    let lhs_values = lhs.read_row_values(reader, lhs_row)?;
+    let rhs_values = rhs.read_row_values(reader, rhs_row)?;
+    let scalar = dot_i8_scalar(&lhs_values, &rhs_values);
+    let selected = dot_i8_with_selector(&lhs_values, &rhs_values, kernel_selector);
+
+    Ok(Q8RowDotReport {
+        scalar,
+        selected,
+        kernel_selector,
+    })
 }
 
 pub fn dot_q8_0_blocks_scalar(lhs: &[Q8_0Block], rhs: &[Q8_0Block]) -> f32 {
@@ -710,7 +748,7 @@ mod tests {
     use super::{
         Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel,
         Q8DotKernelSelector, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
-        dot_i8_scalar, dot_i8_sdot, dot_q8_0_blocks_scalar, f16_bits_to_f32,
+        dot_i8_scalar, dot_i8_sdot, dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
     };
 
     #[test]
@@ -871,6 +909,64 @@ mod tests {
     }
 
     #[test]
+    fn q8_0_row_dot_reads_real_tensor_bytes_with_scalar_default_parity() {
+        let lhs_desc = GgufTensorDescriptor {
+            name: "lhs.weight".to_owned(),
+            dimensions: vec![64, 2],
+            tensor_type: GgufTensorType::Q8_0,
+            relative_offset: 0,
+            absolute_offset: 32,
+            n_bytes: 4 * Q8_0_BLOCK_BYTES as u64,
+        };
+        let rhs_desc = GgufTensorDescriptor {
+            name: "rhs.weight".to_owned(),
+            dimensions: vec![64, 2],
+            tensor_type: GgufTensorType::Q8_0,
+            relative_offset: 4 * Q8_0_BLOCK_BYTES as u64,
+            absolute_offset: 32 + 4 * Q8_0_BLOCK_BYTES as u64,
+            n_bytes: 4 * Q8_0_BLOCK_BYTES as u64,
+        };
+        let lhs_reader = Q8_0RowReader::from_tensor_descriptor(&lhs_desc).expect("lhs Q8_0");
+        let rhs_reader = Q8_0RowReader::from_tensor_descriptor(&rhs_desc).expect("rhs Q8_0");
+        let mut bytes = vec![0_u8; lhs_desc.absolute_offset as usize];
+        append_q8_blocks(&mut bytes, 4, 0x3c00, 3);
+        append_q8_blocks(&mut bytes, 4, 0x3c00, 17);
+
+        let selector = Q8DotKernelSelector::for_request(
+            None,
+            RuntimeFeatures {
+                neon: true,
+                dotprod: true,
+            },
+            true,
+        );
+        let mut cursor = Cursor::new(bytes.clone());
+        let scalar_default =
+            dot_q8_0_rows_i32(&mut cursor, &lhs_reader, 1, &rhs_reader, 0, selector)
+                .expect("row dot");
+
+        assert_eq!(scalar_default.kernel_selector.selected, Q8DotKernel::Scalar);
+        assert_eq!(scalar_default.selected, scalar_default.scalar);
+
+        for kernel in [Q8DotKernel::Neon, Q8DotKernel::Sdot] {
+            let selector = Q8DotKernelSelector::for_request(
+                Some(kernel),
+                RuntimeFeatures {
+                    neon: true,
+                    dotprod: true,
+                },
+                true,
+            );
+            let mut cursor = Cursor::new(bytes.clone());
+            let candidate =
+                dot_q8_0_rows_i32(&mut cursor, &lhs_reader, 1, &rhs_reader, 0, selector)
+                    .expect("candidate row dot");
+
+            assert_eq!(candidate.selected, scalar_default.scalar, "{kernel:?}");
+        }
+    }
+
+    #[test]
     fn f16_scale_decoder_covers_q8_scale_edges() {
         assert_eq!(f16_bits_to_f32(0x0000), 0.0);
         assert_eq!(f16_bits_to_f32(0x8000), -0.0);
@@ -893,6 +989,16 @@ mod tests {
 
             assert_eq!(dot_i8_neon(&lhs, &rhs), scalar, "len={len}");
             assert_eq!(dot_i8_sdot(&lhs, &rhs), scalar, "len={len}");
+        }
+    }
+
+    fn append_q8_blocks(bytes: &mut Vec<u8>, blocks: usize, scale_bits: u16, salt: i16) {
+        for block_idx in 0..blocks {
+            bytes.extend_from_slice(&scale_bits.to_le_bytes());
+            for value_idx in 0..Q8_BLOCK_SIZE {
+                let value = ((block_idx as i16 * 13 + value_idx as i16 * 7 + salt) % 127) - 63;
+                bytes.push((value as i8).to_le_bytes()[0]);
+            }
         }
     }
 }
