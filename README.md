@@ -35,6 +35,7 @@ cargo run -- inspect /path/to/model.gguf
 cargo run --release -- bench q8-dot [iterations] [runs]
 NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot [iterations] [runs]
 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot [iterations] [runs]
+cargo run --release -- smoke q8-model /path/to/model.gguf "Hello" 1
 ```
 
 The Q8 dot benchmark prints repeated scalar/NEON timing, a JSON summary line, and
@@ -42,6 +43,29 @@ when the default-off SDOT candidate is enabled, direct SDOT-vs-NEON ratios for
 retaining or rejecting the kernel on the target Pi. `NANOCAMELID_Q8_DOT_KERNEL`
 selects the dispatch path under measurement and defaults to scalar unless an
 explicit requested kernel passes runtime feature checks.
+
+The model smoke loads a GGUF and compares scalar Q8_0 matmul logits against the
+selected runtime kernel before checking a short greedy generation path.
+
+## Raspberry Pi Deployment
+
+```bash
+./scripts/pi/bootstrap.sh
+./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
+```
+
+Deployment defaults to rsync snapshots. For public Pi checkouts that should keep
+git metadata current, use clean fast-forward mode:
+
+```bash
+NANOCAMELID_DEPLOY_MODE=git-ff ./scripts/deploy.sh <pi-host>
+NANOCAMELID_DEPLOY_MODE=git-ff ./scripts/remote_build.sh <pi-host>
+```
+
+`git-ff` refuses dirty worktrees, non-fast-forward branches, non-public origin
+URLs, and existing non-git target directories. Set
+`NANOCAMELID_REMOTE_SMOKE_GGUF` to a Pi-local GGUF path when running
+`remote_build.sh` to include the model-backed Q8_0 parity smoke.
 
 The reusable runtime surface now lives in the library crate (`nanocamelid::q8`
 and `nanocamelid::gguf`) so Pi runners can share the GGUF/Q8 boundaries instead

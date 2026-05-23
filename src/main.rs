@@ -63,6 +63,39 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("smoke") => match env::args().nth(2).as_deref() {
+            Some("q8-model") => {
+                let model_path = env::args()
+                    .nth(3)
+                    .or_else(|| env::var("NANOCAMELID_SMOKE_GGUF").ok());
+                let prompt = env::args().nth(4).unwrap_or_else(|| "Hello".to_owned());
+                let max_tokens = env::args()
+                    .nth(5)
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(1);
+
+                match model_path {
+                    Some(path) => smoke_q8_model(Path::new(&path), &prompt, max_tokens),
+                    None => {
+                        eprintln!(
+                            "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF"
+                        );
+                        print_usage();
+                        ExitCode::from(2)
+                    }
+                }
+            }
+            Some(other) => {
+                eprintln!("unknown smoke: {other}");
+                print_usage();
+                ExitCode::from(2)
+            }
+            None => {
+                eprintln!("missing smoke name");
+                print_usage();
+                ExitCode::from(2)
+            }
+        },
         Some("-h" | "--help") | None => {
             print_usage();
             ExitCode::SUCCESS
@@ -90,6 +123,10 @@ fn print_usage() {
         "                                               Generate text from prompt on Raspberry Pi 5"
     );
     println!("  nanocamelid bench q8-dot [iterations] [runs] Benchmark Q8 dot product kernels");
+    println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
+    println!(
+        "                                               Compare scalar vs selected Q8 model logits and greedy generation"
+    );
 }
 
 fn print_probe() {
@@ -386,6 +423,209 @@ fn inspect_gguf(path: &Path) -> ExitCode {
     }
 }
 
+fn smoke_q8_model(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode {
+    match run_q8_model_smoke(model_path, prompt, max_tokens) {
+        Ok(report) => {
+            println!("NanoCamelid Q8 model smoke");
+            println!("path: {}", model_path.display());
+            println!("prompt_tokens: {:?}", report.prompt_tokens);
+            println!(
+                "kernel_selector_requested: {}",
+                report
+                    .kernel_selector
+                    .requested
+                    .map(q8::Q8DotKernel::name)
+                    .unwrap_or("default")
+            );
+            println!(
+                "kernel_selector_selected: {}",
+                report.kernel_selector.selected.name()
+            );
+            if let Some(reason) = report.kernel_selector.fallback_reason {
+                println!("kernel_selector_fallback: {reason}");
+            }
+            println!("max_logit_delta: {:.8}", report.max_logit_delta);
+            println!("generated_tokens: {:?}", report.generated_tokens);
+            println!("generated_text: {:?}", report.generated_text);
+            println!("status: ok");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Q8 model smoke failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Q8ModelSmokeReport {
+    prompt_tokens: Vec<u32>,
+    generated_tokens: Vec<u32>,
+    generated_text: String,
+    max_logit_delta: f32,
+    kernel_selector: q8::Q8DotKernelSelector,
+}
+
+fn run_q8_model_smoke(
+    model_path: &Path,
+    prompt: &str,
+    max_tokens: usize,
+) -> Result<Q8ModelSmokeReport, String> {
+    let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
+    let config = model::LlamaModelConfig::from_gguf(&gguf)
+        .map_err(|err| format!("failed to parse config: {err}"))?;
+    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
+        .map_err(|err| format!("failed to load tokenizer: {err}"))?;
+    let weights = model::LlamaWeights::load(model_path, &config, &gguf)
+        .map_err(|err| format!("failed to load weights: {err}"))?;
+    let prompt_tokens = tokenizer
+        .encode(prompt, true, true)
+        .map_err(|err| format!("failed to tokenize prompt: {err}"))?;
+    if prompt_tokens.is_empty() {
+        return Err("prompt tokenized to an empty sequence".to_owned());
+    }
+    validate_prompt_fits_context(prompt_tokens.len(), config.context_length)?;
+
+    let selected = q8::Q8DotKernelSelector::from_env();
+    let scalar = q8::Q8DotKernelSelector {
+        requested: Some(q8::Q8DotKernel::Scalar),
+        selected: q8::Q8DotKernel::Scalar,
+        fallback_reason: None,
+    };
+    let rope_scaling = rope_scaling_from_gguf(&gguf);
+    let scalar_options = inference::LlamaRuntimeOptions {
+        q8_selector: scalar,
+        rope_scaling,
+    };
+    let selected_options = inference::LlamaRuntimeOptions {
+        q8_selector: selected,
+        rope_scaling,
+    };
+
+    let mut scalar_cache =
+        inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+    let mut selected_cache =
+        inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+    let mut scalar_ws = inference::LlamaWorkspace::new(&config);
+    let mut selected_ws = inference::LlamaWorkspace::new(&config);
+    let mut max_logit_delta = 0.0_f32;
+    let mut pos = 0;
+
+    for &token in &prompt_tokens {
+        inference::forward_pass(
+            token as usize,
+            pos,
+            &config,
+            &weights,
+            &mut scalar_cache,
+            &mut scalar_ws,
+            scalar_options,
+        );
+        inference::forward_pass(
+            token as usize,
+            pos,
+            &config,
+            &weights,
+            &mut selected_cache,
+            &mut selected_ws,
+            selected_options,
+        );
+        max_logit_delta =
+            max_logit_delta.max(max_abs_delta(&scalar_ws.logits, &selected_ws.logits));
+        pos += 1;
+    }
+
+    let mut generated_tokens = Vec::new();
+    for _ in 0..max_tokens {
+        let scalar_next = inference::sample_logits(&scalar_ws.logits, 0.0);
+        let selected_next = inference::sample_logits(&selected_ws.logits, 0.0);
+        if scalar_next != selected_next {
+            return Err(format!(
+                "greedy token mismatch at generated index {}: scalar={scalar_next}, selected={selected_next}",
+                generated_tokens.len()
+            ));
+        }
+        if Some(scalar_next as u32) == tokenizer.special.eos
+            || Some(scalar_next as u32) == tokenizer.special.eot
+            || pos >= config.context_length
+        {
+            break;
+        }
+
+        generated_tokens.push(scalar_next as u32);
+        inference::forward_pass(
+            scalar_next,
+            pos,
+            &config,
+            &weights,
+            &mut scalar_cache,
+            &mut scalar_ws,
+            scalar_options,
+        );
+        inference::forward_pass(
+            selected_next,
+            pos,
+            &config,
+            &weights,
+            &mut selected_cache,
+            &mut selected_ws,
+            selected_options,
+        );
+        max_logit_delta =
+            max_logit_delta.max(max_abs_delta(&scalar_ws.logits, &selected_ws.logits));
+        pos += 1;
+    }
+
+    if max_logit_delta > 0.0001 {
+        return Err(format!(
+            "scalar vs selected max logit delta {max_logit_delta:.8} exceeds tolerance"
+        ));
+    }
+
+    let generated_text = tokenizer
+        .decode(&generated_tokens, true)
+        .map_err(|err| format!("failed to decode generated tokens: {err}"))?;
+
+    Ok(Q8ModelSmokeReport {
+        prompt_tokens,
+        generated_tokens,
+        generated_text,
+        max_logit_delta,
+        kernel_selector: selected,
+    })
+}
+
+fn rope_scaling_from_gguf(gguf: &gguf::GgufFile) -> inference::RopeScaling {
+    inference::RopeScaling {
+        factor: gguf.metadata_f32("llama.rope.scaling.factor"),
+        original_context_length: gguf
+            .metadata_u32("llama.rope.scaling.original_context_length")
+            .map(|value| value as f32),
+        low_freq_factor: gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
+        high_freq_factor: gguf.metadata_f32("llama.rope.scaling.high_freq_factor"),
+    }
+}
+
+fn max_abs_delta(lhs: &[f32], rhs: &[f32]) -> f32 {
+    lhs.iter()
+        .zip(rhs)
+        .map(|(&left, &right)| (left - right).abs())
+        .fold(0.0_f32, f32::max)
+}
+
+fn validate_prompt_fits_context(
+    prompt_token_count: usize,
+    context_length: usize,
+) -> Result<(), String> {
+    if prompt_token_count > context_length {
+        return Err(format!(
+            "prompt requires {prompt_token_count} tokens but model context length is {context_length}"
+        ));
+    }
+
+    Ok(())
+}
+
 fn cpu_model(cpuinfo: &str) -> Option<&str> {
     cpuinfo.lines().find_map(|line| {
         value_after_colon(line, "Hardware").or_else(|| value_after_colon(line, "model name"))
@@ -460,6 +700,14 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
             return ExitCode::FAILURE;
         }
     };
+    if prompt_tokens.is_empty() {
+        eprintln!("Prompt tokenized to an empty sequence");
+        return ExitCode::FAILURE;
+    }
+    if let Err(err) = validate_prompt_fits_context(prompt_tokens.len(), config.context_length) {
+        eprintln!("Prompt exceeds model context: {err}");
+        return ExitCode::FAILURE;
+    }
     println!("Prompt tokens: {:?}", prompt_tokens);
 
     let mut cache =
@@ -570,7 +818,7 @@ fn runtime_dotprod() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cpu_features, cpu_model, device_model};
+    use super::{cpu_features, cpu_model, device_model, validate_prompt_fits_context};
 
     #[test]
     fn parses_aarch64_cpuinfo() {
@@ -607,5 +855,18 @@ flags\t\t: sse4_2 avx2
             Some("Raspberry Pi 5 Model B Rev 1.0")
         );
         assert_eq!(device_model("\0"), None);
+    }
+
+    #[test]
+    fn prompt_context_validation_accepts_equal_length() {
+        assert_eq!(validate_prompt_fits_context(128, 128), Ok(()));
+    }
+
+    #[test]
+    fn prompt_context_validation_rejects_overflow() {
+        assert_eq!(
+            validate_prompt_fits_context(129, 128),
+            Err("prompt requires 129 tokens but model context length is 128".to_owned())
+        );
     }
 }
