@@ -40,6 +40,8 @@ when the default-off SDOT candidate is enabled, direct SDOT-vs-NEON ratios for
 retaining or rejecting the kernel on the target Pi.
 
 For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
+For the Camelid-derived implementation map, see
+[`docs/CAMELID_PORTING_MAP.md`](docs/CAMELID_PORTING_MAP.md).
 
 ## License
 
