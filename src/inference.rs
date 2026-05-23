@@ -1,5 +1,6 @@
 use crate::model::{LlamaModelConfig, LlamaWeights};
 use crate::q8::{Q8DotKernelSelector, Q8_0Block};
+use rayon::prelude::*;
 
 pub struct LlamaKvCache {
     pub k_cache: Vec<f32>, // block_count * context_length * kv_width
@@ -166,14 +167,14 @@ pub fn matmul_q8_0(
     x_i8: &[i8],
     x_scales: &[f32],
     w: &[Q8_0Block],
-    rows: usize,
+    _rows: usize,
     cols: usize,
     selector: Q8DotKernelSelector,
 ) {
     let blocks_per_row = cols / 32;
     match selector.selected {
         crate::q8::Q8DotKernel::Scalar => {
-            for r in 0..rows {
+            out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
                 let mut sum = 0.0_f32;
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
@@ -182,11 +183,11 @@ pub fn matmul_q8_0(
                     let dot_val = crate::q8::dot_i8_scalar(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
-                out[r] = sum;
-            }
+                *out_val = sum;
+            });
         }
         crate::q8::Q8DotKernel::Neon => {
-            for r in 0..rows {
+            out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
                 let mut sum = 0.0_f32;
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
@@ -195,11 +196,11 @@ pub fn matmul_q8_0(
                     let dot_val = crate::q8::dot_i8_neon(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
-                out[r] = sum;
-            }
+                *out_val = sum;
+            });
         }
         crate::q8::Q8DotKernel::Sdot => {
-            for r in 0..rows {
+            out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
                 let mut sum = 0.0_f32;
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
@@ -208,8 +209,8 @@ pub fn matmul_q8_0(
                     let dot_val = crate::q8::dot_i8_sdot(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
-                out[r] = sum;
-            }
+                *out_val = sum;
+            });
         }
     }
 }
