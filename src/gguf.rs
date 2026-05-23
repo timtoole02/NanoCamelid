@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     fs::File,
     io::{self, Read},
@@ -7,6 +7,7 @@ use std::{
 };
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
+const DEFAULT_ALIGNMENT: u64 = 32;
 
 const IMPORTANT_KEYS: &[&str] = &[
     "general.architecture",
@@ -27,8 +28,11 @@ pub struct GgufSummary {
     pub version: u32,
     pub tensor_count: u64,
     pub metadata_count: u64,
+    pub alignment: u64,
+    pub data_start_offset: u64,
     pub important_metadata: Vec<MetadataEntry>,
     pub tensor_types: Vec<TensorTypeSummary>,
+    pub tensors: Vec<GgufTensorDescriptor>,
 }
 
 #[derive(Debug)]
@@ -43,6 +47,41 @@ pub struct TensorTypeSummary {
     pub count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GgufTensorType {
+    F32,
+    F16,
+    Q4_0,
+    Q4_1,
+    Q5_0,
+    Q5_1,
+    Q8_0,
+    Q8_1,
+    Q2K,
+    Q3K,
+    Q4K,
+    Q5K,
+    Q6K,
+    Q8K,
+    I8,
+    I16,
+    I32,
+    I64,
+    F64,
+    Bf16,
+    Unknown(u32),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GgufTensorDescriptor {
+    pub name: String,
+    pub dimensions: Vec<u64>,
+    pub tensor_type: GgufTensorType,
+    pub relative_offset: u64,
+    pub absolute_offset: u64,
+    pub n_bytes: u64,
+}
+
 #[derive(Debug)]
 pub enum GgufError {
     Io(io::Error),
@@ -51,6 +90,9 @@ pub enum GgufError {
     InvalidUtf8,
     InvalidBool(u8),
     InvalidArrayType(u32),
+    InvalidAlignment(u64),
+    InvalidTensor(String),
+    UnsupportedTensorType(u32),
     ValueTooLarge(&'static str),
 }
 
@@ -64,6 +106,11 @@ impl fmt::Display for GgufError {
             Self::InvalidBool(value) => write!(f, "invalid GGUF bool value: {value}"),
             Self::InvalidArrayType(value_type) => {
                 write!(f, "invalid GGUF array type: {value_type}")
+            }
+            Self::InvalidAlignment(alignment) => write!(f, "invalid GGUF alignment: {alignment}"),
+            Self::InvalidTensor(message) => write!(f, "invalid GGUF tensor: {message}"),
+            Self::UnsupportedTensorType(tensor_type) => {
+                write!(f, "unsupported GGUF tensor type: {tensor_type}")
             }
             Self::ValueTooLarge(name) => write!(f, "{name} is too large for this platform"),
         }
@@ -99,57 +146,113 @@ fn parse(reader: impl Read) -> Result<GgufSummary, GgufError> {
     let tensor_count = reader.read_u64()?;
     let metadata_count = reader.read_u64()?;
     let mut important_metadata = Vec::new();
+    let mut alignment = DEFAULT_ALIGNMENT;
 
     for _ in 0..metadata_count {
         let key = reader.read_string()?;
         let value_type = ValueType::from_u32(reader.read_u32()?)?;
         let value = reader.read_value(value_type)?;
+        let display_value = value.display();
+        if key == "general.alignment" {
+            alignment = display_value
+                .parse::<u64>()
+                .map_err(|_| GgufError::InvalidAlignment(0))?;
+        }
 
         if IMPORTANT_KEYS.contains(&key.as_str()) {
             important_metadata.push(MetadataEntry {
                 key,
-                value: value.display(),
+                value: display_value,
             });
         }
     }
 
-    let mut tensor_types = BTreeMap::new();
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return Err(GgufError::InvalidAlignment(alignment));
+    }
+
+    let mut raw_tensors = Vec::new();
     for _ in 0..tensor_count {
-        let _name = reader.read_string()?;
+        let name = reader.read_string()?;
         let dimensions = usize_from_u32(reader.read_u32()?, "tensor dimensions")?;
-        for _ in 0..dimensions {
-            let _ = reader.read_u64()?;
+        if dimensions == 0 {
+            return Err(GgufError::InvalidTensor(format!(
+                "tensor {name} has no dimensions"
+            )));
         }
-        let tensor_type = reader.read_u32()?;
-        let _offset = reader.read_u64()?;
+        let mut dims = Vec::with_capacity(dimensions);
+        for _ in 0..dimensions {
+            dims.push(reader.read_u64()?);
+        }
+        let tensor_type = GgufTensorType::from_u32(reader.read_u32()?);
+        let relative_offset = reader.read_u64()?;
+        raw_tensors.push((name, dims, tensor_type, relative_offset));
+    }
+
+    let data_start_offset = align_to(reader.position(), alignment)?;
+    let mut tensor_types = BTreeMap::new();
+    let mut tensors = Vec::with_capacity(raw_tensors.len());
+    let mut seen_names = BTreeSet::new();
+    for (name, dimensions, tensor_type, relative_offset) in raw_tensors {
+        if !seen_names.insert(name.clone()) {
+            return Err(GgufError::InvalidTensor(format!(
+                "duplicate tensor name {name}"
+            )));
+        }
+        let n_bytes = tensor_nbytes(&name, &dimensions, tensor_type)?;
+        let absolute_offset = data_start_offset
+            .checked_add(relative_offset)
+            .ok_or_else(|| {
+                GgufError::InvalidTensor(format!("tensor {name} absolute offset overflow"))
+            })?;
         *tensor_types
-            .entry(tensor_type_name(tensor_type).to_owned())
+            .entry(tensor_type.name().to_owned())
             .or_insert(0) += 1;
+        tensors.push(GgufTensorDescriptor {
+            name,
+            dimensions,
+            tensor_type,
+            relative_offset,
+            absolute_offset,
+            n_bytes,
+        });
     }
 
     Ok(GgufSummary {
         version,
         tensor_count,
         metadata_count,
+        alignment,
+        data_start_offset,
         important_metadata,
         tensor_types: tensor_types
             .into_iter()
             .map(|(name, count)| TensorTypeSummary { name, count })
             .collect(),
+        tensors,
     })
 }
 
 struct Reader<R> {
     inner: R,
+    pos: u64,
 }
 
 impl<R: Read> Reader<R> {
     fn new(inner: R) -> Self {
-        Self { inner }
+        Self { inner, pos: 0 }
+    }
+
+    fn position(&self) -> u64 {
+        self.pos
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), GgufError> {
         self.inner.read_exact(buf)?;
+        self.pos = self
+            .pos
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| GgufError::InvalidTensor("reader position overflow".to_owned()))?;
         Ok(())
     }
 
@@ -251,6 +354,82 @@ impl<R: Read> Reader<R> {
     }
 }
 
+impl GgufTensorType {
+    pub fn from_u32(value: u32) -> Self {
+        match value {
+            0 => Self::F32,
+            1 => Self::F16,
+            2 => Self::Q4_0,
+            3 => Self::Q4_1,
+            6 => Self::Q5_0,
+            7 => Self::Q5_1,
+            8 => Self::Q8_0,
+            9 => Self::Q8_1,
+            10 => Self::Q2K,
+            11 => Self::Q3K,
+            12 => Self::Q4K,
+            13 => Self::Q5K,
+            14 => Self::Q6K,
+            15 => Self::Q8K,
+            24 => Self::I8,
+            25 => Self::I16,
+            26 => Self::I32,
+            27 => Self::I64,
+            28 => Self::F64,
+            30 => Self::Bf16,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::F32 => "F32",
+            Self::F16 => "F16",
+            Self::Q4_0 => "Q4_0",
+            Self::Q4_1 => "Q4_1",
+            Self::Q5_0 => "Q5_0",
+            Self::Q5_1 => "Q5_1",
+            Self::Q8_0 => "Q8_0",
+            Self::Q8_1 => "Q8_1",
+            Self::Q2K => "Q2_K",
+            Self::Q3K => "Q3_K",
+            Self::Q4K => "Q4_K",
+            Self::Q5K => "Q5_K",
+            Self::Q6K => "Q6_K",
+            Self::Q8K => "Q8_K",
+            Self::I8 => "I8",
+            Self::I16 => "I16",
+            Self::I32 => "I32",
+            Self::I64 => "I64",
+            Self::F64 => "F64",
+            Self::Bf16 => "BF16",
+            Self::Unknown(_) => "UNKNOWN",
+        }
+    }
+
+    fn layout(self) -> Option<(u64, u64)> {
+        match self {
+            Self::F32 => Some((1, 4)),
+            Self::F16 => Some((1, 2)),
+            Self::Q4_0 | Self::Q4_1 => Some((32, 18)),
+            Self::Q5_0 | Self::Q5_1 => Some((32, 22)),
+            Self::Q8_0 => Some((32, 34)),
+            Self::Q8_1 => Some((32, 36)),
+            Self::Q2K => Some((256, 84)),
+            Self::Q3K => Some((256, 110)),
+            Self::Q4K => Some((256, 144)),
+            Self::Q5K => Some((256, 176)),
+            Self::Q6K => Some((256, 210)),
+            Self::Q8K => Some((256, 292)),
+            Self::I8 => Some((1, 1)),
+            Self::I16 | Self::Bf16 => Some((1, 2)),
+            Self::I32 => Some((1, 4)),
+            Self::I64 | Self::F64 => Some((1, 8)),
+            Self::Unknown(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ValueType {
     U8,
@@ -311,46 +490,42 @@ impl Value {
     }
 }
 
-fn tensor_type_name(value: u32) -> &'static str {
-    match value {
-        0 => "F32",
-        1 => "F16",
-        2 => "Q4_0",
-        3 => "Q4_1",
-        6 => "Q5_0",
-        7 => "Q5_1",
-        8 => "Q8_0",
-        9 => "Q8_1",
-        10 => "Q2_K",
-        11 => "Q3_K",
-        12 => "Q4_K",
-        13 => "Q5_K",
-        14 => "Q6_K",
-        15 => "Q8_K",
-        16 => "IQ2_XXS",
-        17 => "IQ2_XS",
-        18 => "IQ3_XXS",
-        19 => "IQ1_S",
-        20 => "IQ4_NL",
-        21 => "IQ3_S",
-        22 => "IQ2_S",
-        23 => "IQ4_XS",
-        24 => "I8",
-        25 => "I16",
-        26 => "I32",
-        27 => "I64",
-        28 => "F64",
-        29 => "IQ1_M",
-        30 => "BF16",
-        31 => "Q4_0_4_4",
-        32 => "Q4_0_4_8",
-        33 => "Q4_0_8_8",
-        _ => "UNKNOWN",
-    }
-}
-
 fn format_float(value: impl fmt::Display) -> String {
     value.to_string()
+}
+
+fn tensor_nbytes(
+    name: &str,
+    dimensions: &[u64],
+    tensor_type: GgufTensorType,
+) -> Result<u64, GgufError> {
+    let (block_size, type_size) = tensor_type.layout().ok_or_else(|| match tensor_type {
+        GgufTensorType::Unknown(value) => GgufError::UnsupportedTensorType(value),
+        _ => GgufError::InvalidTensor(format!("tensor {name} has unsupported layout")),
+    })?;
+    let first_dim = dimensions.first().copied().unwrap_or(1);
+    if !first_dim.is_multiple_of(block_size) {
+        return Err(GgufError::InvalidTensor(format!(
+            "tensor {name} first dimension {first_dim} is not divisible by block size {block_size}"
+        )));
+    }
+    let elements = dimensions.iter().try_fold(1_u64, |acc, dim| {
+        acc.checked_mul(*dim).ok_or_else(|| {
+            GgufError::InvalidTensor(format!("tensor {name} element count overflow"))
+        })
+    })?;
+    elements
+        .checked_div(block_size)
+        .and_then(|blocks| blocks.checked_mul(type_size))
+        .ok_or_else(|| GgufError::InvalidTensor(format!("tensor {name} byte size overflow")))
+}
+
+fn align_to(value: u64, alignment: u64) -> Result<u64, GgufError> {
+    let add = alignment - 1;
+    value
+        .checked_add(add)
+        .map(|value| value & !add)
+        .ok_or_else(|| GgufError::InvalidTensor("alignment overflow".to_owned()))
 }
 
 fn usize_from_u32(value: u32, name: &'static str) -> Result<usize, GgufError> {
@@ -365,7 +540,7 @@ fn usize_from_u64(value: u64, name: &'static str) -> Result<usize, GgufError> {
 mod tests {
     use std::io::Cursor;
 
-    use super::parse;
+    use super::{GgufTensorType, parse};
 
     #[test]
     fn parses_minimal_gguf_summary() {
@@ -394,12 +569,20 @@ mod tests {
         assert_eq!(summary.version, 3);
         assert_eq!(summary.tensor_count, 1);
         assert_eq!(summary.metadata_count, 2);
+        assert_eq!(summary.alignment, 32);
+        assert_eq!(summary.data_start_offset, 192);
         assert_eq!(summary.important_metadata[0].key, "general.architecture");
         assert_eq!(summary.important_metadata[0].value, "llama");
         assert_eq!(summary.important_metadata[1].key, "llama.context_length");
         assert_eq!(summary.important_metadata[1].value, "2048");
         assert_eq!(summary.tensor_types[0].name, "Q8_0");
         assert_eq!(summary.tensor_types[0].count, 1);
+        assert_eq!(summary.tensors[0].name, "blk.0.attn_q.weight");
+        assert_eq!(summary.tensors[0].dimensions, [32, 4096]);
+        assert_eq!(summary.tensors[0].tensor_type, GgufTensorType::Q8_0);
+        assert_eq!(summary.tensors[0].relative_offset, 0);
+        assert_eq!(summary.tensors[0].absolute_offset, 192);
+        assert_eq!(summary.tensors[0].n_bytes, 139_264);
     }
 
     fn write_string(bytes: &mut Vec<u8>, value: &str) {

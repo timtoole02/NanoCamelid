@@ -309,6 +309,8 @@ fn inspect_gguf(path: &Path) -> ExitCode {
             println!("version: {}", summary.version);
             println!("tensor_count: {}", summary.tensor_count);
             println!("metadata_count: {}", summary.metadata_count);
+            println!("alignment: {}", summary.alignment);
+            println!("data_start_offset: {}", summary.data_start_offset);
 
             if !summary.important_metadata.is_empty() {
                 println!();
@@ -323,6 +325,25 @@ fn inspect_gguf(path: &Path) -> ExitCode {
                 println!("tensor_types:");
                 for entry in &summary.tensor_types {
                     println!("  {}: {}", entry.name, entry.count);
+                }
+            }
+
+            if !summary.tensors.is_empty() {
+                println!();
+                println!("tensors:");
+                for tensor in summary.tensors.iter().take(8) {
+                    println!(
+                        "  {} dims={:?} type={} rel_offset={} abs_offset={} bytes={}",
+                        tensor.name,
+                        tensor.dimensions,
+                        tensor.tensor_type.name(),
+                        tensor.relative_offset,
+                        tensor.absolute_offset,
+                        tensor.n_bytes
+                    );
+                }
+                if summary.tensors.len() > 8 {
+                    println!("  ... {} more", summary.tensors.len() - 8);
                 }
             }
 

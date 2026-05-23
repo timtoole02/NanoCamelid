@@ -1,8 +1,11 @@
 use std::{
     env, fmt,
     hint::black_box,
+    io::{self, Read, Seek, SeekFrom},
     time::{Duration, Instant},
 };
+
+use crate::gguf::{GgufTensorDescriptor, GgufTensorType};
 
 pub const DEFAULT_DOT_BENCH_ITERATIONS: usize = 2_000;
 pub const DEFAULT_DOT_BENCH_RUNS: usize = 5;
@@ -59,9 +62,24 @@ pub struct Q8_0Block {
     values: [i8; Q8_BLOCK_SIZE],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Q8_0RowReader {
+    pub tensor_name: String,
+    pub absolute_offset: u64,
+    pub rows: usize,
+    pub columns: usize,
+    pub blocks_per_row: usize,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum Q8BlockError {
     MisalignedLength { bytes: usize, block_bytes: usize },
+    InvalidTensorType { name: String },
+    InvalidTensorShape { name: String, dimensions: Vec<u64> },
+    RowOutOfBounds { row: usize, rows: usize },
+    ValueTooLarge(&'static str),
+    OffsetOverflow,
+    Io(String),
 }
 
 impl fmt::Display for Q8BlockError {
@@ -71,11 +89,27 @@ impl fmt::Display for Q8BlockError {
                 f,
                 "Q8_0 byte length {bytes} is not aligned to {block_bytes}-byte blocks"
             ),
+            Self::InvalidTensorType { name } => write!(f, "tensor {name} is not Q8_0"),
+            Self::InvalidTensorShape { name, dimensions } => {
+                write!(f, "tensor {name} has invalid Q8_0 shape {dimensions:?}")
+            }
+            Self::RowOutOfBounds { row, rows } => {
+                write!(f, "Q8_0 row {row} is out of bounds for {rows} rows")
+            }
+            Self::ValueTooLarge(name) => write!(f, "{name} is too large for this platform"),
+            Self::OffsetOverflow => write!(f, "Q8_0 row offset overflow"),
+            Self::Io(err) => write!(f, "{err}"),
         }
     }
 }
 
 impl std::error::Error for Q8BlockError {}
+
+impl From<io::Error> for Q8BlockError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err.to_string())
+    }
+}
 
 impl DotBenchmarkReport {
     pub fn scalar_min_ns_per_block(&self) -> f64 {
@@ -222,12 +256,96 @@ pub fn decode_q8_0_blocks(bytes: &[u8]) -> Result<Vec<Q8_0Block>, Q8BlockError> 
         .collect())
 }
 
+impl Q8_0RowReader {
+    pub fn from_tensor_descriptor(desc: &GgufTensorDescriptor) -> Result<Self, Q8BlockError> {
+        if desc.tensor_type != GgufTensorType::Q8_0 {
+            return Err(Q8BlockError::InvalidTensorType {
+                name: desc.name.clone(),
+            });
+        }
+        if desc.dimensions.len() != 2 || !desc.dimensions[0].is_multiple_of(Q8_BLOCK_SIZE as u64) {
+            return Err(Q8BlockError::InvalidTensorShape {
+                name: desc.name.clone(),
+                dimensions: desc.dimensions.clone(),
+            });
+        }
+
+        let columns = usize_from_u64(desc.dimensions[0], "Q8_0 columns")?;
+        let rows = usize_from_u64(desc.dimensions[1], "Q8_0 rows")?;
+        let blocks_per_row = columns / Q8_BLOCK_SIZE;
+        let expected_bytes = rows
+            .checked_mul(blocks_per_row)
+            .and_then(|blocks| blocks.checked_mul(Q8_0_BLOCK_BYTES))
+            .ok_or(Q8BlockError::OffsetOverflow)?;
+        if desc.n_bytes != expected_bytes as u64 {
+            return Err(Q8BlockError::InvalidTensorShape {
+                name: desc.name.clone(),
+                dimensions: desc.dimensions.clone(),
+            });
+        }
+
+        Ok(Self {
+            tensor_name: desc.name.clone(),
+            absolute_offset: desc.absolute_offset,
+            rows,
+            columns,
+            blocks_per_row,
+        })
+    }
+
+    pub fn read_row_blocks<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        row: usize,
+    ) -> Result<Vec<Q8_0Block>, Q8BlockError> {
+        if row >= self.rows {
+            return Err(Q8BlockError::RowOutOfBounds {
+                row,
+                rows: self.rows,
+            });
+        }
+
+        let byte_len = self
+            .blocks_per_row
+            .checked_mul(Q8_0_BLOCK_BYTES)
+            .ok_or(Q8BlockError::OffsetOverflow)?;
+        let row_offset = row
+            .checked_mul(byte_len)
+            .ok_or(Q8BlockError::OffsetOverflow)?;
+        let offset = self
+            .absolute_offset
+            .checked_add(row_offset as u64)
+            .ok_or(Q8BlockError::OffsetOverflow)?;
+        let mut bytes = vec![0; byte_len];
+        reader.seek(SeekFrom::Start(offset))?;
+        reader.read_exact(&mut bytes)?;
+        decode_q8_0_blocks(&bytes)
+    }
+
+    pub fn read_row_values<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        row: usize,
+    ) -> Result<Vec<i8>, Q8BlockError> {
+        let blocks = self.read_row_blocks(reader, row)?;
+        let mut values = Vec::with_capacity(self.columns);
+        for block in blocks {
+            values.extend_from_slice(block.values());
+        }
+        Ok(values)
+    }
+}
+
 pub fn dot_q8_0_blocks_scalar(lhs: &[Q8_0Block], rhs: &[Q8_0Block]) -> f32 {
     assert_eq!(lhs.len(), rhs.len());
     lhs.iter()
         .zip(rhs)
         .map(|(left, right)| left.scaled_dot_f32(right))
         .sum()
+}
+
+fn usize_from_u64(value: u64, name: &'static str) -> Result<usize, Q8BlockError> {
+    usize::try_from(value).map_err(|_| Q8BlockError::ValueTooLarge(name))
 }
 
 pub fn bench_dot_runs(iterations: usize, runs: usize) -> DotBenchmarkReport {
@@ -585,10 +703,14 @@ unsafe fn dot_i8_sdot_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use crate::gguf::{GgufTensorDescriptor, GgufTensorType};
+
     use super::{
-        Q8_0_BLOCK_BYTES, Q8_0Block, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector,
-        RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon, dot_i8_scalar,
-        dot_i8_sdot, dot_q8_0_blocks_scalar, f16_bits_to_f32,
+        Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel,
+        Q8DotKernelSelector, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
+        dot_i8_scalar, dot_i8_sdot, dot_q8_0_blocks_scalar, f16_bits_to_f32,
     };
 
     #[test]
@@ -709,6 +831,43 @@ mod tests {
         assert_eq!(lhs.dot_i32(&rhs), -192);
         assert_eq!(lhs.scaled_dot_f32(&rhs), -192.0);
         assert_eq!(dot_q8_0_blocks_scalar(&[lhs], &[rhs]), -192.0);
+    }
+
+    #[test]
+    fn q8_0_row_reader_reads_descriptor_owned_tensor_bytes() {
+        let desc = GgufTensorDescriptor {
+            name: "blk.0.attn_q.weight".to_owned(),
+            dimensions: vec![64, 2],
+            tensor_type: GgufTensorType::Q8_0,
+            relative_offset: 0,
+            absolute_offset: 16,
+            n_bytes: 4 * Q8_0_BLOCK_BYTES as u64,
+        };
+        let row_reader = Q8_0RowReader::from_tensor_descriptor(&desc).expect("Q8_0 descriptor");
+        let mut bytes = vec![0_u8; desc.absolute_offset as usize];
+        for block_idx in 0..4 {
+            bytes.extend_from_slice(&0x3c00_u16.to_le_bytes());
+            for value_idx in 0..Q8_BLOCK_SIZE {
+                bytes.push((block_idx as i8 * 10 + value_idx as i8 - 16).to_le_bytes()[0]);
+            }
+        }
+
+        let mut cursor = Cursor::new(bytes);
+        let row = row_reader
+            .read_row_values(&mut cursor, 1)
+            .expect("second row");
+        let rhs: Vec<i8> = (0..row.len())
+            .map(|idx| ((idx * 3) % 31) as i8 - 15)
+            .collect();
+        let scalar = dot_i8_scalar(&row, &rhs);
+
+        assert_eq!(row_reader.rows, 2);
+        assert_eq!(row_reader.columns, 64);
+        assert_eq!(row_reader.blocks_per_row, 2);
+        assert_eq!(row[0], 4);
+        assert_eq!(row[63], 45);
+        assert_eq!(dot_i8_neon(&row, &rhs), scalar);
+        assert_eq!(dot_i8_sdot(&row, &rhs), scalar);
     }
 
     #[test]
