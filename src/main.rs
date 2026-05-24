@@ -2,6 +2,9 @@ use std::{env, fs, path::Path, process::ExitCode};
 
 use nanocamelid::{gguf, inference, model, q8, tokenizer};
 
+const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
+const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
+
 fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
 
@@ -30,10 +33,10 @@ fn main() -> ExitCode {
                 print_help(HelpTopic::Inspect);
                 return ExitCode::SUCCESS;
             }
-            match args.get(1) {
-                Some(path) => inspect_gguf(Path::new(path)),
+            match resolve_model_path_arg(args.get(1), default_model_path_from_env()) {
+                Some(path) => inspect_gguf(Path::new(&path)),
                 None => {
-                    eprintln!("missing GGUF path");
+                    eprintln!("missing GGUF path; pass one or set {DEFAULT_MODEL_GGUF_ENV}");
                     print_help(HelpTopic::Inspect);
                     ExitCode::from(2)
                 }
@@ -45,20 +48,15 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
 
-            match (args.get(1), args.get(2)) {
-                (Some(model_path), Some(prompt)) => {
-                    let temp = args
-                        .get(3)
-                        .and_then(|v| v.parse::<f32>().ok())
-                        .unwrap_or(0.0);
-                    let max_tokens = args
-                        .get(4)
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(128);
-                    run_generation(Path::new(model_path), prompt, temp, max_tokens)
-                }
-                _ => {
-                    eprintln!("missing GGUF model path or prompt");
+            match parse_generate_args(&args[1..]) {
+                Ok(parsed) => run_generation(
+                    Path::new(&parsed.model_path),
+                    &parsed.prompt,
+                    parsed.temp,
+                    parsed.max_tokens,
+                ),
+                Err(err) => {
+                    eprintln!("{err}");
                     print_help(HelpTopic::Generate);
                     ExitCode::from(2)
                 }
@@ -226,9 +224,15 @@ fn print_inspect_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid inspect <model.gguf>");
+    println!("  nanocamelid inspect                        with NANOCAMELID_MODEL_GGUF set");
     println!();
     println!(
         "Inspect GGUF metadata, runtime-ready LLaMA config, tokenizer support, and the first tensor layouts."
+    );
+    println!();
+    println!("Env:");
+    println!(
+        "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect and generate"
     );
 }
 
@@ -237,6 +241,9 @@ fn print_generate_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid generate <model.gguf> <prompt> [temp] [max_tokens]");
+    println!(
+        "  nanocamelid generate <prompt> [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set"
+    );
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
@@ -245,6 +252,15 @@ fn print_generate_usage() {
     );
     println!("  [temp]                                    Sampling temperature, default 0.0");
     println!("  [max_tokens]                              Maximum tokens to generate, default 128");
+    println!();
+    println!("Env:");
+    println!(
+        "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect and generate"
+    );
+    println!();
+    println!(
+        "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
+    );
 }
 
 fn print_bench_usage() {
@@ -287,14 +303,25 @@ fn print_smoke_usage() {
     );
     println!();
     println!("Env:");
-    println!("  NANOCAMELID_SMOKE_GGUF                    Default GGUF path for smoke validation");
+    println!("  {SMOKE_MODEL_GGUF_ENV}                    Default GGUF path for smoke validation");
+    println!(
+        "  {DEFAULT_MODEL_GGUF_ENV}                    Shared default GGUF path for inspect/generate/smoke"
+    );
     println!(
         "  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot kernel selection"
     );
     println!();
     println!(
-        "When NANOCAMELID_SMOKE_GGUF is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
+        "When {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
     );
+}
+
+#[derive(Debug, PartialEq)]
+struct GenerateArgs {
+    model_path: String,
+    prompt: String,
+    temp: f32,
+    max_tokens: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -304,8 +331,54 @@ struct SmokeQ8ModelArgs {
     max_tokens: usize,
 }
 
+fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
+    parse_generate_args_with_env(args, default_model_path_from_env())
+}
+
+fn parse_generate_args_with_env(
+    args: &[String],
+    env_model_path: Option<String>,
+) -> Result<GenerateArgs, &'static str> {
+    let first_looks_like_model = args
+        .first()
+        .is_some_and(|value| looks_like_gguf_path(value));
+
+    let (model_path, prompt_idx) = match (args.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
+        (Some(path), None) => (path.clone(), 1),
+        (_, Some(path)) => (path, 0),
+        (None, None) => {
+            return Err("missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF");
+        }
+    };
+
+    let prompt = match args.get(prompt_idx) {
+        Some(prompt) => prompt.clone(),
+        None => {
+            return Err(
+                "missing prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first",
+            );
+        }
+    };
+    let temp = args
+        .get(prompt_idx + 1)
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let max_tokens = args
+        .get(prompt_idx + 2)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(128);
+
+    Ok(GenerateArgs {
+        model_path,
+        prompt,
+        temp,
+        max_tokens,
+    })
+}
+
 fn parse_smoke_q8_model_args(args: &[String]) -> Result<SmokeQ8ModelArgs, &'static str> {
-    parse_smoke_q8_model_args_with_env(args, env::var("NANOCAMELID_SMOKE_GGUF").ok())
+    parse_smoke_q8_model_args_with_env(args, smoke_model_path_from_env())
 }
 
 fn parse_smoke_q8_model_args_with_env(
@@ -321,7 +394,9 @@ fn parse_smoke_q8_model_args_with_env(
         (Some(path), None) => (path.clone(), 1),
         (_, Some(path)) => (path, 0),
         (None, None) => {
-            return Err("missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF");
+            return Err(
+                "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF or NANOCAMELID_MODEL_GGUF",
+            );
         }
     };
 
@@ -343,6 +418,20 @@ fn parse_smoke_q8_model_args_with_env(
 
 fn looks_like_gguf_path(value: &str) -> bool {
     value.ends_with(".gguf") || value.ends_with(".gguf/")
+}
+
+fn resolve_model_path_arg(path: Option<&String>, env_model_path: Option<String>) -> Option<String> {
+    path.cloned().or(env_model_path)
+}
+
+fn default_model_path_from_env() -> Option<String> {
+    env::var(DEFAULT_MODEL_GGUF_ENV).ok()
+}
+
+fn smoke_model_path_from_env() -> Option<String> {
+    env::var(SMOKE_MODEL_GGUF_ENV)
+        .ok()
+        .or_else(default_model_path_from_env)
 }
 
 fn print_probe() {
@@ -1176,8 +1265,8 @@ mod tests {
 
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
-        inspect_runtime_summary, is_help_flag, parse_smoke_q8_model_args_with_env,
-        validate_prompt_fits_context,
+        inspect_runtime_summary, is_help_flag, parse_generate_args_with_env,
+        parse_smoke_q8_model_args_with_env, resolve_model_path_arg, validate_prompt_fits_context,
     };
 
     #[test]
@@ -1280,6 +1369,75 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn resolve_model_path_arg_prefers_explicit_path() {
+        assert_eq!(
+            resolve_model_path_arg(
+                Some(&"/models/explicit.gguf".to_owned()),
+                Some("/models/env.gguf".to_owned())
+            ),
+            Some("/models/explicit.gguf".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_model_path_arg_falls_back_to_env_path() {
+        assert_eq!(
+            resolve_model_path_arg(None, Some("/models/env.gguf".to_owned())),
+            Some("/models/env.gguf".to_owned())
+        );
+    }
+
+    #[test]
+    fn generate_args_use_explicit_model_path_without_env() {
+        let parsed = parse_generate_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "Hello".to_owned(),
+                "0.5".to_owned(),
+                "32".to_owned(),
+            ],
+            None,
+        )
+        .expect("explicit model path should parse");
+
+        assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.temp, 0.5);
+        assert_eq!(parsed.max_tokens, 32);
+    }
+
+    #[test]
+    fn generate_args_fall_back_to_env_model_path() {
+        let parsed = parse_generate_args_with_env(
+            &[
+                "Explain grouped-query attention".to_owned(),
+                "16".to_owned(),
+            ],
+            Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
+        )
+        .expect("env-backed generate path should parse");
+
+        assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.prompt, "Explain grouped-query attention");
+        assert_eq!(parsed.temp, 16.0);
+        assert_eq!(parsed.max_tokens, 128);
+    }
+
+    #[test]
+    fn generate_args_require_prompt_even_with_env_model_path() {
+        let err = parse_generate_args_with_env(
+            &[],
+            Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
+        )
+        .expect_err("missing prompt should fail");
+
+        assert_eq!(
+            err,
+            "missing prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first"
+        );
+    }
+
+    #[test]
     fn smoke_q8_model_args_use_explicit_model_path_without_env() {
         let parsed = parse_smoke_q8_model_args_with_env(
             &[
@@ -1333,7 +1491,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(
             err,
-            "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF"
+            "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF or NANOCAMELID_MODEL_GGUF"
         );
     }
 
