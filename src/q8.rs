@@ -434,11 +434,10 @@ pub fn dot_q4_0_q8_0_with_selector(
     activation: &[i8; Q8_BLOCK_SIZE],
     kernel_selector: Q8DotKernelSelector,
 ) -> i32 {
-    let weight_values = weight.unpack_values();
     match kernel_selector.selected {
-        Q8DotKernel::Scalar => dot_i8_scalar(&weight_values, activation),
-        Q8DotKernel::Neon => dot_i8_neon_32_selected(&weight_values, activation),
-        Q8DotKernel::Sdot => dot_i8_sdot_32_selected(&weight_values, activation),
+        Q8DotKernel::Scalar => dot_q4_0_q8_0_scalar(weight, activation),
+        Q8DotKernel::Neon => dot_q4_0_q8_0_neon_32_selected(weight, activation),
+        Q8DotKernel::Sdot => dot_q4_0_q8_0_sdot_32_selected(weight, activation),
     }
 }
 
@@ -816,6 +815,32 @@ pub(crate) fn dot_i8_sdot_32_selected(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_B
     }
 }
 
+fn dot_q4_0_q8_0_neon_32_selected(weight: &Q4_0Block, activation: &[i8; Q8_BLOCK_SIZE]) -> i32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: callers use this only after selector/runtime feature validation.
+        unsafe { dot_q4_0_q8_0_neon_32_aarch64(weight, activation) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_q4_0_q8_0_scalar(weight, activation)
+    }
+}
+
+fn dot_q4_0_q8_0_sdot_32_selected(weight: &Q4_0Block, activation: &[i8; Q8_BLOCK_SIZE]) -> i32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: callers use this only after selector/runtime feature validation.
+        unsafe { dot_q4_0_q8_0_sdot_32_aarch64(weight, activation) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_q4_0_q8_0_scalar(weight, activation)
+    }
+}
+
 impl DotTimingSummary {
     pub fn total_elapsed(&self) -> Duration {
         self.elapsed_runs.iter().sum()
@@ -1017,6 +1042,88 @@ unsafe fn dot_i8_sdot_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_
             right0 = in(vreg) right0,
             left1 = in(vreg) left1,
             right1 = in(vreg) right1,
+            options(nostack, preserves_flags),
+        );
+    }
+
+    unsafe { vaddvq_s32(acc) }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn unpack_q4_0_lanes_aarch64(
+    weight: &Q4_0Block,
+) -> (std::arch::aarch64::int8x16_t, std::arch::aarch64::int8x16_t) {
+    use std::arch::aarch64::{
+        vandq_u8, vdupq_n_s8, vdupq_n_u8, vld1q_u8, vreinterpretq_s8_u8, vshrq_n_u8, vsubq_s8,
+    };
+
+    // SAFETY: Q4_0 blocks hold exactly 16 packed bytes.
+    let packed = unsafe { vld1q_u8(weight.packed_values().as_ptr()) };
+    let mask = unsafe { vdupq_n_u8(0x0f) };
+    let offset = unsafe { vdupq_n_s8(8) };
+    let low_unsigned = unsafe { vandq_u8(packed, mask) };
+    let high_unsigned = unsafe { vshrq_n_u8::<4>(packed) };
+    let low = unsafe { vsubq_s8(vreinterpretq_s8_u8(low_unsigned), offset) };
+    let high = unsafe { vsubq_s8(vreinterpretq_s8_u8(high_unsigned), offset) };
+    (low, high)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot_q4_0_q8_0_neon_32_aarch64(
+    weight: &Q4_0Block,
+    activation: &[i8; Q8_BLOCK_SIZE],
+) -> i32 {
+    use std::arch::aarch64::{
+        vaddq_s32, vaddvq_s32, vget_high_s8, vget_low_s8, vld1q_s8, vmull_s8, vpaddlq_s16,
+    };
+
+    let (weight_low, weight_high) = unsafe { unpack_q4_0_lanes_aarch64(weight) };
+    // SAFETY: Q8 activation blocks are exactly 32 i8 lanes.
+    let activation_low = unsafe { vld1q_s8(activation.as_ptr()) };
+    let activation_high = unsafe { vld1q_s8(activation.as_ptr().add(16)) };
+
+    let low_products0 = unsafe { vmull_s8(vget_low_s8(weight_low), vget_low_s8(activation_low)) };
+    let high_products0 =
+        unsafe { vmull_s8(vget_high_s8(weight_low), vget_high_s8(activation_low)) };
+    let low_products1 = unsafe { vmull_s8(vget_low_s8(weight_high), vget_low_s8(activation_high)) };
+    let high_products1 =
+        unsafe { vmull_s8(vget_high_s8(weight_high), vget_high_s8(activation_high)) };
+
+    let acc0 = unsafe { vaddq_s32(vpaddlq_s16(low_products0), vpaddlq_s16(high_products0)) };
+    let acc1 = unsafe { vaddq_s32(vpaddlq_s16(low_products1), vpaddlq_s16(high_products1)) };
+    let acc = unsafe { vaddq_s32(acc0, acc1) };
+    unsafe { vaddvq_s32(acc) }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot_q4_0_q8_0_sdot_32_aarch64(
+    weight: &Q4_0Block,
+    activation: &[i8; Q8_BLOCK_SIZE],
+) -> i32 {
+    use std::arch::{
+        aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8},
+        asm,
+    };
+
+    let mut acc = unsafe { vdupq_n_s32(0) };
+    let (weight_low, weight_high) = unsafe { unpack_q4_0_lanes_aarch64(weight) };
+    // SAFETY: Q8 activation blocks are exactly 32 i8 lanes.
+    let activation_low = unsafe { vld1q_s8(activation.as_ptr()) };
+    let activation_high = unsafe { vld1q_s8(activation.as_ptr().add(16)) };
+
+    unsafe {
+        asm!(
+            ".arch_extension dotprod",
+            "sdot {acc:v}.4s, {weight_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc:v}.4s, {weight_high:v}.16b, {activation_high:v}.16b",
+            acc = inout(vreg) acc,
+            weight_low = in(vreg) weight_low,
+            activation_low = in(vreg) activation_low,
+            weight_high = in(vreg) weight_high,
+            activation_high = in(vreg) activation_high,
             options(nostack, preserves_flags),
         );
     }
