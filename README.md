@@ -49,6 +49,19 @@ session token-in/token-out counters.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
 
+On a prepared Pi workspace with the Llama 3.2 1B Instruct Q8_0 GGUF at the
+default model path, start the interactive 1B chat directly:
+
+```bash
+./scripts/pi/chat-1b.sh
+```
+
+Optional arguments set temperature and maximum assistant output tokens:
+
+```bash
+./scripts/pi/chat-1b.sh 0.0 64
+```
+
 ## Benchmarks
 
 Run the Q8 dot benchmark on the target Pi:
