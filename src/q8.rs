@@ -9,6 +9,8 @@ use crate::gguf::{GgufTensorDescriptor, GgufTensorType};
 
 pub const DEFAULT_DOT_BENCH_ITERATIONS: usize = 2_000;
 pub const DEFAULT_DOT_BENCH_RUNS: usize = 5;
+pub const DEFAULT_Q4_LAYOUT_BENCH_ROWS: usize = 32_768;
+pub const DEFAULT_Q4_LAYOUT_BENCH_COLS: usize = 3_584;
 pub const DOT_KERNEL_ENV: &str = "NANOCAMELID_Q8_DOT_KERNEL";
 pub const SDOT_CANDIDATE_ENV: &str = "NANOCAMELID_Q8_DOT_SDOT";
 pub const Q8_BLOCK_SIZE: usize = 32;
@@ -57,6 +59,17 @@ pub struct TimedDot {
 pub struct DotTimingSummary {
     pub checksum: i64,
     pub elapsed_runs: Vec<Duration>,
+}
+
+#[derive(Debug)]
+pub struct Q4LayoutBenchmarkReport {
+    pub rows: usize,
+    pub cols: usize,
+    pub runs: usize,
+    pub blocks_per_row: usize,
+    pub dotprod_feature_detected: bool,
+    pub row_major: DotTimingSummary,
+    pub swizzled_1x4: DotTimingSummary,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -226,6 +239,20 @@ impl DotBenchmarkReport {
         self.neon_median_ns_per_block()
             .zip(self.sdot_median_ns_per_block())
             .map(|(neon_ns, sdot_ns)| neon_ns / sdot_ns)
+    }
+}
+
+impl Q4LayoutBenchmarkReport {
+    pub fn row_major_total_ms(&self) -> f64 {
+        self.row_major.total_elapsed().as_secs_f64() * 1000.0
+    }
+
+    pub fn swizzled_total_ms(&self) -> f64 {
+        self.swizzled_1x4.total_elapsed().as_secs_f64() * 1000.0
+    }
+
+    pub fn swizzled_speedup(&self) -> f64 {
+        self.row_major_total_ms() / self.swizzled_total_ms()
     }
 }
 
@@ -678,6 +705,224 @@ pub fn bench_dot_runs(iterations: usize, runs: usize) -> DotBenchmarkReport {
         neon,
         sdot,
     }
+}
+
+pub fn bench_q4_1x4_layout_runs(
+    rows: usize,
+    cols: usize,
+    runs: usize,
+) -> Result<Q4LayoutBenchmarkReport, String> {
+    if rows == 0 || !rows.is_multiple_of(4) {
+        return Err("rows must be a non-zero multiple of 4".to_owned());
+    }
+    if cols == 0 || !cols.is_multiple_of(Q8_BLOCK_SIZE) {
+        return Err("cols must be a non-zero multiple of 32".to_owned());
+    }
+    if runs == 0 {
+        return Err("runs must be greater than zero".to_owned());
+    }
+    #[cfg(target_arch = "aarch64")]
+    if !dotprod_available() {
+        return Err("q4 layout benchmark requires dotprod support on aarch64".to_owned());
+    }
+
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    let weights = synthetic_q4_blocks(rows, blocks_per_row);
+    let swizzled = swizzle_q4_0_1x4(&weights, rows, blocks_per_row);
+    let activation: Vec<i8> = (0..cols).map(|idx| ((idx * 17) % 127) as i8 - 63).collect();
+    let x_scales: Vec<f32> = (0..blocks_per_row)
+        .map(|idx| 0.015625 * (1 + (idx % 7)) as f32)
+        .collect();
+    let dotprod_feature_detected = dotprod_available();
+
+    let row_major = time_layout_runs(runs, || {
+        bench_q4_1x4_row_major(
+            black_box(&weights),
+            black_box(&activation),
+            black_box(&x_scales),
+            rows,
+            blocks_per_row,
+        )
+    });
+    let swizzled_1x4 = time_layout_runs(runs, || {
+        bench_q4_1x4_swizzled(
+            black_box(&swizzled),
+            black_box(&activation),
+            black_box(&x_scales),
+            rows,
+            blocks_per_row,
+        )
+    });
+
+    Ok(Q4LayoutBenchmarkReport {
+        rows,
+        cols,
+        runs,
+        blocks_per_row,
+        dotprod_feature_detected,
+        row_major,
+        swizzled_1x4,
+    })
+}
+
+fn synthetic_q4_blocks(rows: usize, blocks_per_row: usize) -> Vec<Q4_0Block> {
+    let mut weights = Vec::with_capacity(rows * blocks_per_row);
+    for row in 0..rows {
+        for block in 0..blocks_per_row {
+            let scale_bits = 0x3800 + ((row + block) % 8) as u16;
+            let values = core::array::from_fn(|idx| {
+                let low = ((row + block + idx) % 16) as u8;
+                let high = ((row.wrapping_mul(3) + block + idx * 5) % 16) as u8;
+                low | (high << 4)
+            });
+            weights.push(Q4_0Block::from_parts(scale_bits, values));
+        }
+    }
+    weights
+}
+
+fn swizzle_q4_0_1x4(row_major: &[Q4_0Block], rows: usize, blocks_per_row: usize) -> Vec<Q4_0Block> {
+    let mut swizzled = Vec::with_capacity(row_major.len());
+    for row_base in (0..rows).step_by(4) {
+        for block in 0..blocks_per_row {
+            swizzled.push(row_major[row_base * blocks_per_row + block]);
+            swizzled.push(row_major[(row_base + 1) * blocks_per_row + block]);
+            swizzled.push(row_major[(row_base + 2) * blocks_per_row + block]);
+            swizzled.push(row_major[(row_base + 3) * blocks_per_row + block]);
+        }
+    }
+    swizzled
+}
+
+fn time_layout_runs<F>(runs: usize, mut run_once: F) -> DotTimingSummary
+where
+    F: FnMut() -> i64,
+{
+    let mut elapsed_runs = Vec::with_capacity(runs);
+    let mut checksum = 0_i64;
+    for _ in 0..runs {
+        let start = Instant::now();
+        checksum = run_once();
+        elapsed_runs.push(start.elapsed());
+    }
+    DotTimingSummary {
+        checksum,
+        elapsed_runs,
+    }
+}
+
+fn bench_q4_1x4_row_major(
+    weights: &[Q4_0Block],
+    activation: &[i8],
+    x_scales: &[f32],
+    rows: usize,
+    blocks_per_row: usize,
+) -> i64 {
+    let mut checksum = 0_i64;
+    for row_base in (0..rows).step_by(4) {
+        let sums =
+            bench_q4_1x4_row_major_chunk(weights, activation, x_scales, row_base, blocks_per_row);
+        checksum = checksum.wrapping_add(layout_checksum(sums));
+    }
+    black_box(checksum)
+}
+
+fn bench_q4_1x4_swizzled(
+    weights: &[Q4_0Block],
+    activation: &[i8],
+    x_scales: &[f32],
+    rows: usize,
+    blocks_per_row: usize,
+) -> i64 {
+    let mut checksum = 0_i64;
+    for chunk_idx in 0..(rows / 4) {
+        let sums =
+            bench_q4_1x4_swizzled_chunk(weights, activation, x_scales, chunk_idx, blocks_per_row);
+        checksum = checksum.wrapping_add(layout_checksum(sums));
+    }
+    black_box(checksum)
+}
+
+fn bench_q4_1x4_row_major_chunk(
+    weights: &[Q4_0Block],
+    activation: &[i8],
+    x_scales: &[f32],
+    row_base: usize,
+    blocks_per_row: usize,
+) -> [f32; 4] {
+    let mut sums = [0.0_f32; 4];
+    for (block, x_scale) in x_scales.iter().copied().enumerate().take(blocks_per_row) {
+        let activation_block = activation_block(activation, block);
+        let weight_base = row_base * blocks_per_row + block;
+        let row0 = &weights[weight_base];
+        let row1 = &weights[weight_base + blocks_per_row];
+        let row2 = &weights[weight_base + 2 * blocks_per_row];
+        let row3 = &weights[weight_base + 3 * blocks_per_row];
+        let dots = dot_q4_0_q8_0_1x4_for_bench([row0, row1, row2, row3], activation_block);
+        sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
+        sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
+        sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
+        sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+    }
+    sums
+}
+
+fn bench_q4_1x4_swizzled_chunk(
+    weights: &[Q4_0Block],
+    activation: &[i8],
+    x_scales: &[f32],
+    chunk_idx: usize,
+    blocks_per_row: usize,
+) -> [f32; 4] {
+    let mut sums = [0.0_f32; 4];
+    let chunk_base = chunk_idx * blocks_per_row * 4;
+    for (block, x_scale) in x_scales.iter().copied().enumerate().take(blocks_per_row) {
+        let activation_block = activation_block(activation, block);
+        let weight_base = chunk_base + block * 4;
+        let row0 = &weights[weight_base];
+        let row1 = &weights[weight_base + 1];
+        let row2 = &weights[weight_base + 2];
+        let row3 = &weights[weight_base + 3];
+        let dots = dot_q4_0_q8_0_1x4_for_bench([row0, row1, row2, row3], activation_block);
+        sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
+        sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
+        sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
+        sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+    }
+    sums
+}
+
+fn activation_block(activation: &[i8], block: usize) -> &[i8; Q8_BLOCK_SIZE] {
+    debug_assert!((block + 1) * Q8_BLOCK_SIZE <= activation.len());
+    // SAFETY: callers only request complete Q8 activation blocks.
+    unsafe { &*(activation.as_ptr().add(block * Q8_BLOCK_SIZE) as *const [i8; Q8_BLOCK_SIZE]) }
+}
+
+fn dot_q4_0_q8_0_1x4_for_bench(
+    weights: [&Q4_0Block; 4],
+    activation: &[i8; Q8_BLOCK_SIZE],
+) -> [i32; 4] {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: bench_q4_1x4_layout_runs rejects aarch64 hosts without dotprod.
+        unsafe { dot_q4_0_q8_0_1x4_sdot_aarch64(weights, activation) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        [
+            dot_q4_0_q8_0_scalar(weights[0], activation),
+            dot_q4_0_q8_0_scalar(weights[1], activation),
+            dot_q4_0_q8_0_scalar(weights[2], activation),
+            dot_q4_0_q8_0_scalar(weights[3], activation),
+        ]
+    }
+}
+
+fn layout_checksum(values: [f32; 4]) -> i64 {
+    values
+        .into_iter()
+        .fold(0_i64, |acc, value| acc.wrapping_add(value.to_bits() as i64))
 }
 
 impl Q8DotKernel {

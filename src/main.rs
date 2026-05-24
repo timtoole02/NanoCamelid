@@ -128,6 +128,21 @@ fn main() -> ExitCode {
                         .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
                     bench_q8_dot(iterations, runs)
                 }
+                Some("q4-layout") => {
+                    let rows = args
+                        .get(2)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(q8::DEFAULT_Q4_LAYOUT_BENCH_ROWS);
+                    let cols = args
+                        .get(3)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(q8::DEFAULT_Q4_LAYOUT_BENCH_COLS);
+                    let runs = args
+                        .get(4)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
+                    bench_q4_layout(rows, cols, runs)
+                }
                 Some(other) => {
                     eprintln!("unknown benchmark: {other}");
                     print_help(HelpTopic::Bench);
@@ -413,11 +428,20 @@ fn print_bench_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid bench q8-dot [iterations] [runs]");
+    println!("  nanocamelid bench q4-layout [rows] [cols] [runs]");
     println!();
     println!("Args:");
     println!(
-        "  [iterations]                              Blocks per run, default {}",
+        "  q8-dot [iterations]                      Blocks per run, default {}",
         q8::DEFAULT_DOT_BENCH_ITERATIONS
+    );
+    println!(
+        "  q4-layout [rows]                         Synthetic matrix rows, default {}",
+        q8::DEFAULT_Q4_LAYOUT_BENCH_ROWS
+    );
+    println!(
+        "  q4-layout [cols]                         Synthetic matrix cols, default {}",
+        q8::DEFAULT_Q4_LAYOUT_BENCH_COLS
     );
     println!(
         "  [runs]                                    Repeated timing samples, default {}",
@@ -787,6 +811,51 @@ fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
     }
 
     println!("json: {}", q8_dot_json(&report));
+
+    ExitCode::SUCCESS
+}
+
+fn bench_q4_layout(rows: usize, cols: usize, runs: usize) -> ExitCode {
+    let report = match q8::bench_q4_1x4_layout_runs(rows, cols, runs) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("Q4 layout benchmark failed: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    println!("NanoCamelid Q4 1x4 layout benchmark");
+    println!("rows: {}", report.rows);
+    println!("cols: {}", report.cols);
+    println!("runs: {}", report.runs);
+    println!("blocks_per_row: {}", report.blocks_per_row);
+    println!(
+        "dotprod_feature_detected: {}",
+        report.dotprod_feature_detected
+    );
+    println!("row_major_checksum: {}", report.row_major.checksum);
+    println!("row_major_total_ms: {:.3}", report.row_major_total_ms());
+    println!("swizzled_checksum: {}", report.swizzled_1x4.checksum);
+    println!("swizzled_total_ms: {:.3}", report.swizzled_total_ms());
+    println!("swizzled_speedup: {:.3}x", report.swizzled_speedup());
+    println!(
+        "json: {{\"benchmark\":\"q4-layout\",\"rows\":{},\"cols\":{},\"runs\":{},\"blocks_per_row\":{},\"dotprod_feature_detected\":{},\"row_major\":{{\"checksum\":{},\"run_ms\":{}}},\"swizzled_1x4\":{{\"checksum\":{},\"run_ms\":{}}},\"swizzled_speedup\":{:.6}}}",
+        report.rows,
+        report.cols,
+        report.runs,
+        report.blocks_per_row,
+        report.dotprod_feature_detected,
+        report.row_major.checksum,
+        duration_ms_json(&report.row_major.elapsed_runs),
+        report.swizzled_1x4.checksum,
+        duration_ms_json(&report.swizzled_1x4.elapsed_runs),
+        report.swizzled_speedup()
+    );
+
+    if report.row_major.checksum != report.swizzled_1x4.checksum {
+        eprintln!("swizzled layout checksum mismatch");
+        return ExitCode::FAILURE;
+    }
 
     ExitCode::SUCCESS
 }

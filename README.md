@@ -161,6 +161,7 @@ Run the Q8 dot benchmark on the target Pi:
 
 ```bash
 cargo run --release -- bench q8-dot 1000 3
+cargo run --release -- bench q4-layout 32768 3584 3
 ```
 
 To test the default-off SDOT candidate when the CPU supports it:
@@ -174,6 +175,13 @@ cargo run --release -- bench q8-dot 1000 3
 The benchmark prints repeated scalar/NEON timing and a JSON summary line. Treat
 benchmark output as specific to the exact Pi, model, build, and configuration
 where it was captured.
+
+`bench q4-layout` compares the current row-major Q4_0 1x4 access pattern with a
+synthetic swizzled 1x4 layout that stores four rows' matching blocks
+contiguously. It is a layout diagnostic, not the production model loader path
+yet. On Pi 2, a Qwen2.5-Coder output-projection-sized synthetic matrix
+(`152064 x 3584`, 2 runs) produced matching checksums and measured about
+`1.28x` faster for the swizzled layout.
 
 For GEMV scheduling experiments, `NANOCAMELID_MATMUL_MIN_ROWS` controls the
 minimum output row count required before Q8_0, Q4_0, and Q6_K matmuls enter
@@ -205,7 +213,9 @@ An experimental Q4_0 x Q8_0 1x4 SDOT row-blocking path is available with
 inside the block loop when enabled, but it remains intentionally default-off:
 the Pi 2 Qwen2.5-Coder-7B Q4_0 short-chat comparison preserved parity and still
 measured slower than the normal SDOT path, about `1.76 tok/sec` versus
-`1.97 tok/sec`.
+`1.97 tok/sec`. A synthetic layout benchmark supports the likely cause:
+row-major 1x4 loads stride across rows, while a swizzled four-row layout streams
+the same blocks contiguously and measured about `1.28x` faster on the Pi 2.
 
 ## Tested Models
 
