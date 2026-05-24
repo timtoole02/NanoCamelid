@@ -214,8 +214,11 @@ pub fn matmul_q8_0(
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
                     let w_block = &w_row[b];
-                    let x_block_vals = &x_i8[b * 32..(b + 1) * 32];
-                    let dot_val = crate::q8::dot_i8_neon_selected(w_block.values(), x_block_vals);
+                    let x_block_vals = x_i8[b * 32..(b + 1) * 32]
+                        .try_into()
+                        .expect("Q8 activation blocks are always 32 lanes");
+                    let dot_val =
+                        crate::q8::dot_i8_neon_32_selected(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
                 *out_val = sum;
@@ -227,8 +230,11 @@ pub fn matmul_q8_0(
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
                     let w_block = &w_row[b];
-                    let x_block_vals = &x_i8[b * 32..(b + 1) * 32];
-                    let dot_val = crate::q8::dot_i8_sdot_selected(w_block.values(), x_block_vals);
+                    let x_block_vals = x_i8[b * 32..(b + 1) * 32]
+                        .try_into()
+                        .expect("Q8 activation blocks are always 32 lanes");
+                    let dot_val =
+                        crate::q8::dot_i8_sdot_32_selected(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
                 *out_val = sum;
@@ -650,7 +656,6 @@ mod tests {
             q8_block(0x4400, 5),
             q8_block(0x4600, 6),
         ];
-
         let mut scalar = vec![0.0; rows];
         matmul_q8_0(
             &mut scalar,

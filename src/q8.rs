@@ -615,6 +615,32 @@ pub(crate) fn dot_i8_sdot_selected(lhs: &[i8], rhs: &[i8]) -> i32 {
     }
 }
 
+pub(crate) fn dot_i8_neon_32_selected(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_SIZE]) -> i32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: callers use this only after selector/runtime feature validation.
+        unsafe { dot_i8_neon_32_aarch64(lhs, rhs) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_i8_scalar(lhs, rhs)
+    }
+}
+
+pub(crate) fn dot_i8_sdot_32_selected(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_SIZE]) -> i32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: callers use this only after selector/runtime feature validation.
+        unsafe { dot_i8_sdot_32_aarch64(lhs, rhs) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_i8_scalar(lhs, rhs)
+    }
+}
+
 impl DotTimingSummary {
     pub fn total_elapsed(&self) -> Duration {
         self.elapsed_runs.iter().sum()
@@ -767,6 +793,62 @@ unsafe fn dot_i8_sdot_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
     sum
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot_i8_neon_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_SIZE]) -> i32 {
+    use std::arch::aarch64::{
+        vaddq_s32, vaddvq_s32, vget_high_s8, vget_low_s8, vld1q_s8, vmull_s8, vpaddlq_s16,
+    };
+
+    // SAFETY: Q8_0 blocks are exactly 32 i8 lanes, so two 16-byte vector loads cover the block.
+    let left0 = unsafe { vld1q_s8(lhs.as_ptr()) };
+    let right0 = unsafe { vld1q_s8(rhs.as_ptr()) };
+    let left1 = unsafe { vld1q_s8(lhs.as_ptr().add(16)) };
+    let right1 = unsafe { vld1q_s8(rhs.as_ptr().add(16)) };
+
+    let low_products0 = unsafe { vmull_s8(vget_low_s8(left0), vget_low_s8(right0)) };
+    let high_products0 = unsafe { vmull_s8(vget_high_s8(left0), vget_high_s8(right0)) };
+    let low_products1 = unsafe { vmull_s8(vget_low_s8(left1), vget_low_s8(right1)) };
+    let high_products1 = unsafe { vmull_s8(vget_high_s8(left1), vget_high_s8(right1)) };
+
+    let acc0 = unsafe { vaddq_s32(vpaddlq_s16(low_products0), vpaddlq_s16(high_products0)) };
+    let acc1 = unsafe { vaddq_s32(vpaddlq_s16(low_products1), vpaddlq_s16(high_products1)) };
+    let acc = unsafe { vaddq_s32(acc0, acc1) };
+    unsafe { vaddvq_s32(acc) }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot_i8_sdot_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_SIZE]) -> i32 {
+    use std::arch::{
+        aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8},
+        asm,
+    };
+
+    let mut acc = unsafe { vdupq_n_s32(0) };
+    // SAFETY: Q8_0 blocks are exactly 32 i8 lanes, so two 16-byte vector loads cover the block.
+    let left0 = unsafe { vld1q_s8(lhs.as_ptr()) };
+    let right0 = unsafe { vld1q_s8(rhs.as_ptr()) };
+    let left1 = unsafe { vld1q_s8(lhs.as_ptr().add(16)) };
+    let right1 = unsafe { vld1q_s8(rhs.as_ptr().add(16)) };
+
+    unsafe {
+        asm!(
+            ".arch_extension dotprod",
+            "sdot {acc:v}.4s, {left0:v}.16b, {right0:v}.16b",
+            "sdot {acc:v}.4s, {left1:v}.16b, {right1:v}.16b",
+            acc = inout(vreg) acc,
+            left0 = in(vreg) left0,
+            right0 = in(vreg) right0,
+            left1 = in(vreg) left1,
+            right1 = in(vreg) right1,
+            options(nostack, preserves_flags),
+        );
+    }
+
+    unsafe { vaddvq_s32(acc) }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -776,7 +858,8 @@ mod tests {
     use super::{
         Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel,
         Q8DotKernelSelector, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
-        dot_i8_scalar, dot_i8_sdot, dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
+        dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
+        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
     };
 
     #[test]
@@ -801,6 +884,16 @@ mod tests {
         let rhs: Vec<i8> = (0..259).map(|idx| ((idx * 13) % 127) as i8 - 63).collect();
 
         assert_eq!(dot_i8_sdot(&lhs, &rhs), dot_i8_scalar(&lhs, &rhs));
+    }
+
+    #[test]
+    fn fixed_q8_block_simd_paths_match_scalar() {
+        let lhs = std::array::from_fn(|idx| ((idx * 7) % 127) as i8 - 63);
+        let rhs = std::array::from_fn(|idx| ((idx * 11) % 127) as i8 - 63);
+        let scalar = dot_i8_scalar(&lhs, &rhs);
+
+        assert_eq!(dot_i8_neon_32_selected(&lhs, &rhs), scalar);
+        assert_eq!(dot_i8_sdot_32_selected(&lhs, &rhs), scalar);
     }
 
     #[test]
