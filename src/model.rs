@@ -1,10 +1,11 @@
-use std::{env, fs::File, os::unix::fs::FileExt, path::Path, sync::OnceLock};
+use std::{env, fs::File, path::Path, sync::OnceLock};
 
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{
     Q4_0Block, Q6KBlock, Q8_0Block, QK_K_BLOCK_SIZE, decode_q4_0_blocks, decode_q6_k_blocks,
     decode_q8_0_blocks, swizzle_q4_0_1x4,
 };
+use memmap2::Mmap;
 
 pub const Q4_SWIZZLE_1X4_ENV: &str = "NANOCAMELID_Q4_SWIZZLE_1X4";
 
@@ -198,12 +199,13 @@ impl LlamaWeights {
     pub fn load(path: &Path, config: &LlamaModelConfig, gguf: &GgufFile) -> Result<Self, String> {
         validate_model_tensors(gguf, config)?;
         let file = File::open(path).map_err(|e| e.to_string())?;
+        let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
 
-        let token_embeddings = load_f32_or_f16(&file, gguf, "token_embd.weight")?;
-        let output_norm = load_f32_or_f16(&file, gguf, "output_norm.weight")?;
+        let token_embeddings = load_f32_or_f16(&mmap, gguf, "token_embd.weight")?;
+        let output_norm = load_f32_or_f16(&mmap, gguf, "output_norm.weight")?;
 
         let output_projection = if gguf.tensors.iter().any(|t| t.name == "output.weight") {
-            Some(load_quantized_matrix(&file, gguf, "output.weight")?)
+            Some(load_quantized_matrix(&mmap, gguf, "output.weight")?)
         } else {
             None
         };
@@ -211,19 +213,19 @@ impl LlamaWeights {
         let mut layers = Vec::with_capacity(config.block_count);
         for i in 0..config.block_count {
             let attention_norm =
-                load_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_norm.weight"))?;
-            let wq = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_q.weight"))?;
-            let wk = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_k.weight"))?;
-            let wav = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_v.weight"))?;
-            let wq_bias = load_optional_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_q.bias"))?;
-            let wk_bias = load_optional_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_k.bias"))?;
-            let wav_bias = load_optional_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_v.bias"))?;
-            let wo = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_output.weight"))?;
+                load_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_norm.weight"))?;
+            let wq = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_q.weight"))?;
+            let wk = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_k.weight"))?;
+            let wav = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_v.weight"))?;
+            let wq_bias = load_optional_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_q.bias"))?;
+            let wk_bias = load_optional_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_k.bias"))?;
+            let wav_bias = load_optional_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_v.bias"))?;
+            let wo = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_output.weight"))?;
 
-            let ffn_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
-            let w1 = load_quantized_matrix(&file, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
-            let w3 = load_quantized_matrix(&file, gguf, &format!("blk.{i}.ffn_up.weight"))?;
-            let w2 = load_quantized_matrix(&file, gguf, &format!("blk.{i}.ffn_down.weight"))?;
+            let ffn_norm = load_f32_or_f16(&mmap, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
+            let w1 = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
+            let w3 = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?;
+            let w2 = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.ffn_down.weight"))?;
 
             layers.push(LlamaLayerWeights {
                 attention_norm,
@@ -372,11 +374,36 @@ fn load_tensor_desc<'a>(
         .ok_or_else(|| format!("tensor {name} not found in GGUF"))
 }
 
-fn load_f32_or_f16(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<f32>, String> {
+fn tensor_bytes<'a>(mmap: &'a Mmap, desc: &GgufTensorDescriptor) -> Result<&'a [u8], String> {
+    let start = usize::try_from(desc.absolute_offset).map_err(|_| {
+        format!(
+            "tensor {} offset {} does not fit in usize",
+            desc.name, desc.absolute_offset
+        )
+    })?;
+    let len = usize::try_from(desc.n_bytes).map_err(|_| {
+        format!(
+            "tensor {} byte length {} does not fit in usize",
+            desc.name, desc.n_bytes
+        )
+    })?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| format!("tensor {} byte range overflows usize", desc.name))?;
+    mmap.get(start..end).ok_or_else(|| {
+        format!(
+            "tensor {} byte range {}..{} exceeds mapped GGUF size {}",
+            desc.name,
+            start,
+            end,
+            mmap.len()
+        )
+    })
+}
+
+fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>, String> {
     let desc = load_tensor_desc(gguf, name)?;
-    let mut bytes = vec![0; desc.n_bytes as usize];
-    file.read_exact_at(&mut bytes, desc.absolute_offset)
-        .map_err(|e| e.to_string())?;
+    let bytes = tensor_bytes(mmap, desc)?;
 
     match desc.tensor_type {
         GgufTensorType::F32 => {
@@ -433,26 +460,24 @@ fn load_f32_or_f16(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
 }
 
 fn load_optional_f32_or_f16(
-    file: &File,
+    mmap: &Mmap,
     gguf: &GgufFile,
     name: &str,
 ) -> Result<Option<Vec<f32>>, String> {
     if gguf.tensors.iter().any(|tensor| tensor.name == name) {
-        load_f32_or_f16(file, gguf, name).map(Some)
+        load_f32_or_f16(mmap, gguf, name).map(Some)
     } else {
         Ok(None)
     }
 }
 
 fn load_quantized_matrix(
-    file: &File,
+    mmap: &Mmap,
     gguf: &GgufFile,
     name: &str,
 ) -> Result<QuantizedMatrix, String> {
     let desc = load_tensor_desc(gguf, name)?;
-    let mut bytes = vec![0; desc.n_bytes as usize];
-    file.read_exact_at(&mut bytes, desc.absolute_offset)
-        .map_err(|e| e.to_string())?;
+    let bytes = tensor_bytes(mmap, desc)?;
 
     match desc.tensor_type {
         GgufTensorType::Q8_0 => decode_q8_0_blocks(&bytes)
