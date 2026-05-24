@@ -13,6 +13,7 @@ const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
 const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
 const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
+const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
 const DEFAULT_RAYON_THREADS: usize = 4;
 const DEFAULT_Q4_PREFILL_PROMPT_LEN: usize = 128;
 const DEFAULT_Q4_PREFILL_BATCH: usize = 16;
@@ -1451,8 +1452,9 @@ where
     F: FnOnce(&tokenizer::Tokenizer) -> Result<Q8SmokePromptPlan, String>,
 {
     let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
-    let config = model::LlamaModelConfig::from_gguf(&gguf)
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf)
         .map_err(|err| format!("failed to parse config: {err}"))?;
+    apply_context_limit(&mut config)?;
     let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
         .map_err(|err| format!("failed to load tokenizer: {err}"))?;
     let weights = model::LlamaWeights::load(model_path, &config, &gguf)
@@ -1673,6 +1675,23 @@ fn validate_generation_budget(
     Ok(())
 }
 
+fn apply_context_limit(config: &mut model::LlamaModelConfig) -> Result<(), String> {
+    let Some(limit) = env::var(CONTEXT_LIMIT_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let limit = limit
+        .parse::<usize>()
+        .map_err(|err| format!("{CONTEXT_LIMIT_ENV} must be a positive integer: {err}"))?;
+    if limit == 0 {
+        return Err(format!("{CONTEXT_LIMIT_ENV} must be greater than zero"));
+    }
+    config.context_length = config.context_length.min(limit);
+    Ok(())
+}
+
 fn cpu_model(cpuinfo: &str) -> Option<&str> {
     cpuinfo.lines().find_map(|line| {
         value_after_colon(line, "Hardware").or_else(|| value_after_colon(line, "model name"))
@@ -1799,8 +1818,9 @@ fn load_tui_model(
     println!("Loading GGUF file: {}...", model_path.display());
     let gguf = gguf::read_file(model_path).map_err(|e| format!("failed to read GGUF: {e}"))?;
 
-    let config = model::LlamaModelConfig::from_gguf(&gguf)
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf)
         .map_err(|e| format!("failed to parse config: {e}"))?;
+    apply_context_limit(&mut config)?;
     let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
         .map_err(|e| format!("failed to load tokenizer: {e}"))?;
 
@@ -2234,13 +2254,17 @@ where
         }
     };
 
-    let config = match model::LlamaModelConfig::from_gguf(&gguf) {
+    let mut config = match model::LlamaModelConfig::from_gguf(&gguf) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to parse config: {e}");
             return ExitCode::FAILURE;
         }
     };
+    if let Err(err) = apply_context_limit(&mut config) {
+        eprintln!("Failed to apply context limit: {err}");
+        return ExitCode::FAILURE;
+    }
     println!("Architecture: {}", config.architecture);
     println!("Vocab size: {}", config.vocab_size);
     println!("Layers: {}", config.block_count);
