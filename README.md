@@ -305,19 +305,29 @@ Build and test remotely:
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
-To include a model-backed smoke test, point the script at a GGUF path that
-already exists on the Pi:
+On a prepared Pi workspace, `remote_build.sh` now reuses the same default 1B
+model selection as `scripts/pi/smoke-1b.sh`: it prefers the Pi-local
+`Llama-3.2-1B-Instruct-Q4_0.gguf`, falls back to `...Q8_0.gguf`, and runs the
+real instruct/chat smoke by default. Disable that model-backed gate explicitly
+with:
+
+```bash
+NANOCAMELID_REMOTE_SMOKE=0 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
+```
+
+To force a specific GGUF path that already exists on the Pi:
 
 ```bash
 NANOCAMELID_REMOTE_SMOKE_GGUF=/path/on/pi/model.gguf \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
-To run the instruct/chat smoke path instead of the raw prompt smoke:
+To override the default chat smoke kind, prompt, or token budget:
 
 ```bash
-NANOCAMELID_REMOTE_SMOKE_KIND=q8-chat \
-NANOCAMELID_REMOTE_SMOKE_GGUF=/path/on/pi/model.gguf \
+NANOCAMELID_REMOTE_SMOKE_KIND=q8-model \
+NANOCAMELID_SMOKE_PROMPT="Hello" \
+NANOCAMELID_SMOKE_TOKENS=1 \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
