@@ -1,65 +1,67 @@
 # NanoCamelid
 
-NanoCamelid is a small Rust inference runtime for running GGUF local chat
+NanoCamelid is a compact Rust inference runtime for running GGUF local chat
 models on Raspberry Pi-class ARM64 hardware.
 
-The current focus is simple: make local model inspection, Q8_0/Q4_0 validation,
-and small-model smoke tests easy to run on a Pi. Performance work is
-intentionally gated behind explicit commands and environment variables until it
-has repeatable Pi evidence.
+It is not a wrapper around a desktop inference stack. The current goal is a
+small, inspectable runtime that can load local GGUF files, run model smoke tests,
+chat in a terminal, and make every performance claim traceable to Pi-side
+evidence.
 
-## Engineering Under the Hood
+## Current State
 
-NanoCamelid is built as a small systems runtime for edge inference, not a
-wrapper around a larger desktop stack. The design goal is to keep the useful
-parts of local chat running on Raspberry Pi-class hardware while making every
-performance claim traceable to a smoke test, benchmark, or explicit opt-in
-experiment.
+- GGUF metadata and tensor layout inspection are available.
+- Q8_0, Q4_0, and Q6_K tensor paths are implemented for the tested rows below.
+- Llama and Qwen2 chat-template rendering is available for smoke tests and chat.
+- The terminal TUI keeps the model loaded and reuses matching KV-cache prefixes
+  across turns.
+- Prompt ingestion uses guarded batched prefill by default. The current default
+  batch size is `16`.
+- Scalar reference paths remain in the test suite. Optimized kernels have to
+  prove parity before they are treated as production paths.
 
-### Conversational Prefix Reuse
+## Recent Pi Results
 
-The interactive TUI keeps the model loaded and reuses the matching prompt-prefix
-KV cache across turns. When the next rendered chat prompt shares the same
-history prefix, NanoCamelid preserves that cache and only pre-fills the new
-suffix. If the model changes or the prompt prefix no longer matches, the session
-is reset cleanly instead of reusing invalid state.
+Latest runtime evidence below was captured on `7621ba6`
+(`perf(q8): split sdot accumulators`).
 
-This is still narrower than full automatic prompt ingestion tuning. The runtime
-now ingests prompt tokens in batches by default. The current default batch size
-is `16`, selected from Pi-side Q4_0 prefill timing where it beat larger batches
-on the real Qwen2.5-Coder-7B chat path. Set `NANOCAMELID_PREFILL_BATCH=1` to
-force the old single-token prefill behavior for reference checks.
+On the Pi 2 benchmark lane, Qwen2.5-Coder-7B-Instruct Q4_0 currently validates
+through the smoke path with exact scalar-vs-selected logit parity:
 
-### Pi-Aware CPU Scheduling
+- `max_logit_delta: 0.00000000`
+- generated smoke text: `"Hello"`
+- default prefill batch: `16`
 
-NanoCamelid uses a bounded Rayon setup tuned for small ARM boards. Worker count
-defaults to up to four threads, and when the platform exposes CPU affinity the
-runtime pins those workers to available cores. Small matrix-vector workloads can
-also bypass Rayon entirely through the `NANOCAMELID_MATMUL_MIN_ROWS` threshold,
-which avoids paying thread-pool scheduling overhead for tiny GEMV calls.
+The main prefill improvement came from loop-inverted batched Q4 prefill:
 
-### Vectorized Hot Paths With Reference Fallbacks
+- batch 1, 145-token Qwen prompt: `48.90s`
+- batch 16 before loop inversion: `31.38s`
+- batch 16 after loop inversion: `17.04s`
+- default batch 16 real-model check: about `17.0s`
 
-The runtime includes ARM NEON helpers for decode-time attention dot products and
-weighted value accumulation. Q8_0 and Q4_0 matmul paths use selected scalar,
-NEON, or SDOT kernels, with scalar references kept in the test suite so optimized
-paths must prove logit parity before they are trusted.
+Synthetic Q4 prefill tuning on the same Pi showed batch 32 slightly ahead in
+the isolated benchmark, but the real Qwen chat path favored batch 16, so `16` is
+the production default.
 
-Recent Pi work also moved several inner loops away from repeated slice-to-array
-conversion and added a NEON max-abs scan for dynamic Q8 activation quantization
-while preserving scalar rounding and clamping semantics. On `aarch64`, NEON
-helpers dispatch through compile-time architecture gates instead of repeated
-runtime feature checks in decode and quantization hot loops. More aggressive
-ideas, such as Q4_0 1x4 SDOT row blocking, stay behind opt-in flags when
-measured Pi results do not beat the normal path.
+Recent experiments that did not land:
 
-### Rust-First Edge Deployment
+- Register-accumulated attention was correct but did not improve the short Qwen
+  decode run (`1.88 tok/sec` baseline vs `1.87 tok/sec` experiment).
+- Fully vectorized activation quantization was correctness-safe but slightly
+  slower on the real 7B Q4 generate path (`4.05s` prefill and `1.34 tok/sec`
+  baseline vs `4.07s` and `1.33 tok/sec` experiment).
 
-NanoCamelid is a Rust command-line runtime with no Python service dependency and
-no required C++ build step for normal use. That keeps the Pi deployment path
-small: clone the repo, build with Cargo, point it at local GGUF files, and use
-the same binary for inspection, smoke validation, single-turn generation, and
-interactive terminal chat.
+## Runtime Design
+
+NanoCamelid keeps the runtime small and explicit:
+
+- Rust CLI only; no Python service dependency and no required C++ build step.
+- Bounded Rayon worker setup tuned for small ARM boards.
+- Optional CPU affinity when the platform exposes it.
+- NEON/SDOT hot paths guarded by architecture checks and parity tests.
+- Opt-in experimental Q4_0 1x4 SDOT and swizzled storage paths for benchmark
+  comparison.
+- Repeatable smoke and benchmark commands instead of broad model-family claims.
 
 ## Requirements
 
@@ -77,13 +79,7 @@ cargo run -- probe
 cargo run -- inspect /path/to/model.gguf
 cargo run --release -- smoke q8-model /path/to/model.gguf "Hello" 1
 cargo run --release -- smoke q8-chat /path/to/model.gguf "Say hello in one sentence." 8
-NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run -- inspect
-NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- generate "Hello" 0.0 32
-NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- chat "Say hello in one sentence." 0.0 32
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- tui 0.0 64
-NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-model "Hello" 1
-NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-chat "Say hello in one sentence." 8
-NANOCAMELID_MODEL_GGUF=/path/to/model.gguf NANOCAMELID_PREFILL_BATCH=1 cargo run --release -- chat "Summarize grouped-query attention in one paragraph." 0.0 64
 ```
 
 `probe` prints CPU and SIMD feature information. `inspect` reads GGUF metadata
@@ -92,21 +88,29 @@ logit parity, and runs a short greedy generation path from directly tokenized
 prompt text. `smoke q8-chat` runs the same parity/generation validation through
 the tokenizer chat template so Llama 3.2 1B Instruct rows can be smoke-tested
 through the real instruct prompt path. Set `NANOCAMELID_MODEL_GGUF` to reuse
-the same 1B GGUF path across repeated `inspect`, `generate`, and `chat` runs,
-or `NANOCAMELID_SMOKE_GGUF` to override that shared default just for smoke
-validation. `chat` renders a single-turn user prompt through recognized
-tokenizer chat templates, including the Llama 3 instruct header/eot format
-used by Llama 3.2 1B Instruct rows.
+the same GGUF path across repeated `inspect`, `generate`, `chat`, and `tui`
+runs, or `NANOCAMELID_SMOKE_GGUF` to override that shared default just for smoke
+validation.
+
+Single-turn generation is available through either raw prompt text or a rendered
+chat prompt:
+
+```bash
+NANOCAMELID_MODEL_GGUF=/path/to/model.gguf \
+  cargo run --release -- generate "Hello" 0.0 32
+
+NANOCAMELID_MODEL_GGUF=/path/to/model.gguf \
+  cargo run --release -- chat "Say hello in one sentence." 0.0 32
+```
+
 `tui` opens an interactive terminal chat that keeps the model loaded, shows the
 connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
 session token-in/token-out counters, TTFT, and throughput.
 
 `NANOCAMELID_PREFILL_BATCH` controls how many prompt tokens are ingested at once
-before decode begins. The default is `16`, which is the fastest currently
-validated production setting on the Pi Qwen2.5-Coder-7B Q4_0 chat prompt used
-for tuning. Set it to `1` for the old single-token reference behavior, or use
-`bench q4-prefill` to compare candidate batch sizes on the current host without
-loading a GGUF model.
+before decode begins. The default is `16`. Set it to `1` for the old
+single-token reference behavior, or use `bench q4-prefill` to compare candidate
+batch sizes on the current host without loading a GGUF model.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
 
@@ -166,66 +170,38 @@ you can override the gate with:
 
 ## Benchmarks
 
-Run the Q8 dot benchmark on the target Pi:
+Run benchmarks on the target Pi in release mode.
 
 ```bash
 cargo run --release -- bench q8-dot 1000 3
 cargo run --release -- bench q4-layout 32768 3584 3
+cargo run --release -- bench q4-prefill 128 16
 ```
 
-To test the default-off SDOT candidate when the CPU supports it:
+To include the default-off SDOT candidate in Q8 dot reports:
 
 ```bash
-NANOCAMELID_Q8_DOT_KERNEL=sdot \
 NANOCAMELID_Q8_DOT_SDOT=1 \
 cargo run --release -- bench q8-dot 1000 3
 ```
 
-The benchmark prints repeated scalar/NEON timing and a JSON summary line. Treat
-benchmark output as specific to the exact Pi, model, build, and configuration
-where it was captured.
+Each benchmark prints human-readable timing plus a JSON summary line. Treat
+results as specific to the exact Pi, model, build, and environment used.
 
-`bench q4-layout` compares the current row-major Q4_0 1x4 access pattern with a
-synthetic swizzled 1x4 layout that stores four rows' matching blocks
-contiguously. On Pi 2, a Qwen2.5-Coder output-projection-sized synthetic matrix
-(`152064 x 3584`, 2 runs) produced matching checksums and measured about
-`1.28x` faster for the swizzled layout.
+Useful environment controls:
 
-For GEMV scheduling experiments, `NANOCAMELID_MATMUL_MIN_ROWS` controls the
-minimum output row count required before Q8_0, Q4_0, and Q6_K matmuls enter
-Rayon. Smaller matrices run sequentially to avoid Rayon queue overhead. The
-default is `128`, which was neutral-to-slightly-positive on the Pi 2 short
-prompts tested. Set it to `1` to approximate the old always-parallel behavior.
-`NANOCAMELID_RAYON_THREADS` controls the global Rayon worker count; by default
-the CLI uses up to four workers and pins them to available CPU cores when the
-platform exposes affinity controls.
+- `NANOCAMELID_PREFILL_BATCH`: prompt-token batch size; default `16`.
+- `NANOCAMELID_RAYON_THREADS`: global Rayon worker count.
+- `NANOCAMELID_MATMUL_MIN_ROWS`: row-count threshold before matmuls enter Rayon.
+- `NANOCAMELID_Q8_DOT_KERNEL=scalar|neon|sdot`: force the selected Q8 kernel.
+- `NANOCAMELID_Q8_DOT_SDOT=1`: enable SDOT candidate benchmarking.
+- `NANOCAMELID_Q4_1X4_SDOT=1`: enable the experimental Q4_0 1x4 SDOT path.
+- `NANOCAMELID_Q4_SWIZZLE_1X4=1`: load compatible Q4_0 tensors in the swizzled
+  1x4 runtime layout.
 
-Decode-time attention now uses ARM NEON helpers for Q/K dot products and V
-weighted accumulation when running on `aarch64`, with scalar reference fallbacks
-for portability. These helpers now use compile-time `aarch64` dispatch rather
-than runtime NEON checks in the attention inner loop. The TUI reuses matching
-prompt-prefix KV cache across chat turns, so repeated conversation prefixes are
-not re-ingested. New prompt suffixes use batched prefill by default, with
-`NANOCAMELID_PREFILL_BATCH` available for tuning or for forcing single-token
-reference prefill.
-
-The activation quantization path uses a NEON max-abs scan on `aarch64`, while
-preserving scalar rounding/clamping semantics for parity. That path also uses
-compile-time `aarch64` dispatch instead of a runtime NEON feature check. Q4_0 and
-Q8_0 matmul hot loops read activation blocks through validated raw block
-pointers to avoid repeated slice-to-array conversion in the innermost loop.
-
-An experimental Q4_0 x Q8_0 1x4 SDOT row-blocking path is available with
-`NANOCAMELID_Q4_1X4_SDOT=1`. A second opt-in flag,
-`NANOCAMELID_Q4_SWIZZLE_1X4=1`, asks the model loader to replace row-major Q4_0
-storage with a four-row-swizzled copy when tensor dimensions are compatible,
-then lets the 1x4 path consume that cache-friendly layout. Both flags remain
-default-off while the measurements are still narrow. After removing the
-duplicate row-major copy, interleaving the 1x4 SDOT accumulators, and using a
-fast f16 scale conversion, the Qwen2.5-Coder Pi 2 short-chat comparison
-preserved smoke parity and measured about `1.97-2.00 tok/sec` for swizzled 1x4
-versus `1.84-1.86 tok/sec` for the same-run normal SDOT baseline. That is a
-modest real-model win, not the synthetic benchmark's full promise.
+The swizzled Q4_0 1x4 path is an opt-in performance path. It has shown a real
+Pi 2 short-chat win with smoke parity, but it remains explicit until broader
+prompts and models confirm the shape.
 
 ## Tested Models
 
@@ -236,23 +212,28 @@ hardware with the current GGUF path. They are not broad family claims.
 | --- | --- | --- | --- |
 | Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat. |
 | Llama 3.2 1B Instruct | Q8_0 | Working | Baseline path for Q8 validation and Q4 comparison. |
-| Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes. Fused Q6_K output projection and later hot-loop cleanup improved the short Qwen prompt from 1.55 to about 1.97-1.99 tok/sec on Pi 2. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
 
 ## Pi Performance Snapshot
 
-Latest clean Pi 2 serial chat timings from the current validated runs:
+Current Pi 2 evidence, measured on local release builds:
 
-| Model | Quant | Prompt path | Result |
-| --- | --- | --- | --- |
-| Llama 3.2 1B Instruct | Q4_0 | 8-token short chat | Model load ~0.95-0.97s, generation ~1.96-1.97s, ~4.07-4.09 tok/sec. |
-| Llama 3.2 1B Instruct | Q8_0 | Same 8-token short chat | Model load ~1.32s, generation ~2.21s, ~3.63 tok/sec. |
-| Qwen2.5-Coder-7B-Instruct | Q4_0 | 8-token short chat | Same prompt improved from 1.55 tok/sec at `c6e6d67` to 1.90-1.93 tok/sec after fused Q6_K output projection, then 1.97-1.99 tok/sec after pointer and dispatch cleanup with the normal SDOT path. The optimized swizzled 1x4 path preserved smoke parity and measured about 1.97-2.00 tok/sec against 1.84-1.86 tok/sec same-run normal SDOT, so it remains opt-in pending broader runs. |
-| Qwen2.5-Coder-7B-Instruct | Q4_0 | Repeated ~170-token prompt | Model load ~3.60s, generation 8 tokens in ~4.33s, ~1.85 tok/sec after prefill. Larger ~650-token and ~2500-token stress prompts hit timeout before decode, confirming sequential prefill as the blocker. |
+- Llama 3.2 1B Instruct Q4_0 short chat: about `4.07-4.09 tok/sec`.
+- Llama 3.2 1B Instruct Q8_0 short chat: about `3.63 tok/sec`.
+- Qwen2.5-Coder-7B-Instruct Q4_0 smoke: exact logit parity,
+  `max_logit_delta: 0.00000000`.
+- Qwen2.5-Coder-7B-Instruct Q4_0 direct generation, short Rust ownership
+  prompt: model load `3.66s`, prefill `4.05s`, generation `14` tokens in
+  `10.45s` (`1.34 tok/sec`).
+- Qwen2.5-Coder-7B-Instruct Q4_0 145-token chat prompt: prefill improved from
+  `48.90s` at batch 1 to about `17.0s` with loop-inverted batch 16 prefill.
+- Q8 SDOT single-block microkernel: split accumulators moved the Pi 2 SDOT
+  median from about `1.683 ns/block` to about `1.679 ns/block`.
 
 The Q4_0 1B path is faster than Q8_0 on the same prompt, but the measured
-end-to-end gain is currently about 1.12x, not the theoretical 1.8-2.0x memory
-traffic ceiling. The next performance work is broader hot-path reduction beyond
-the Q4/Q8 block dot kernel.
+end-to-end gain is still far below the theoretical memory-traffic ceiling. The
+next useful performance work should be driven by real prompt/decode timings, not
+isolated kernel wins alone.
 
 ## Raspberry Pi Deployment
 
