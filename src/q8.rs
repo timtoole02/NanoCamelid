@@ -565,8 +565,7 @@ pub fn dot_i8_neon(lhs: &[i8], rhs: &[i8]) -> i32 {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: runtime feature detection confirms NEON support.
-            return unsafe { dot_i8_neon_aarch64(lhs, rhs) };
+            return dot_i8_neon_selected(lhs, rhs);
         }
     }
 
@@ -579,12 +578,41 @@ pub fn dot_i8_sdot(lhs: &[i8], rhs: &[i8]) -> i32 {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("dotprod") {
-            // SAFETY: runtime feature detection confirms FEAT_DotProd support.
-            return unsafe { dot_i8_sdot_aarch64(lhs, rhs) };
+            return dot_i8_sdot_selected(lhs, rhs);
         }
     }
 
     dot_i8_scalar(lhs, rhs)
+}
+
+pub(crate) fn dot_i8_neon_selected(lhs: &[i8], rhs: &[i8]) -> i32 {
+    assert_eq!(lhs.len(), rhs.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: callers use this only after selector/runtime feature validation.
+        unsafe { dot_i8_neon_aarch64(lhs, rhs) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_i8_scalar(lhs, rhs)
+    }
+}
+
+pub(crate) fn dot_i8_sdot_selected(lhs: &[i8], rhs: &[i8]) -> i32 {
+    assert_eq!(lhs.len(), rhs.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: callers use this only after selector/runtime feature validation.
+        unsafe { dot_i8_sdot_aarch64(lhs, rhs) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_i8_scalar(lhs, rhs)
+    }
 }
 
 impl DotTimingSummary {

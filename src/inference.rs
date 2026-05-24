@@ -1,5 +1,5 @@
 use crate::model::{LlamaModelConfig, LlamaWeights};
-use crate::q8::{Q8_0Block, Q8DotKernelSelector};
+use crate::q8::{Q8_0Block, Q8DotKernel, Q8DotKernelSelector};
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -190,7 +190,7 @@ pub fn matmul_q8_0(
 ) {
     let blocks_per_row = cols / 32;
     match selector.selected {
-        crate::q8::Q8DotKernel::Scalar => {
+        Q8DotKernel::Scalar => {
             out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
                 let mut sum = 0.0_f32;
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
@@ -203,27 +203,27 @@ pub fn matmul_q8_0(
                 *out_val = sum;
             });
         }
-        crate::q8::Q8DotKernel::Neon => {
+        Q8DotKernel::Neon => {
             out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
                 let mut sum = 0.0_f32;
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
                     let w_block = &w_row[b];
                     let x_block_vals = &x_i8[b * 32..(b + 1) * 32];
-                    let dot_val = crate::q8::dot_i8_neon(w_block.values(), x_block_vals);
+                    let dot_val = crate::q8::dot_i8_neon_selected(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
                 *out_val = sum;
             });
         }
-        crate::q8::Q8DotKernel::Sdot => {
+        Q8DotKernel::Sdot => {
             out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
                 let mut sum = 0.0_f32;
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
                     let w_block = &w_row[b];
                     let x_block_vals = &x_i8[b * 32..(b + 1) * 32];
-                    let dot_val = crate::q8::dot_i8_sdot(w_block.values(), x_block_vals);
+                    let dot_val = crate::q8::dot_i8_sdot_selected(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
                 *out_val = sum;
@@ -552,5 +552,68 @@ fn rand_simple() -> f32 {
         RNG_STATE = RNG_STATE.wrapping_mul(6364136223846793005).wrapping_add(1);
         let x = ((RNG_STATE >> 32) as u32) as f32;
         x / (u32::MAX as f32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matmul_q8_0;
+    use crate::q8::{Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector};
+
+    fn selector(selected: Q8DotKernel) -> Q8DotKernelSelector {
+        Q8DotKernelSelector {
+            requested: Some(selected),
+            selected,
+            fallback_reason: None,
+        }
+    }
+
+    fn q8_block(scale_bits: u16, seed: i16) -> Q8_0Block {
+        let mut values = [0_i8; Q8_BLOCK_SIZE];
+        for (idx, value) in values.iter_mut().enumerate() {
+            *value = ((seed + idx as i16 * 7) % 63 - 31) as i8;
+        }
+        Q8_0Block::from_parts(scale_bits, values)
+    }
+
+    #[test]
+    fn matmul_q8_selected_kernels_match_scalar_reference() {
+        let rows = 3;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 5) % 61) as i8 - 30).collect();
+        let x_scales = [0.25, 0.5];
+        let weights = [
+            q8_block(0x3800, 1),
+            q8_block(0x3c00, 2),
+            q8_block(0x4000, 3),
+            q8_block(0x4200, 4),
+            q8_block(0x4400, 5),
+            q8_block(0x4600, 6),
+        ];
+
+        let mut scalar = vec![0.0; rows];
+        matmul_q8_0(
+            &mut scalar,
+            &x_i8,
+            &x_scales,
+            &weights,
+            rows,
+            cols,
+            selector(Q8DotKernel::Scalar),
+        );
+
+        for kernel in [Q8DotKernel::Neon, Q8DotKernel::Sdot] {
+            let mut candidate = vec![0.0; rows];
+            matmul_q8_0(
+                &mut candidate,
+                &x_i8,
+                &x_scales,
+                &weights,
+                rows,
+                cols,
+                selector(kernel),
+            );
+            assert_eq!(candidate, scalar, "{kernel:?} matmul diverged");
+        }
     }
 }
