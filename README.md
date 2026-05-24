@@ -60,6 +60,12 @@ the default model path, start the interactive 1B chat directly:
 ./scripts/pi/chat-1b.sh
 ```
 
+For the matching one-command 1B validation path on that same Pi workspace:
+
+```bash
+./scripts/pi/smoke-1b.sh
+```
+
 The launcher prefers the Pi-local Q4_0 model when present, falls back to Q8_0,
 and defaults the block dot path to SDOT on Pi-class ARM64 hardware. It runs a
 `smoke q8-chat` preflight before opening the TUI, so the 1B instruct path keeps
@@ -71,6 +77,17 @@ Optional arguments set temperature and maximum assistant output tokens:
 
 ```bash
 ./scripts/pi/chat-1b.sh 0.0 64
+```
+
+`smoke-1b.sh` uses the same model-selection and kernel defaults, but runs only
+the smoke gate and exits. By default it runs the real instruct prompt path with
+`q8-chat`, the prompt `Say hello in one sentence.`, and an 8-token response
+budget. Optional arguments let you override the smoke kind, prompt, and token
+budget directly:
+
+```bash
+./scripts/pi/smoke-1b.sh q8-chat "Say hello in one sentence." 8
+./scripts/pi/smoke-1b.sh q8-model "Hello" 1
 ```
 
 For faster local iteration, disable the preflight smoke gate explicitly:
