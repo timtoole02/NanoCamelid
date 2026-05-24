@@ -1397,6 +1397,39 @@ struct ChatTurnReport {
     elapsed_secs: f64,
 }
 
+struct ChatSession {
+    cache: inference::LlamaKvCache,
+    ws: inference::LlamaWorkspace,
+    context_tokens: Vec<u32>,
+    pos: usize,
+}
+
+impl ChatSession {
+    fn new(config: &model::LlamaModelConfig) -> Self {
+        Self {
+            cache: inference::LlamaKvCache::new(
+                config.block_count,
+                config.context_length,
+                config.kv_width,
+            ),
+            ws: inference::LlamaWorkspace::new(config),
+            context_tokens: Vec::new(),
+            pos: 0,
+        }
+    }
+
+    fn reset(&mut self, config: &model::LlamaModelConfig) {
+        *self = Self::new(config);
+    }
+}
+
+struct ChatGenerationEnv<'a> {
+    config: &'a model::LlamaModelConfig,
+    weights: &'a model::LlamaWeights,
+    tokenizer: &'a tokenizer::Tokenizer,
+    runtime_options: inference::LlamaRuntimeOptions,
+}
+
 fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
     println!("Loading GGUF file: {}...", model_path.display());
     let gguf = match gguf::read_file(model_path) {
@@ -1445,6 +1478,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         .unwrap_or_else(|| model_path.display().to_string());
     let renderer = tokenizer.render_chat_prompt(&[]).renderer.to_owned();
     let mut history = Vec::<ChatTurn>::new();
+    let mut session = ChatSession::new(&config);
     let mut total_in = 0usize;
     let mut total_out = 0usize;
 
@@ -1488,6 +1522,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
             }
             "/clear" => {
                 history.clear();
+                session.reset(&config);
                 total_in = 0;
                 total_out = 0;
                 println!("{}conversation cleared{}", ansi::DIM, ansi::RESET);
@@ -1518,10 +1553,13 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
 
         let report = match generate_chat_turn(
             &history,
-            &config,
-            &weights,
-            &tokenizer,
-            runtime_options,
+            &mut session,
+            ChatGenerationEnv {
+                config: &config,
+                weights: &weights,
+                tokenizer: &tokenizer,
+                runtime_options,
+            },
             temp,
             max_tokens,
         ) {
@@ -1559,10 +1597,8 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
 
 fn generate_chat_turn(
     history: &[ChatTurn],
-    config: &model::LlamaModelConfig,
-    weights: &model::LlamaWeights,
-    tokenizer: &tokenizer::Tokenizer,
-    runtime_options: inference::LlamaRuntimeOptions,
+    session: &mut ChatSession,
+    env: ChatGenerationEnv<'_>,
     temp: f32,
     max_tokens: usize,
 ) -> Result<(String, ChatTurnReport), String> {
@@ -1573,52 +1609,58 @@ fn generate_chat_turn(
             content: turn.content.as_str(),
         })
         .collect::<Vec<_>>();
-    let rendered = tokenizer.render_chat_prompt(&messages);
+    let rendered = env.tokenizer.render_chat_prompt(&messages);
     let prompt_tokens =
-        tokenizer.encode(&rendered.text, rendered.add_special, rendered.parse_special)?;
+        env.tokenizer
+            .encode(&rendered.text, rendered.add_special, rendered.parse_special)?;
     if prompt_tokens.is_empty() {
         return Err("prompt tokenized to an empty sequence".to_owned());
     }
-    validate_generation_budget(prompt_tokens.len(), max_tokens, config.context_length)?;
+    validate_generation_budget(prompt_tokens.len(), max_tokens, env.config.context_length)?;
 
-    let mut cache =
-        inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
-    let mut ws = inference::LlamaWorkspace::new(config);
-    let mut pos = 0usize;
+    let shared_prefix = shared_token_prefix_len(&session.context_tokens, &prompt_tokens);
+    if shared_prefix < session.context_tokens.len() {
+        session.reset(env.config);
+    }
+    let input_tokens = prompt_tokens
+        .len()
+        .saturating_sub(session.context_tokens.len());
+    let new_prompt_tokens = &prompt_tokens[session.context_tokens.len()..];
     let started_turn = std::time::Instant::now();
-    for (idx, &token) in prompt_tokens.iter().enumerate() {
-        if idx + 1 == prompt_tokens.len() {
+    for (idx, &token) in new_prompt_tokens.iter().enumerate() {
+        if idx + 1 == new_prompt_tokens.len() {
             inference::forward_pass(
                 token as usize,
-                pos,
-                config,
-                weights,
-                &mut cache,
-                &mut ws,
-                runtime_options,
+                session.pos,
+                env.config,
+                env.weights,
+                &mut session.cache,
+                &mut session.ws,
+                env.runtime_options,
             );
         } else {
             inference::prefill_pass(
                 token as usize,
-                pos,
-                config,
-                weights,
-                &mut cache,
-                &mut ws,
-                runtime_options,
+                session.pos,
+                env.config,
+                env.weights,
+                &mut session.cache,
+                &mut session.ws,
+                env.runtime_options,
             );
         }
-        pos += 1;
+        session.context_tokens.push(token);
+        session.pos += 1;
     }
 
     let mut generated_tokens = Vec::new();
     let mut last_printed_len = 0usize;
     let mut ttft_secs = None;
     loop {
-        let next_token = inference::sample_logits(&ws.logits, temp);
-        if Some(next_token as u32) == tokenizer.special.eos
-            || Some(next_token as u32) == tokenizer.special.eot
-            || pos >= config.context_length
+        let next_token = inference::sample_logits(&session.ws.logits, temp);
+        if Some(next_token as u32) == env.tokenizer.special.eos
+            || Some(next_token as u32) == env.tokenizer.special.eot
+            || session.pos >= env.config.context_length
             || generated_tokens.len() >= max_tokens
         {
             break;
@@ -1626,7 +1668,7 @@ fn generate_chat_turn(
 
         generated_tokens.push(next_token as u32);
         ttft_secs.get_or_insert_with(|| started_turn.elapsed().as_secs_f64());
-        if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
+        if let Ok(full_text) = env.tokenizer.decode(&generated_tokens, true)
             && full_text.len() > last_printed_len
         {
             print!("{}", &full_text[last_printed_len..]);
@@ -1637,32 +1679,51 @@ fn generate_chat_turn(
         }
 
         if generated_tokens.len() >= max_tokens {
+            inference::prefill_pass(
+                next_token,
+                session.pos,
+                env.config,
+                env.weights,
+                &mut session.cache,
+                &mut session.ws,
+                env.runtime_options,
+            );
+            session.context_tokens.push(next_token as u32);
+            session.pos += 1;
             break;
         }
 
         inference::forward_pass(
             next_token,
-            pos,
-            config,
-            weights,
-            &mut cache,
-            &mut ws,
-            runtime_options,
+            session.pos,
+            env.config,
+            env.weights,
+            &mut session.cache,
+            &mut session.ws,
+            env.runtime_options,
         );
-        pos += 1;
+        session.context_tokens.push(next_token as u32);
+        session.pos += 1;
     }
 
-    let assistant_text = tokenizer.decode(&generated_tokens, true)?;
+    let assistant_text = env.tokenizer.decode(&generated_tokens, true)?;
     println!();
     Ok((
         assistant_text,
         ChatTurnReport {
-            input_tokens: prompt_tokens.len(),
+            input_tokens,
             output_tokens: generated_tokens.len(),
             ttft_secs,
             elapsed_secs: started_turn.elapsed().as_secs_f64(),
         },
     ))
+}
+
+fn shared_token_prefix_len(lhs: &[u32], rhs: &[u32]) -> usize {
+    lhs.iter()
+        .zip(rhs)
+        .take_while(|(left, right)| left == right)
+        .count()
 }
 
 fn run_generation_with_prompt_builder<F>(
@@ -1992,7 +2053,7 @@ mod tests {
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
         inspect_runtime_summary, is_help_flag, parse_generate_args_with_env,
         parse_smoke_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
-        validate_generation_budget,
+        shared_token_prefix_len, validate_generation_budget,
     };
 
     #[test]
@@ -2054,6 +2115,14 @@ flags\t\t: sse4_2 avx2
                     .to_owned()
             )
         );
+    }
+
+    #[test]
+    fn shared_token_prefix_tracks_reusable_chat_context() {
+        assert_eq!(shared_token_prefix_len(&[], &[1, 2, 3]), 0);
+        assert_eq!(shared_token_prefix_len(&[1, 2, 3], &[1, 2, 3, 4, 5]), 3);
+        assert_eq!(shared_token_prefix_len(&[1, 2, 9], &[1, 2, 3, 4]), 2);
+        assert_eq!(shared_token_prefix_len(&[8, 2], &[1, 2]), 0);
     }
 
     #[test]
