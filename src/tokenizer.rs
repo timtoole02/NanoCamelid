@@ -310,24 +310,19 @@ impl Tokenizer {
             },
             config: TokenizerConfig {
                 add_bos: file
-                    .metadata_string("tokenizer.ggml.add_bos_token")
-                    .map(|s| s == "true" || s == "1")
+                    .metadata_bool("tokenizer.ggml.add_bos_token")
                     .unwrap_or(true),
                 add_eos: file
-                    .metadata_string("tokenizer.ggml.add_eos_token")
-                    .map(|s| s == "true" || s == "1")
+                    .metadata_bool("tokenizer.ggml.add_eos_token")
                     .unwrap_or(false),
                 add_sep: file
-                    .metadata_string("tokenizer.ggml.add_sep_token")
-                    .map(|s| s == "true" || s == "1")
+                    .metadata_bool("tokenizer.ggml.add_sep_token")
                     .unwrap_or(false),
                 add_space_prefix: file
-                    .metadata_string("tokenizer.ggml.add_space_prefix")
-                    .map(|s| s == "true" || s == "1")
+                    .metadata_bool("tokenizer.ggml.add_space_prefix")
                     .unwrap_or(true),
                 remove_extra_whitespaces: file
-                    .metadata_string("tokenizer.ggml.remove_extra_whitespaces")
-                    .map(|s| s == "true" || s == "1")
+                    .metadata_bool("tokenizer.ggml.remove_extra_whitespaces")
                     .unwrap_or(false),
             },
             chat_template: file
@@ -1034,4 +1029,129 @@ fn flush_bytes(bytes: &mut Vec<u8>, text: &mut String) -> Result<(), String> {
         .map_err(|_| "byte fallback produced invalid UTF-8".to_string())?;
     text.push_str(&decoded);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use crate::gguf::{GgufFile, GgufMetadataValue};
+
+    use super::{Tokenizer, TokenizerModel};
+
+    #[test]
+    fn tokenizer_reads_native_bool_config_flags() {
+        let tokenizer = Tokenizer::from_gguf(&tokenizer_fixture([
+            (
+                "tokenizer.ggml.add_bos_token",
+                GgufMetadataValue::Bool(false),
+            ),
+            (
+                "tokenizer.ggml.add_eos_token",
+                GgufMetadataValue::Bool(true),
+            ),
+            (
+                "tokenizer.ggml.add_space_prefix",
+                GgufMetadataValue::Bool(false),
+            ),
+            (
+                "tokenizer.ggml.remove_extra_whitespaces",
+                GgufMetadataValue::Bool(true),
+            ),
+        ]))
+        .expect("fixture tokenizer should load");
+
+        assert_eq!(tokenizer.model, TokenizerModel::LlamaSpm);
+        assert!(!tokenizer.config.add_bos);
+        assert!(tokenizer.config.add_eos);
+        assert!(!tokenizer.config.add_space_prefix);
+        assert!(tokenizer.config.remove_extra_whitespaces);
+    }
+
+    #[test]
+    fn tokenizer_preserves_string_flag_compatibility() {
+        let tokenizer = Tokenizer::from_gguf(&tokenizer_fixture([
+            (
+                "tokenizer.ggml.add_bos_token",
+                GgufMetadataValue::String("0".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.add_space_prefix",
+                GgufMetadataValue::String("true".to_owned()),
+            ),
+        ]))
+        .expect("fixture tokenizer should load");
+
+        assert!(!tokenizer.config.add_bos);
+        assert!(tokenizer.config.add_space_prefix);
+        assert!(!tokenizer.config.add_eos);
+    }
+
+    fn tokenizer_fixture<const N: usize>(overrides: [(&str, GgufMetadataValue); N]) -> GgufFile {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "general.architecture".to_owned(),
+            GgufMetadataValue::String("llama".to_owned()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.model".to_owned(),
+            GgufMetadataValue::String("llama".to_owned()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.tokens".to_owned(),
+            GgufMetadataValue::Array(vec![
+                GgufMetadataValue::String("<unk>".to_owned()),
+                GgufMetadataValue::String("<s>".to_owned()),
+                GgufMetadataValue::String("</s>".to_owned()),
+                GgufMetadataValue::String("▁hello".to_owned()),
+                GgufMetadataValue::String("hello".to_owned()),
+                GgufMetadataValue::String("▁".to_owned()),
+            ]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.scores".to_owned(),
+            GgufMetadataValue::Array(vec![
+                GgufMetadataValue::F32(0.0),
+                GgufMetadataValue::F32(0.0),
+                GgufMetadataValue::F32(0.0),
+                GgufMetadataValue::F32(10.0),
+                GgufMetadataValue::F32(2.0),
+                GgufMetadataValue::F32(1.0),
+            ]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.token_type".to_owned(),
+            GgufMetadataValue::Array(vec![
+                GgufMetadataValue::I32(2),
+                GgufMetadataValue::I32(3),
+                GgufMetadataValue::I32(3),
+                GgufMetadataValue::I32(1),
+                GgufMetadataValue::I32(1),
+                GgufMetadataValue::I32(1),
+            ]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.bos_token_id".to_owned(),
+            GgufMetadataValue::U32(1),
+        );
+        metadata.insert(
+            "tokenizer.ggml.eos_token_id".to_owned(),
+            GgufMetadataValue::U32(2),
+        );
+
+        for (key, value) in overrides {
+            metadata.insert(key.to_owned(), value);
+        }
+
+        GgufFile {
+            path: PathBuf::from("tokenizer-fixture.gguf"),
+            version: 3,
+            tensor_count: 0,
+            metadata_count: metadata.len() as u64,
+            alignment: 32,
+            data_start_offset: 0,
+            metadata,
+            tensors: Vec::new(),
+        }
+    }
 }

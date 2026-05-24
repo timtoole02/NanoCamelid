@@ -177,6 +177,18 @@ impl GgufFile {
         }
     }
 
+    pub fn metadata_bool(&self, key: &str) -> Option<bool> {
+        match self.metadata.get(key) {
+            Some(GgufMetadataValue::Bool(v)) => Some(*v),
+            Some(GgufMetadataValue::String(v)) => match v.as_str() {
+                "true" | "1" => Some(true),
+                "false" | "0" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn metadata_u32(&self, key: &str) -> Option<u32> {
         match self.metadata.get(key) {
             Some(GgufMetadataValue::U32(v)) => Some(*v),
@@ -347,6 +359,40 @@ pub fn inspect(path: &Path) -> Result<GgufSummary, GgufError> {
             .collect(),
         tensors: file.tensors.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use super::{GgufFile, GgufMetadataValue};
+
+    fn gguf_with_metadata(key: &str, value: GgufMetadataValue) -> GgufFile {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(key.to_owned(), value);
+        GgufFile {
+            path: PathBuf::from("fixture.gguf"),
+            version: 3,
+            tensor_count: 0,
+            metadata_count: metadata.len() as u64,
+            alignment: 32,
+            data_start_offset: 0,
+            metadata,
+            tensors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn metadata_bool_reads_native_bool_values() {
+        let gguf = gguf_with_metadata("flag", GgufMetadataValue::Bool(true));
+        assert_eq!(gguf.metadata_bool("flag"), Some(true));
+    }
+
+    #[test]
+    fn metadata_bool_accepts_string_compat_values() {
+        let gguf = gguf_with_metadata("flag", GgufMetadataValue::String("false".to_owned()));
+        assert_eq!(gguf.metadata_bool("flag"), Some(false));
+    }
 }
 
 pub fn read_file(path: &Path) -> Result<GgufFile, GgufError> {
