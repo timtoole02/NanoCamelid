@@ -1377,11 +1377,12 @@ unsafe fn dot_i8_neon_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_
 #[inline(always)]
 unsafe fn dot_i8_sdot_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_SIZE]) -> i32 {
     use std::arch::{
-        aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8},
+        aarch64::{vaddq_s32, vaddvq_s32, vdupq_n_s32, vld1q_s8},
         asm,
     };
 
-    let mut acc = unsafe { vdupq_n_s32(0) };
+    let mut acc0 = unsafe { vdupq_n_s32(0) };
+    let mut acc1 = unsafe { vdupq_n_s32(0) };
     // SAFETY: Q8_0 blocks are exactly 32 i8 lanes, so two 16-byte vector loads cover the block.
     let left0 = unsafe { vld1q_s8(lhs.as_ptr()) };
     let right0 = unsafe { vld1q_s8(rhs.as_ptr()) };
@@ -1391,9 +1392,10 @@ unsafe fn dot_i8_sdot_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_
     unsafe {
         asm!(
             ".arch_extension dotprod",
-            "sdot {acc:v}.4s, {left0:v}.16b, {right0:v}.16b",
-            "sdot {acc:v}.4s, {left1:v}.16b, {right1:v}.16b",
-            acc = inout(vreg) acc,
+            "sdot {acc0:v}.4s, {left0:v}.16b, {right0:v}.16b",
+            "sdot {acc1:v}.4s, {left1:v}.16b, {right1:v}.16b",
+            acc0 = inout(vreg) acc0,
+            acc1 = inout(vreg) acc1,
             left0 = in(vreg) left0,
             right0 = in(vreg) right0,
             left1 = in(vreg) left1,
@@ -1402,6 +1404,7 @@ unsafe fn dot_i8_sdot_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_
         );
     }
 
+    let acc = unsafe { vaddq_s32(acc0, acc1) };
     unsafe { vaddvq_s32(acc) }
 }
 
@@ -1460,11 +1463,12 @@ unsafe fn dot_q4_0_q8_0_sdot_32_aarch64(
     activation: &[i8; Q8_BLOCK_SIZE],
 ) -> i32 {
     use std::arch::{
-        aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8},
+        aarch64::{vaddq_s32, vaddvq_s32, vdupq_n_s32, vld1q_s8},
         asm,
     };
 
-    let mut acc = unsafe { vdupq_n_s32(0) };
+    let mut acc0 = unsafe { vdupq_n_s32(0) };
+    let mut acc1 = unsafe { vdupq_n_s32(0) };
     let (weight_low, weight_high) = unsafe { unpack_q4_0_lanes_aarch64(weight) };
     // SAFETY: Q8 activation blocks are exactly 32 i8 lanes.
     let activation_low = unsafe { vld1q_s8(activation.as_ptr()) };
@@ -1473,9 +1477,10 @@ unsafe fn dot_q4_0_q8_0_sdot_32_aarch64(
     unsafe {
         asm!(
             ".arch_extension dotprod",
-            "sdot {acc:v}.4s, {weight_low:v}.16b, {activation_low:v}.16b",
-            "sdot {acc:v}.4s, {weight_high:v}.16b, {activation_high:v}.16b",
-            acc = inout(vreg) acc,
+            "sdot {acc0:v}.4s, {weight_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc1:v}.4s, {weight_high:v}.16b, {activation_high:v}.16b",
+            acc0 = inout(vreg) acc0,
+            acc1 = inout(vreg) acc1,
             weight_low = in(vreg) weight_low,
             activation_low = in(vreg) activation_low,
             weight_high = in(vreg) weight_high,
@@ -1484,6 +1489,7 @@ unsafe fn dot_q4_0_q8_0_sdot_32_aarch64(
         );
     }
 
+    let acc = unsafe { vaddq_s32(acc0, acc1) };
     unsafe { vaddvq_s32(acc) }
 }
 
