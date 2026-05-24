@@ -1058,6 +1058,31 @@ pub fn silu(x: &mut [f32]) {
     }
 }
 
+pub fn fused_silu_mul(gate_up: &mut [f32], gate: &[f32], up: &[f32]) {
+    debug_assert_eq!(gate_up.len(), gate.len());
+    debug_assert_eq!(gate.len(), up.len());
+    if gate_up.len() >= matmul_min_rows() {
+        gate_up
+            .par_iter_mut()
+            .with_min_len(matmul_min_rows())
+            .zip(gate.par_iter())
+            .zip(up.par_iter())
+            .for_each(|((dst, &g), &u)| {
+                let sigmoid = 1.0 / (1.0 + (-g).exp());
+                *dst = g * sigmoid * u;
+            });
+    } else {
+        gate_up
+            .iter_mut()
+            .zip(gate)
+            .zip(up)
+            .for_each(|((dst, &g), &u)| {
+                let sigmoid = 1.0 / (1.0 + (-g).exp());
+                *dst = g * sigmoid * u;
+            });
+    }
+}
+
 pub fn softmax(x: &mut [f32]) {
     let mut max_val = f32::NEG_INFINITY;
     for &val in x.iter() {
@@ -1451,13 +1476,11 @@ pub fn prefill_pass_batch(
             ffn_shape,
             options.q8_selector,
         );
-        for token_idx in 0..batch_size {
-            let start = token_idx * config.feed_forward_length;
-            silu(&mut ws.ffn_gate[start..start + config.feed_forward_length]);
-        }
-        for i in 0..ffn_len {
-            ws.ffn_gate_up[i] = ws.ffn_gate[i] * ws.ffn_up[i];
-        }
+        fused_silu_mul(
+            &mut ws.ffn_gate_up[..ffn_len],
+            &ws.ffn_gate[..ffn_len],
+            &ws.ffn_up[..ffn_len],
+        );
 
         quantize_f32_to_q8_0_batch(
             &ws.ffn_gate_up[..ffn_len],
@@ -1681,13 +1704,8 @@ fn forward_pass_inner<'a>(
             options.q8_selector,
         );
 
-        // SiLU activation on Gate
-        silu(&mut ws.ffn_gate);
-
-        // Element-wise product of Gate and Up
-        for i in 0..config.feed_forward_length {
-            ws.ffn_gate_up[i] = ws.ffn_gate[i] * ws.ffn_up[i];
-        }
+        // Fused SiLU activation on Gate and element-wise product with Up
+        fused_silu_mul(&mut ws.ffn_gate_up, &ws.ffn_gate, &ws.ffn_up);
 
         // Down projection (w2)
         quantize_f32_to_q8_0(&ws.ffn_gate_up, &mut ws.x_i8, &mut ws.x_scales);
@@ -1800,9 +1818,9 @@ fn rand_simple() -> f32 {
 mod tests {
     use super::{
         BatchMatmulShape, RopeScaling, add_weighted_f32, add_weighted_f32_scalar, apply_rope,
-        dot_f32, dot_f32_scalar, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4,
-        matmul_q6_k, matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, quantize_f32_to_q8_0,
-        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch,
+        dot_f32, dot_f32_scalar, fused_silu_mul, matmul_q4_0, matmul_q4_0_batch,
+        matmul_q4_0_swizzled_1x4, matmul_q6_k, matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch,
+        quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, silu,
     };
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
@@ -1868,6 +1886,28 @@ mod tests {
         add_weighted_f32_scalar(&mut expected_out, &rhs, 0.375);
 
         for (idx, (&candidate, &expected)) in candidate_out.iter().zip(&expected_out).enumerate() {
+            assert!(
+                (candidate - expected).abs() < 1e-6,
+                "idx {idx} candidate {candidate} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn fused_silu_mul_matches_two_pass_reference() {
+        let gate: Vec<f32> = (0..257).map(|idx| idx as f32 * 0.025 - 3.0).collect();
+        let up: Vec<f32> = (0..257).map(|idx| 2.0 - idx as f32 * 0.011).collect();
+        let mut expected_gate = gate.clone();
+        let mut expected = vec![0.0; gate.len()];
+        silu(&mut expected_gate);
+        for idx in 0..expected.len() {
+            expected[idx] = expected_gate[idx] * up[idx];
+        }
+
+        let mut candidate = vec![0.0; gate.len()];
+        fused_silu_mul(&mut candidate, &gate, &up);
+
+        for (idx, (&candidate, &expected)) in candidate.iter().zip(&expected).enumerate() {
             assert!(
                 (candidate - expected).abs() < 1e-6,
                 "idx {idx} candidate {candidate} expected {expected}"
