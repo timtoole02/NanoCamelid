@@ -1407,7 +1407,7 @@ unsafe fn dot_i8_sdot_32_aarch64(lhs: &[i8; Q8_BLOCK_SIZE], rhs: &[i8; Q8_BLOCK_
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn unpack_q4_0_lanes_aarch64(
+pub(crate) unsafe fn unpack_q4_0_lanes_aarch64(
     weight: &Q4_0Block,
 ) -> (std::arch::aarch64::int8x16_t, std::arch::aarch64::int8x16_t) {
     use std::arch::aarch64::{
@@ -1534,6 +1534,76 @@ pub(crate) unsafe fn dot_q4_0_q8_0_1x4_sdot_aarch64(
             w2_high = in(vreg) w2_high,
             w3_low = in(vreg) w3_low,
             w3_high = in(vreg) w3_high,
+            activation_low = in(vreg) activation_low,
+            activation_high = in(vreg) activation_high,
+            options(nostack, preserves_flags),
+        );
+    }
+
+    [
+        unsafe { vaddvq_s32(acc0) },
+        unsafe { vaddvq_s32(acc1) },
+        unsafe { vaddvq_s32(acc2) },
+        unsafe { vaddvq_s32(acc3) },
+    ]
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub(crate) struct Q4_0Unpacked1x4Aarch64 {
+    pub w0_low: std::arch::aarch64::int8x16_t,
+    pub w0_high: std::arch::aarch64::int8x16_t,
+    pub w1_low: std::arch::aarch64::int8x16_t,
+    pub w1_high: std::arch::aarch64::int8x16_t,
+    pub w2_low: std::arch::aarch64::int8x16_t,
+    pub w2_high: std::arch::aarch64::int8x16_t,
+    pub w3_low: std::arch::aarch64::int8x16_t,
+    pub w3_high: std::arch::aarch64::int8x16_t,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) unsafe fn dot_q4_0_q8_0_1x4_sdot_preloaded_aarch64(
+    weights: Q4_0Unpacked1x4Aarch64,
+    activation: &[i8; Q8_BLOCK_SIZE],
+) -> [i32; 4] {
+    use std::arch::{
+        aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8},
+        asm,
+    };
+
+    // SAFETY: Q8 activation blocks are exactly 32 i8 lanes.
+    let activation_low = unsafe { vld1q_s8(activation.as_ptr()) };
+    let activation_high = unsafe { vld1q_s8(activation.as_ptr().add(16)) };
+
+    let mut acc0 = unsafe { vdupq_n_s32(0) };
+    let mut acc1 = unsafe { vdupq_n_s32(0) };
+    let mut acc2 = unsafe { vdupq_n_s32(0) };
+    let mut acc3 = unsafe { vdupq_n_s32(0) };
+
+    unsafe {
+        asm!(
+            ".arch_extension dotprod",
+            "sdot {acc0:v}.4s, {w0_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc1:v}.4s, {w1_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc2:v}.4s, {w2_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc3:v}.4s, {w3_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc0:v}.4s, {w0_high:v}.16b, {activation_high:v}.16b",
+            "sdot {acc1:v}.4s, {w1_high:v}.16b, {activation_high:v}.16b",
+            "sdot {acc2:v}.4s, {w2_high:v}.16b, {activation_high:v}.16b",
+            "sdot {acc3:v}.4s, {w3_high:v}.16b, {activation_high:v}.16b",
+            acc0 = inout(vreg) acc0,
+            acc1 = inout(vreg) acc1,
+            acc2 = inout(vreg) acc2,
+            acc3 = inout(vreg) acc3,
+            w0_low = in(vreg) weights.w0_low,
+            w0_high = in(vreg) weights.w0_high,
+            w1_low = in(vreg) weights.w1_low,
+            w1_high = in(vreg) weights.w1_high,
+            w2_low = in(vreg) weights.w2_low,
+            w2_high = in(vreg) weights.w2_high,
+            w3_low = in(vreg) weights.w3_low,
+            w3_high = in(vreg) weights.w3_high,
             activation_low = in(vreg) activation_low,
             activation_high = in(vreg) activation_high,
             options(nostack, preserves_flags),

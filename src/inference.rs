@@ -700,27 +700,66 @@ fn compute_q4_0_swizzled_1x4_sdot_batch_chunk(
     } = ctx.shape;
     let chunk_base = chunk_idx * ctx.blocks_per_row * 4;
     let row_base = chunk_idx * 4;
-    for token_idx in 0..batch_size {
-        let x_offset = token_idx * cols;
-        let scale_offset = token_idx * ctx.blocks_per_row;
-        let x_token = &ctx.x_i8[x_offset..x_offset + cols];
-        let x_token_scales = &ctx.x_scales[scale_offset..scale_offset + ctx.blocks_per_row];
-        let mut sums = [0.0_f32; 4];
-        for (b, x_scale) in x_token_scales.iter().copied().enumerate() {
+    let mut token_sums = vec![[0.0_f32; 4]; batch_size];
+    for b in 0..ctx.blocks_per_row {
+        let w_base = chunk_base + b * 4;
+        let row0 = &ctx.w[w_base];
+        let row1 = &ctx.w[w_base + 1];
+        let row2 = &ctx.w[w_base + 2];
+        let row3 = &ctx.w[w_base + 3];
+        let row0_scale = row0.scale_f32();
+        let row1_scale = row1.scale_f32();
+        let row2_scale = row2.scale_f32();
+        let row3_scale = row3.scale_f32();
+
+        #[cfg(target_arch = "aarch64")]
+        let unpacked = unsafe {
+            let (w0_low, w0_high) = crate::q8::unpack_q4_0_lanes_aarch64(row0);
+            let (w1_low, w1_high) = crate::q8::unpack_q4_0_lanes_aarch64(row1);
+            let (w2_low, w2_high) = crate::q8::unpack_q4_0_lanes_aarch64(row2);
+            let (w3_low, w3_high) = crate::q8::unpack_q4_0_lanes_aarch64(row3);
+            crate::q8::Q4_0Unpacked1x4Aarch64 {
+                w0_low,
+                w0_high,
+                w1_low,
+                w1_high,
+                w2_low,
+                w2_high,
+                w3_low,
+                w3_high,
+            }
+        };
+
+        for (token_idx, sums) in token_sums.iter_mut().enumerate() {
+            let x_offset = token_idx * cols;
+            let x_scale = ctx.x_scales[token_idx * ctx.blocks_per_row + b];
+            let x_token = &ctx.x_i8[x_offset..x_offset + cols];
             let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
-            let w_base = chunk_base + b * 4;
-            let row0 = &ctx.w[w_base];
-            let row1 = &ctx.w[w_base + 1];
-            let row2 = &ctx.w[w_base + 2];
-            let row3 = &ctx.w[w_base + 3];
-            let dots = dot_q4_0_q8_0_1x4_sdot([row0, row1, row2, row3], x_block_vals);
-            sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
-            sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
-            sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
-            sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+
+            #[cfg(target_arch = "aarch64")]
+            let dots = unsafe {
+                crate::q8::dot_q4_0_q8_0_1x4_sdot_preloaded_aarch64(unpacked, x_block_vals)
+            };
+            #[cfg(not(target_arch = "aarch64"))]
+            let dots = [
+                crate::q8::dot_q4_0_q8_0_scalar(row0, x_block_vals),
+                crate::q8::dot_q4_0_q8_0_scalar(row1, x_block_vals),
+                crate::q8::dot_q4_0_q8_0_scalar(row2, x_block_vals),
+                crate::q8::dot_q4_0_q8_0_scalar(row3, x_block_vals),
+            ];
+
+            sums[0] += row0_scale * x_scale * dots[0] as f32;
+            sums[1] += row1_scale * x_scale * dots[1] as f32;
+            sums[2] += row2_scale * x_scale * dots[2] as f32;
+            sums[3] += row3_scale * x_scale * dots[3] as f32;
         }
+    }
+
+    for (token_idx, sums) in token_sums.into_iter().enumerate() {
         for (lane, sum) in sums.into_iter().enumerate() {
-            unsafe { write_batch_out(ctx.out_addr, token_idx, rows, row_base + lane, sum) };
+            unsafe {
+                write_batch_out(ctx.out_addr, token_idx, rows, row_base + lane, sum);
+            }
         }
     }
 }
