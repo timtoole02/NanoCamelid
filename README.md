@@ -71,16 +71,8 @@ NANOCAMELID_REMOTE_SMOKE_GGUF=/path/on/pi/model.gguf \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
-Deployment defaults to rsync snapshots. For public Pi checkouts that should keep
-git metadata current, use clean fast-forward mode:
-
-```bash
-NANOCAMELID_DEPLOY_MODE=git-ff ./scripts/deploy.sh <pi-host>
-NANOCAMELID_DEPLOY_MODE=git-ff ./scripts/remote_build.sh <pi-host>
-```
-
-`git-ff` refuses dirty worktrees, non-fast-forward branches, non-public origin
-URLs, and existing non-git target directories.
+Deployment defaults to rsync snapshots. Advanced deployment modes are available
+in the scripts for development workflows.
 
 ## Project Status
 
@@ -89,9 +81,6 @@ URLs, and existing non-git target directories.
 - Q8_0 scalar, NEON, and default-off SDOT dot-product paths are available.
 - Q8_0 model smoke validation is available for supported Llama-style GGUFs.
 - Broader model support and performance claims require Pi-local artifacts.
-
-The reusable runtime surface lives in the library crate under `nanocamelid::q8`
-and `nanocamelid::gguf`.
 
 ## More Details
 
