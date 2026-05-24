@@ -189,7 +189,6 @@ pub enum QuantizedMatrix {
 }
 
 pub struct Q4_0Swizzled1x4Matrix {
-    pub row_major: Vec<Q4_0Block>,
     pub swizzled_1x4: Vec<Q4_0Block>,
     pub rows: usize,
     pub cols: usize,
@@ -493,7 +492,6 @@ fn load_q4_0_matrix(bytes: &[u8], desc: &GgufTensorDescriptor) -> Result<Quantiz
 
     let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, cols / 32);
     Ok(QuantizedMatrix::Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix {
-        row_major,
         swizzled_1x4,
         rows,
         cols,

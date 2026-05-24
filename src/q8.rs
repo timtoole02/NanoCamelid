@@ -276,7 +276,7 @@ impl Q8_0Block {
     }
 
     pub fn scale_f32(&self) -> f32 {
-        f16_bits_to_f32(self.scale_bits)
+        fast_f16_to_f32(self.scale_bits)
     }
 
     pub fn values(&self) -> &[i8; Q8_BLOCK_SIZE] {
@@ -310,7 +310,7 @@ impl Q4_0Block {
     }
 
     pub fn scale_f32(&self) -> f32 {
-        f16_bits_to_f32(self.scale_bits)
+        fast_f16_to_f32(self.scale_bits)
     }
 
     pub fn packed_values(&self) -> &[u8; Q8_BLOCK_SIZE / 2] {
@@ -361,7 +361,7 @@ impl Q6KBlock {
     }
 
     pub fn scale_f32(&self) -> f32 {
-        f16_bits_to_f32(self.scale_bits)
+        fast_f16_to_f32(self.scale_bits)
     }
 
     pub fn dequantize(&self, out: &mut [f32; QK_K_BLOCK_SIZE]) {
@@ -1269,6 +1269,24 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
     }
 }
 
+#[inline(always)]
+pub fn fast_f16_to_f32(bits: u16) -> f32 {
+    let sign = (u32::from(bits & 0x8000)) << 16;
+    let exponent = u32::from(bits & 0x7c00) >> 10;
+    let fraction = u32::from(bits & 0x03ff);
+
+    if exponent == 0 {
+        if fraction == 0 {
+            return f32::from_bits(sign);
+        }
+        f16_bits_to_f32(bits)
+    } else if exponent == 0x1f {
+        f32::from_bits(sign | 0x7f80_0000 | (fraction << 13))
+    } else {
+        f32::from_bits(sign | ((exponent + 112) << 23) | (fraction << 13))
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 unsafe fn dot_i8_neon_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
     use std::arch::aarch64::{
@@ -1495,15 +1513,15 @@ pub(crate) unsafe fn dot_q4_0_q8_0_1x4_sdot_aarch64(
 
     unsafe {
         asm!(
-            ".arch_extension dotprod",
-            "sdot {acc0:v}.4s, {w0_low:v}.16b, {activation_low:v}.16b",
-            "sdot {acc0:v}.4s, {w0_high:v}.16b, {activation_high:v}.16b",
-            "sdot {acc1:v}.4s, {w1_low:v}.16b, {activation_low:v}.16b",
-            "sdot {acc1:v}.4s, {w1_high:v}.16b, {activation_high:v}.16b",
-            "sdot {acc2:v}.4s, {w2_low:v}.16b, {activation_low:v}.16b",
-            "sdot {acc2:v}.4s, {w2_high:v}.16b, {activation_high:v}.16b",
-            "sdot {acc3:v}.4s, {w3_low:v}.16b, {activation_low:v}.16b",
-            "sdot {acc3:v}.4s, {w3_high:v}.16b, {activation_high:v}.16b",
+                ".arch_extension dotprod",
+                "sdot {acc0:v}.4s, {w0_low:v}.16b, {activation_low:v}.16b",
+                "sdot {acc1:v}.4s, {w1_low:v}.16b, {activation_low:v}.16b",
+                "sdot {acc2:v}.4s, {w2_low:v}.16b, {activation_low:v}.16b",
+                "sdot {acc3:v}.4s, {w3_low:v}.16b, {activation_low:v}.16b",
+                "sdot {acc0:v}.4s, {w0_high:v}.16b, {activation_high:v}.16b",
+                "sdot {acc1:v}.4s, {w1_high:v}.16b, {activation_high:v}.16b",
+                "sdot {acc2:v}.4s, {w2_high:v}.16b, {activation_high:v}.16b",
+                "sdot {acc3:v}.4s, {w3_high:v}.16b, {activation_high:v}.16b",
             acc0 = inout(vreg) acc0,
             acc1 = inout(vreg) acc1,
             acc2 = inout(vreg) acc2,
@@ -1542,7 +1560,7 @@ mod tests {
         QK_K_BLOCK_SIZE, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
         dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
         dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector,
-        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
+        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32,
     };
 
     #[test]
@@ -1885,6 +1903,17 @@ mod tests {
         assert_eq!(f16_bits_to_f32(0xbc00), -1.0);
         assert_eq!(f16_bits_to_f32(0x0400), 0.000061035156);
         assert_eq!(f16_bits_to_f32(0x7c00), f32::INFINITY);
+    }
+
+    #[test]
+    fn fast_f16_decoder_matches_reference_for_all_bits() {
+        for bits in 0..=u16::MAX {
+            assert_eq!(
+                fast_f16_to_f32(bits).to_bits(),
+                f16_bits_to_f32(bits).to_bits(),
+                "bits {bits:#06x}"
+            );
+        }
     }
 
     #[test]

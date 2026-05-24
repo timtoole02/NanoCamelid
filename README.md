@@ -209,13 +209,15 @@ pointers to avoid repeated slice-to-array conversion in the innermost loop.
 
 An experimental Q4_0 x Q8_0 1x4 SDOT row-blocking path is available with
 `NANOCAMELID_Q4_1X4_SDOT=1`. A second opt-in flag,
-`NANOCAMELID_Q4_SWIZZLE_1X4=1`, asks the model loader to keep a duplicate
-four-row-swizzled Q4_0 copy when tensor dimensions are compatible, then lets the
-1x4 SDOT path consume that cache-friendly layout. Both flags remain
-default-off: the synthetic layout benchmark was faster, but the current
-real-model Qwen2.5-Coder Pi 2 chat comparison still favored the normal SDOT
-path at about `1.98 tok/sec` versus `1.77 tok/sec` for row-major 1x4 and
-`1.74 tok/sec` for swizzled 1x4.
+`NANOCAMELID_Q4_SWIZZLE_1X4=1`, asks the model loader to replace row-major Q4_0
+storage with a four-row-swizzled copy when tensor dimensions are compatible,
+then lets the 1x4 path consume that cache-friendly layout. Both flags remain
+default-off while the measurements are still narrow. After removing the
+duplicate row-major copy, interleaving the 1x4 SDOT accumulators, and using a
+fast f16 scale conversion, the Qwen2.5-Coder Pi 2 short-chat comparison
+preserved smoke parity and measured about `1.97-2.00 tok/sec` for swizzled 1x4
+versus `1.84-1.86 tok/sec` for the same-run normal SDOT baseline. That is a
+modest real-model win, not the synthetic benchmark's full promise.
 
 ## Tested Models
 
@@ -236,7 +238,7 @@ Latest clean Pi 2 serial chat timings from the current validated runs:
 | --- | --- | --- | --- |
 | Llama 3.2 1B Instruct | Q4_0 | 8-token short chat | Model load ~0.95-0.97s, generation ~1.96-1.97s, ~4.07-4.09 tok/sec. |
 | Llama 3.2 1B Instruct | Q8_0 | Same 8-token short chat | Model load ~1.32s, generation ~2.21s, ~3.63 tok/sec. |
-| Qwen2.5-Coder-7B-Instruct | Q4_0 | 8-token short chat | Same prompt improved from 1.55 tok/sec at `c6e6d67` to 1.90-1.93 tok/sec after fused Q6_K output projection, then 1.97-1.99 tok/sec after pointer and dispatch cleanup with the normal SDOT path. Experimental 1x4 Q4 SDOT measured slower: 1.77 tok/sec row-major and 1.74 tok/sec with swizzled Q4 storage, so both remain opt-in only. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | 8-token short chat | Same prompt improved from 1.55 tok/sec at `c6e6d67` to 1.90-1.93 tok/sec after fused Q6_K output projection, then 1.97-1.99 tok/sec after pointer and dispatch cleanup with the normal SDOT path. The optimized swizzled 1x4 path preserved smoke parity and measured about 1.97-2.00 tok/sec against 1.84-1.86 tok/sec same-run normal SDOT, so it remains opt-in pending broader runs. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Repeated ~170-token prompt | Model load ~3.60s, generation 8 tokens in ~4.33s, ~1.85 tok/sec after prefill. Larger ~650-token and ~2500-token stress prompts hit timeout before decode, confirming sequential prefill as the blocker. |
 
 The Q4_0 1B path is faster than Q8_0 on the same prompt, but the measured
