@@ -195,30 +195,86 @@ pub fn apply_rope(
 }
 
 pub fn quantize_f32_to_q8_0(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
-    let num_blocks = x.len() / 32;
-    for b in 0..num_blocks {
-        let chunk = &x[b * 32..(b + 1) * 32];
-        let mut max_abs = 0.0_f32;
-        for &val in chunk {
-            let abs = val.abs();
-            if abs > max_abs {
-                max_abs = abs;
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                quantize_f32_to_q8_0_neon_max(x, x_i8, x_scales);
             }
-        }
-        let scale = max_abs / 127.0;
-        x_scales[b] = scale;
-        if scale > 0.0 {
-            let inv_scale = 1.0 / scale;
-            for i in 0..32 {
-                let q = (chunk[i] * inv_scale).round();
-                x_i8[b * 32 + i] = q.clamp(-127.0, 127.0) as i8;
-            }
-        } else {
-            for i in 0..32 {
-                x_i8[b * 32 + i] = 0;
-            }
+            return;
         }
     }
+    quantize_f32_to_q8_0_scalar(x, x_i8, x_scales);
+}
+
+fn quantize_f32_to_q8_0_scalar(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
+    let num_blocks = x.len() / 32;
+    for (b, scale_out) in x_scales.iter_mut().enumerate().take(num_blocks) {
+        let chunk = &x[b * 32..(b + 1) * 32];
+        let max_abs = max_abs_scalar(chunk);
+        quantize_q8_block_with_max_abs(chunk, &mut x_i8[b * 32..(b + 1) * 32], scale_out, max_abs);
+    }
+}
+
+fn max_abs_scalar(chunk: &[f32]) -> f32 {
+    let mut max_abs = 0.0_f32;
+    for &val in chunk {
+        let abs = val.abs();
+        if abs > max_abs {
+            max_abs = abs;
+        }
+    }
+    max_abs
+}
+
+fn quantize_q8_block_with_max_abs(
+    chunk: &[f32],
+    out: &mut [i8],
+    scale_out: &mut f32,
+    max_abs: f32,
+) {
+    let scale = max_abs / 127.0;
+    *scale_out = scale;
+    if scale > 0.0 {
+        let inv_scale = 1.0 / scale;
+        for (dst, &value) in out.iter_mut().zip(chunk) {
+            let q = (value * inv_scale).round();
+            *dst = q.clamp(-127.0, 127.0) as i8;
+        }
+    } else {
+        out.fill(0);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn quantize_f32_to_q8_0_neon_max(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
+    let num_blocks = x.len() / 32;
+    for (b, scale_out) in x_scales.iter_mut().enumerate().take(num_blocks) {
+        let offset = b * 32;
+        let chunk = &x[offset..offset + 32];
+        let max_abs = unsafe { max_abs_32_neon(chunk.as_ptr()) };
+        quantize_q8_block_with_max_abs(chunk, &mut x_i8[offset..offset + 32], scale_out, max_abs);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn max_abs_32_neon(ptr: *const f32) -> f32 {
+    use std::arch::aarch64::{vabsq_f32, vld1q_f32, vmaxq_f32, vmaxvq_f32};
+
+    let mut max_abs = unsafe { vabsq_f32(vld1q_f32(ptr)) };
+    for offset in [4, 8, 12, 16, 20, 24, 28] {
+        let values = unsafe { vabsq_f32(vld1q_f32(ptr.add(offset))) };
+        max_abs = unsafe { vmaxq_f32(max_abs, values) };
+    }
+    unsafe { vmaxvq_f32(max_abs) }
+}
+
+unsafe fn activation_block_ptr(x_i8: &[i8], block_idx: usize) -> &[i8; 32] {
+    debug_assert!((block_idx + 1) * 32 <= x_i8.len());
+    // SAFETY: callers use model-derived dimensions where each activation block is
+    // exactly 32 i8 lanes and block_idx is bounded by blocks_per_row.
+    unsafe { &*(x_i8.as_ptr().add(block_idx * 32) as *const [i8; 32]) }
 }
 
 pub fn matmul_q8_0(
@@ -238,7 +294,7 @@ pub fn matmul_q8_0(
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
                     let w_block = &w_row[b];
-                    let x_block_vals = &x_i8[b * 32..(b + 1) * 32];
+                    let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
                     let dot_val = crate::q8::dot_i8_scalar(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
                 }
@@ -251,9 +307,7 @@ pub fn matmul_q8_0(
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
                     let w_block = &w_row[b];
-                    let x_block_vals = x_i8[b * 32..(b + 1) * 32]
-                        .try_into()
-                        .expect("Q8 activation blocks are always 32 lanes");
+                    let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
                     let dot_val =
                         crate::q8::dot_i8_neon_32_selected(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
@@ -267,9 +321,7 @@ pub fn matmul_q8_0(
                 let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
                 for b in 0..blocks_per_row {
                     let w_block = &w_row[b];
-                    let x_block_vals = x_i8[b * 32..(b + 1) * 32]
-                        .try_into()
-                        .expect("Q8 activation blocks are always 32 lanes");
+                    let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
                     let dot_val =
                         crate::q8::dot_i8_sdot_32_selected(w_block.values(), x_block_vals);
                     sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
@@ -315,9 +367,7 @@ pub fn matmul_q4_0(
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
         for b in 0..blocks_per_row {
             let w_block = &w_row[b];
-            let x_block_vals = x_i8[b * 32..(b + 1) * 32]
-                .try_into()
-                .expect("Q8 activation blocks are always 32 lanes");
+            let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
             let dot_val = crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
             sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
         }

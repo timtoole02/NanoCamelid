@@ -141,6 +141,11 @@ Qwen2.5-Coder-7B Q4_0 are therefore prefill-bound today. Batched prefill with
 32-64 token chunks is the next required step before claiming 4096-token or
 8192-token Pi chat usability.
 
+The activation quantization path uses a NEON max-abs scan on `aarch64`, while
+preserving scalar rounding/clamping semantics for parity. Q4_0 and Q8_0 matmul
+hot loops read activation blocks through validated raw block pointers to avoid
+repeated slice-to-array conversion in the innermost loop.
+
 ## Tested Models
 
 These rows reflect models that have been loaded and smoke-tested on Raspberry Pi
