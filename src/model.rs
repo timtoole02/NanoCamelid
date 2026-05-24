@@ -422,7 +422,7 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q8_0 => {
-            let blocks = decode_q8_0_blocks(&bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q8_0_blocks(bytes).map_err(|e| e.to_string())?;
             let mut data = Vec::with_capacity(blocks.len() * 32);
             for block in blocks {
                 let scale = block.scale_f32();
@@ -433,7 +433,7 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q4_0 => {
-            let blocks = decode_q4_0_blocks(&bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q4_0_blocks(bytes).map_err(|e| e.to_string())?;
             let mut data = Vec::with_capacity(blocks.len() * 32);
             for block in blocks {
                 let scale = block.scale_f32();
@@ -444,7 +444,7 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q6K => {
-            let blocks = decode_q6_k_blocks(&bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q6_k_blocks(bytes).map_err(|e| e.to_string())?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
             for block in blocks {
                 let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
@@ -480,11 +480,11 @@ fn load_quantized_matrix(
     let bytes = tensor_bytes(mmap, desc)?;
 
     match desc.tensor_type {
-        GgufTensorType::Q8_0 => decode_q8_0_blocks(&bytes)
+        GgufTensorType::Q8_0 => decode_q8_0_blocks(bytes)
             .map(QuantizedMatrix::Q8_0)
             .map_err(|e| e.to_string()),
-        GgufTensorType::Q4_0 => load_q4_0_matrix(&bytes, desc),
-        GgufTensorType::Q6K => decode_q6_k_blocks(&bytes)
+        GgufTensorType::Q4_0 => load_q4_0_matrix(bytes, desc),
+        GgufTensorType::Q6K => decode_q6_k_blocks(bytes)
             .map(QuantizedMatrix::Q6K)
             .map_err(|e| e.to_string()),
         other => Err(format!(

@@ -72,6 +72,9 @@ NanoCamelid keeps the runtime small and explicit:
 - Rust CLI only; no Python service dependency and no required C++ build step.
 - Bounded Rayon worker setup tuned for small ARM boards.
 - Optional CPU affinity when the platform exposes it.
+- GGUF tensor bytes are sourced from an mmap-backed view during model loading,
+  avoiding one temporary file-read buffer per tensor while preserving owned
+  runtime weights.
 - NEON/SDOT hot paths guarded by architecture checks and parity tests.
 - Opt-in experimental Q4_0 1x4 SDOT and swizzled storage paths for benchmark
   comparison.
@@ -276,6 +279,10 @@ Current Pi 2 evidence, measured on local release builds:
 - Strand Rust Coder 14B v1 Q6_K capped-context smoke: load about `39-54s`,
   one-token prompt prefill about `6.6s`, 8 generated tokens in `46.06s`
   (`0.17 tok/sec`).
+- mmap-backed source reads improve the warm Qwen2.5-Coder-7B-Instruct Q4_0
+  load path to `2.63s`, but they do not make large models instant. Strand 14B
+  Q6_K still takes about `47s` to load because the current runtime still
+  decodes/copies quantized blocks and materializes embedding vectors.
 - Q8 SDOT single-block microkernel: split accumulators moved the Pi 2 SDOT
   median from about `1.683 ns/block` to about `1.679 ns/block`.
 
