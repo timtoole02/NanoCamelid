@@ -23,21 +23,26 @@ cd NanoCamelid
 cargo run -- probe
 cargo run -- inspect /path/to/model.gguf
 cargo run --release -- smoke q8-model /path/to/model.gguf "Hello" 1
+cargo run --release -- smoke q8-chat /path/to/model.gguf "Say hello in one sentence." 8
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run -- inspect
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- generate "Hello" 0.0 32
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- chat "Say hello in one sentence." 0.0 32
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- tui 0.0 64
 NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-model "Hello" 1
+NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-chat "Say hello in one sentence." 8
 ```
 
 `probe` prints CPU and SIMD feature information. `inspect` reads GGUF metadata
 and tensor layout. `smoke q8-model` loads a Q8_0 model, checks scalar/runtime
-logit parity, and runs a short greedy generation path. Set
-`NANOCAMELID_MODEL_GGUF` to reuse the same 1B GGUF path across repeated
-`inspect`, `generate`, and `chat` runs, or `NANOCAMELID_SMOKE_GGUF` to
-override that shared default just for smoke validation. `chat` renders a
-single-turn user prompt through recognized tokenizer chat templates, including
-the Llama 3 instruct header/eot format used by Llama 3.2 1B Instruct rows.
+logit parity, and runs a short greedy generation path from directly tokenized
+prompt text. `smoke q8-chat` runs the same parity/generation validation through
+the tokenizer chat template so Llama 3.2 1B Instruct rows can be smoke-tested
+through the real instruct prompt path. Set `NANOCAMELID_MODEL_GGUF` to reuse
+the same 1B GGUF path across repeated `inspect`, `generate`, and `chat` runs,
+or `NANOCAMELID_SMOKE_GGUF` to override that shared default just for smoke
+validation. `chat` renders a single-turn user prompt through recognized
+tokenizer chat templates, including the Llama 3 instruct header/eot format
+used by Llama 3.2 1B Instruct rows.
 `tui` opens an interactive terminal chat that keeps the model loaded, shows the
 connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
 session token-in/token-out counters.
@@ -82,6 +87,14 @@ To include a model-backed smoke test, point the script at a GGUF path that
 already exists on the Pi:
 
 ```bash
+NANOCAMELID_REMOTE_SMOKE_GGUF=/path/on/pi/model.gguf \
+./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
+```
+
+To run the instruct/chat smoke path instead of the raw prompt smoke:
+
+```bash
+NANOCAMELID_REMOTE_SMOKE_KIND=q8-chat \
 NANOCAMELID_REMOTE_SMOKE_GGUF=/path/on/pi/model.gguf \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```

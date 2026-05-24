@@ -143,8 +143,20 @@ fn main() -> ExitCode {
             }
 
             match args.get(1).map(String::as_str) {
-                Some("q8-model") => match parse_smoke_q8_model_args(&args[2..]) {
+                Some("q8-model") => match parse_smoke_args(&args[2..]) {
                     Ok(parsed) => smoke_q8_model(
+                        Path::new(&parsed.model_path),
+                        &parsed.prompt,
+                        parsed.max_tokens,
+                    ),
+                    Err(err) => {
+                        eprintln!("{err}");
+                        print_help(HelpTopic::Smoke);
+                        ExitCode::from(2)
+                    }
+                },
+                Some("q8-chat") => match parse_smoke_args(&args[2..]) {
+                    Ok(parsed) => smoke_q8_chat(
                         Path::new(&parsed.model_path),
                         &parsed.prompt,
                         parsed.max_tokens,
@@ -260,6 +272,10 @@ fn print_usage() {
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!(
         "                                            Compare scalar vs selected Q8 model logits and greedy generation"
+    );
+    println!("  smoke q8-chat <model.gguf> [prompt] [max_tokens]");
+    println!(
+        "                                            Compare scalar vs selected Q8 model logits through the tokenizer chat template"
     );
     println!("  help [command]                            Show top-level or subcommand help");
     println!();
@@ -394,9 +410,9 @@ fn print_smoke_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
-    println!(
-        "  nanocamelid smoke q8-model [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set"
-    );
+    println!("  nanocamelid smoke q8-chat <model.gguf> [prompt] [max_tokens]");
+    println!("  nanocamelid smoke q8-model [prompt] [max_tokens]  with NANOCAMELID_SMOKE_GGUF set");
+    println!("  nanocamelid smoke q8-chat [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set");
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
@@ -416,6 +432,10 @@ fn print_smoke_usage() {
     println!();
     println!(
         "When {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
+    );
+    println!();
+    println!(
+        "`q8-model` tokenizes the prompt directly. `q8-chat` renders a single-turn user message through the model tokenizer chat template before parity/generation."
     );
 }
 
@@ -524,11 +544,11 @@ fn parse_generate_args_with_env(
     })
 }
 
-fn parse_smoke_q8_model_args(args: &[String]) -> Result<SmokeQ8ModelArgs, &'static str> {
-    parse_smoke_q8_model_args_with_env(args, smoke_model_path_from_env())
+fn parse_smoke_args(args: &[String]) -> Result<SmokeQ8ModelArgs, &'static str> {
+    parse_smoke_args_with_env(args, smoke_model_path_from_env())
 }
 
-fn parse_smoke_q8_model_args_with_env(
+fn parse_smoke_args_with_env(
     args: &[String],
     env_model_path: Option<String>,
 ) -> Result<SmokeQ8ModelArgs, &'static str> {
@@ -1019,32 +1039,24 @@ fn inspect_runtime_summary(gguf: &gguf::GgufFile) -> InspectRuntimeSummary {
 fn smoke_q8_model(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode {
     match run_q8_model_smoke(model_path, prompt, max_tokens) {
         Ok(report) => {
-            println!("NanoCamelid Q8 model smoke");
-            println!("path: {}", model_path.display());
-            println!("prompt_tokens: {:?}", report.prompt_tokens);
-            println!(
-                "kernel_selector_requested: {}",
-                report
-                    .kernel_selector
-                    .requested
-                    .map(q8::Q8DotKernel::name)
-                    .unwrap_or("default")
-            );
-            println!(
-                "kernel_selector_selected: {}",
-                report.kernel_selector.selected.name()
-            );
-            if let Some(reason) = report.kernel_selector.fallback_reason {
-                println!("kernel_selector_fallback: {reason}");
-            }
-            println!("max_logit_delta: {:.8}", report.max_logit_delta);
-            println!("generated_tokens: {:?}", report.generated_tokens);
-            println!("generated_text: {:?}", report.generated_text);
-            println!("status: ok");
+            print_q8_smoke_report("NanoCamelid Q8 model smoke", model_path, &report);
             ExitCode::SUCCESS
         }
         Err(err) => {
             eprintln!("Q8 model smoke failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode {
+    match run_q8_chat_smoke(model_path, prompt, max_tokens) {
+        Ok(report) => {
+            print_q8_smoke_report("NanoCamelid Q8 chat smoke", model_path, &report);
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Q8 chat smoke failed: {err}");
             ExitCode::FAILURE
         }
     }
@@ -1057,6 +1069,15 @@ struct Q8ModelSmokeReport {
     generated_text: String,
     max_logit_delta: f32,
     kernel_selector: q8::Q8DotKernelSelector,
+    chat_renderer: Option<&'static str>,
+    chat_template_format: Option<&'static str>,
+}
+
+#[derive(Debug)]
+struct Q8SmokePromptPlan {
+    prompt_tokens: Vec<u32>,
+    chat_renderer: Option<&'static str>,
+    chat_template_format: Option<&'static str>,
 }
 
 fn run_q8_model_smoke(
@@ -1064,6 +1085,47 @@ fn run_q8_model_smoke(
     prompt: &str,
     max_tokens: usize,
 ) -> Result<Q8ModelSmokeReport, String> {
+    run_q8_smoke_with_prompt_plan(model_path, max_tokens, |tokenizer| {
+        let prompt_tokens = tokenizer
+            .encode(prompt, true, true)
+            .map_err(|err| format!("failed to tokenize prompt: {err}"))?;
+        Ok(Q8SmokePromptPlan {
+            prompt_tokens,
+            chat_renderer: None,
+            chat_template_format: None,
+        })
+    })
+}
+
+fn run_q8_chat_smoke(
+    model_path: &Path,
+    prompt: &str,
+    max_tokens: usize,
+) -> Result<Q8ModelSmokeReport, String> {
+    run_q8_smoke_with_prompt_plan(model_path, max_tokens, |tokenizer| {
+        let rendered = tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
+            role: "user",
+            content: prompt,
+        }]);
+        let prompt_tokens = tokenizer
+            .encode(&rendered.text, rendered.add_special, rendered.parse_special)
+            .map_err(|err| format!("failed to tokenize chat prompt: {err}"))?;
+        Ok(Q8SmokePromptPlan {
+            prompt_tokens,
+            chat_renderer: Some(rendered.renderer),
+            chat_template_format: tokenizer.chat_template_format(),
+        })
+    })
+}
+
+fn run_q8_smoke_with_prompt_plan<F>(
+    model_path: &Path,
+    max_tokens: usize,
+    prompt_builder: F,
+) -> Result<Q8ModelSmokeReport, String>
+where
+    F: FnOnce(&tokenizer::Tokenizer) -> Result<Q8SmokePromptPlan, String>,
+{
     let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
     let config = model::LlamaModelConfig::from_gguf(&gguf)
         .map_err(|err| format!("failed to parse config: {err}"))?;
@@ -1071,9 +1133,8 @@ fn run_q8_model_smoke(
         .map_err(|err| format!("failed to load tokenizer: {err}"))?;
     let weights = model::LlamaWeights::load(model_path, &config, &gguf)
         .map_err(|err| format!("failed to load weights: {err}"))?;
-    let prompt_tokens = tokenizer
-        .encode(prompt, true, true)
-        .map_err(|err| format!("failed to tokenize prompt: {err}"))?;
+    let prompt_plan = prompt_builder(&tokenizer)?;
+    let prompt_tokens = prompt_plan.prompt_tokens;
     if prompt_tokens.is_empty() {
         return Err("prompt tokenized to an empty sequence".to_owned());
     }
@@ -1185,7 +1246,41 @@ fn run_q8_model_smoke(
         generated_text,
         max_logit_delta,
         kernel_selector: selected,
+        chat_renderer: prompt_plan.chat_renderer,
+        chat_template_format: prompt_plan.chat_template_format,
     })
+}
+
+fn print_q8_smoke_report(title: &str, model_path: &Path, report: &Q8ModelSmokeReport) {
+    println!("{title}");
+    println!("path: {}", model_path.display());
+    if let Some(renderer) = report.chat_renderer {
+        println!("chat_renderer: {renderer}");
+        println!(
+            "chat_template_format: {}",
+            report.chat_template_format.unwrap_or("none")
+        );
+    }
+    println!("prompt_tokens: {:?}", report.prompt_tokens);
+    println!(
+        "kernel_selector_requested: {}",
+        report
+            .kernel_selector
+            .requested
+            .map(q8::Q8DotKernel::name)
+            .unwrap_or("default")
+    );
+    println!(
+        "kernel_selector_selected: {}",
+        report.kernel_selector.selected.name()
+    );
+    if let Some(reason) = report.kernel_selector.fallback_reason {
+        println!("kernel_selector_fallback: {reason}");
+    }
+    println!("max_logit_delta: {:.8}", report.max_logit_delta);
+    println!("generated_tokens: {:?}", report.generated_tokens);
+    println!("generated_text: {:?}", report.generated_text);
+    println!("status: ok");
 }
 
 fn rope_scaling_from_gguf(gguf: &gguf::GgufFile) -> inference::RopeScaling {
@@ -1849,7 +1944,7 @@ mod tests {
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
         inspect_runtime_summary, is_help_flag, parse_generate_args_with_env,
-        parse_smoke_q8_model_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
+        parse_smoke_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
         validate_generation_budget,
     };
 
@@ -2080,7 +2175,7 @@ flags\t\t: sse4_2 avx2
 
     #[test]
     fn smoke_q8_model_args_use_explicit_model_path_without_env() {
-        let parsed = parse_smoke_q8_model_args_with_env(
+        let parsed = parse_smoke_args_with_env(
             &[
                 "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
                 "Hello".to_owned(),
@@ -2097,7 +2192,7 @@ flags\t\t: sse4_2 avx2
 
     #[test]
     fn smoke_q8_model_args_fall_back_to_env_model_path() {
-        let parsed = parse_smoke_q8_model_args_with_env(
+        let parsed = parse_smoke_args_with_env(
             &["Explain rotary embeddings".to_owned(), "2".to_owned()],
             Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
         )
@@ -2110,7 +2205,7 @@ flags\t\t: sse4_2 avx2
 
     #[test]
     fn smoke_q8_model_args_prefer_explicit_gguf_even_when_env_is_set() {
-        let parsed = parse_smoke_q8_model_args_with_env(
+        let parsed = parse_smoke_args_with_env(
             &[
                 "/override/model.gguf".to_owned(),
                 "Hello".to_owned(),
@@ -2127,7 +2222,7 @@ flags\t\t: sse4_2 avx2
 
     #[test]
     fn smoke_q8_model_args_require_model_when_env_is_missing() {
-        let err = parse_smoke_q8_model_args_with_env(&[], None)
+        let err = parse_smoke_args_with_env(&[], None)
             .expect_err("missing model path should fail without env");
 
         assert_eq!(
