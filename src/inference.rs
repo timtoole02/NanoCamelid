@@ -390,6 +390,108 @@ pub fn softmax(x: &mut [f32]) {
     }
 }
 
+fn dot_f32(lhs: &[f32], rhs: &[f32]) -> f32 {
+    debug_assert_eq!(lhs.len(), rhs.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { dot_f32_neon(lhs, rhs) };
+        }
+    }
+    dot_f32_scalar(lhs, rhs)
+}
+
+fn dot_f32_scalar(lhs: &[f32], rhs: &[f32]) -> f32 {
+    lhs.iter().zip(rhs).map(|(&a, &b)| a * b).sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn dot_f32_neon(lhs: &[f32], rhs: &[f32]) -> f32 {
+    use std::arch::aarch64::{vaddq_f32, vaddvq_f32, vdupq_n_f32, vld1q_f32, vmlaq_f32};
+
+    let mut acc0 = unsafe { vdupq_n_f32(0.0) };
+    let mut acc1 = unsafe { vdupq_n_f32(0.0) };
+    let mut acc2 = unsafe { vdupq_n_f32(0.0) };
+    let mut acc3 = unsafe { vdupq_n_f32(0.0) };
+    let chunks = lhs.len() / 16;
+    for chunk_idx in 0..chunks {
+        let offset = chunk_idx * 16;
+        unsafe {
+            acc0 = vmlaq_f32(
+                acc0,
+                vld1q_f32(lhs.as_ptr().add(offset)),
+                vld1q_f32(rhs.as_ptr().add(offset)),
+            );
+            acc1 = vmlaq_f32(
+                acc1,
+                vld1q_f32(lhs.as_ptr().add(offset + 4)),
+                vld1q_f32(rhs.as_ptr().add(offset + 4)),
+            );
+            acc2 = vmlaq_f32(
+                acc2,
+                vld1q_f32(lhs.as_ptr().add(offset + 8)),
+                vld1q_f32(rhs.as_ptr().add(offset + 8)),
+            );
+            acc3 = vmlaq_f32(
+                acc3,
+                vld1q_f32(lhs.as_ptr().add(offset + 12)),
+                vld1q_f32(rhs.as_ptr().add(offset + 12)),
+            );
+        }
+    }
+
+    let mut sum = unsafe { vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3))) };
+    for idx in chunks * 16..lhs.len() {
+        sum += lhs[idx] * rhs[idx];
+    }
+    sum
+}
+
+fn add_weighted_f32(out: &mut [f32], values: &[f32], weight: f32) {
+    debug_assert_eq!(out.len(), values.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                add_weighted_f32_neon(out, values, weight);
+            }
+            return;
+        }
+    }
+    add_weighted_f32_scalar(out, values, weight);
+}
+
+fn add_weighted_f32_scalar(out: &mut [f32], values: &[f32], weight: f32) {
+    for (dst, &value) in out.iter_mut().zip(values) {
+        *dst += weight * value;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn add_weighted_f32_neon(out: &mut [f32], values: &[f32], weight: f32) {
+    use std::arch::aarch64::{vdupq_n_f32, vld1q_f32, vmlaq_f32, vst1q_f32};
+
+    let weight_vec = unsafe { vdupq_n_f32(weight) };
+    let chunks = out.len() / 16;
+    for chunk_idx in 0..chunks {
+        let offset = chunk_idx * 16;
+        for lane_offset in [0, 4, 8, 12] {
+            unsafe {
+                let dst_ptr = out.as_mut_ptr().add(offset + lane_offset);
+                let dst = vld1q_f32(dst_ptr);
+                let src = vld1q_f32(values.as_ptr().add(offset + lane_offset));
+                vst1q_f32(dst_ptr, vmlaq_f32(dst, src, weight_vec));
+            }
+        }
+    }
+
+    for idx in chunks * 16..out.len() {
+        out[idx] += weight * values[idx];
+    }
+}
+
 pub fn forward_pass<'a>(
     token_id: usize,
     pos: usize,
@@ -551,11 +653,7 @@ fn forward_pass_inner<'a>(
                 let k_head = &k_cache[p * cache.kv_width + kv_h * config.head_dim
                     ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
 
-                let mut score = 0.0;
-                for i in 0..config.head_dim {
-                    score += q_head[i] * k_head[i];
-                }
-                ws.attn_scores[p] = score * scale;
+                ws.attn_scores[p] = dot_f32(q_head, k_head) * scale;
             }
 
             // Softmax
@@ -567,9 +665,7 @@ fn forward_pass_inner<'a>(
                 let v_head = &v_cache[p * cache.kv_width + kv_h * config.head_dim
                     ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
                 let weight = ws.attn_scores[p];
-                for i in 0..config.head_dim {
-                    out_head[i] += weight * v_head[i];
-                }
+                add_weighted_f32(out_head, v_head, weight);
             }
         }
 
@@ -741,7 +837,10 @@ fn rand_simple() -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RopeScaling, apply_rope, matmul_q4_0, matmul_q6_k, matmul_q8_0};
+    use super::{
+        RopeScaling, add_weighted_f32, add_weighted_f32_scalar, apply_rope, dot_f32,
+        dot_f32_scalar, matmul_q4_0, matmul_q6_k, matmul_q8_0,
+    };
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
         QK_K_BLOCK_SIZE,
@@ -787,6 +886,30 @@ mod tests {
             *scale = ((seed + idx as i16 * 3).rem_euclid(15) - 7) as i8;
         }
         Q6KBlock::from_parts(ql, qh, scales, scale_bits)
+    }
+
+    #[test]
+    fn attention_vector_helpers_match_scalar_reference() {
+        let lhs: Vec<f32> = (0..130).map(|idx| idx as f32 * 0.03125 - 2.0).collect();
+        let rhs: Vec<f32> = (0..130).map(|idx| 1.0 - idx as f32 * 0.015625).collect();
+        let candidate = dot_f32(&lhs, &rhs);
+        let expected = dot_f32_scalar(&lhs, &rhs);
+        assert!(
+            (candidate - expected).abs() < 1e-4,
+            "candidate {candidate} expected {expected}"
+        );
+
+        let mut candidate_out: Vec<f32> = (0..130).map(|idx| idx as f32 * 0.125).collect();
+        let mut expected_out = candidate_out.clone();
+        add_weighted_f32(&mut candidate_out, &rhs, 0.375);
+        add_weighted_f32_scalar(&mut expected_out, &rhs, 0.375);
+
+        for (idx, (&candidate, &expected)) in candidate_out.iter().zip(&expected_out).enumerate() {
+            assert!(
+                (candidate - expected).abs() < 1e-6,
+                "idx {idx} candidate {candidate} expected {expected}"
+            );
+        }
     }
 
     #[test]

@@ -128,6 +128,14 @@ minimum Rayon split size for Q8_0, Q4_0, and Q6_K matmul rows. The default is
 `128`, which was neutral-to-slightly-positive on the Pi 2 short prompts tested.
 Set it to `1` to approximate the old row-splitting behavior.
 
+Decode-time attention now uses ARM NEON helpers for Q/K dot products and V
+weighted accumulation when running on `aarch64`, with scalar reference fallbacks
+for portability. This keeps the long-context decode hot path moving in the right
+direction, but prompt ingestion is still sequential token-by-token prefill.
+Large prompt tests on Qwen2.5-Coder-7B Q4_0 are therefore prefill-bound today;
+batched prefill with 32-64 token chunks is the next required step before claiming
+4096-token or 8192-token Pi chat usability.
+
 ## Tested Models
 
 These rows reflect models that have been loaded and smoke-tested on Raspberry Pi
@@ -147,7 +155,8 @@ Latest clean Pi 2 serial chat timings from the current validated runs:
 | --- | --- | --- | --- |
 | Llama 3.2 1B Instruct | Q4_0 | 8-token short chat | Model load ~0.95-0.97s, generation ~1.96-1.97s, ~4.07-4.09 tok/sec. |
 | Llama 3.2 1B Instruct | Q8_0 | Same 8-token short chat | Model load ~1.32s, generation ~2.21s, ~3.63 tok/sec. |
-| Qwen2.5-Coder-7B-Instruct | Q4_0 | 8-token short chat | Same prompt improved from 1.55 tok/sec at `c6e6d67` to 1.90-1.93 tok/sec after fused Q6_K output projection. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | 8-token short chat | Same prompt improved from 1.55 tok/sec at `c6e6d67` to 1.90-1.93 tok/sec after fused Q6_K output projection; NEON attention helpers preserve the same short-prompt range. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | Repeated ~170-token prompt | Model load ~3.60s, generation 8 tokens in ~4.33s, ~1.85 tok/sec after prefill. Larger ~650-token and ~2500-token stress prompts hit timeout before decode, confirming sequential prefill as the blocker. |
 
 The Q4_0 1B path is faster than Q8_0 on the same prompt, but the measured
 end-to-end gain is currently about 1.12x, not the theoretical 1.8-2.0x memory
