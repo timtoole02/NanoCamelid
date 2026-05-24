@@ -13,6 +13,9 @@ pub const DOT_KERNEL_ENV: &str = "NANOCAMELID_Q8_DOT_KERNEL";
 pub const SDOT_CANDIDATE_ENV: &str = "NANOCAMELID_Q8_DOT_SDOT";
 pub const Q8_BLOCK_SIZE: usize = 32;
 pub const Q8_0_BLOCK_BYTES: usize = 2 + Q8_BLOCK_SIZE;
+pub const Q4_0_BLOCK_BYTES: usize = 2 + (Q8_BLOCK_SIZE / 2);
+pub const QK_K_BLOCK_SIZE: usize = 256;
+pub const Q6_K_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
 
 const BENCH_BLOCKS: usize = 1_024;
 const BENCH_ELEMENTS: usize = Q8_BLOCK_SIZE * BENCH_BLOCKS;
@@ -60,6 +63,20 @@ pub struct DotTimingSummary {
 pub struct Q8_0Block {
     scale_bits: u16,
     values: [i8; Q8_BLOCK_SIZE],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q4_0Block {
+    scale_bits: u16,
+    values: [u8; Q8_BLOCK_SIZE / 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q6KBlock {
+    ql: [u8; 128],
+    qh: [u8; 64],
+    scales: [i8; 16],
+    scale_bits: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -248,6 +265,108 @@ impl Q8_0Block {
     }
 }
 
+impl Q4_0Block {
+    pub fn from_bytes(bytes: &[u8; Q4_0_BLOCK_BYTES]) -> Self {
+        let scale_bits = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let mut values = [0_u8; Q8_BLOCK_SIZE / 2];
+        values.copy_from_slice(&bytes[2..]);
+
+        Self { scale_bits, values }
+    }
+
+    pub fn from_parts(scale_bits: u16, values: [u8; Q8_BLOCK_SIZE / 2]) -> Self {
+        Self { scale_bits, values }
+    }
+
+    pub fn scale_bits(&self) -> u16 {
+        self.scale_bits
+    }
+
+    pub fn scale_f32(&self) -> f32 {
+        f16_bits_to_f32(self.scale_bits)
+    }
+
+    pub fn packed_values(&self) -> &[u8; Q8_BLOCK_SIZE / 2] {
+        &self.values
+    }
+
+    pub fn unpack_values(&self) -> [i8; Q8_BLOCK_SIZE] {
+        let mut out = [0_i8; Q8_BLOCK_SIZE];
+        for (idx, &byte) in self.values.iter().enumerate() {
+            out[idx] = ((byte & 0x0f) as i8) - 8;
+            out[idx + 16] = ((byte >> 4) as i8) - 8;
+        }
+        out
+    }
+}
+
+impl Q6KBlock {
+    pub fn from_bytes(bytes: &[u8; Q6_K_BLOCK_BYTES]) -> Self {
+        let mut ql = [0_u8; 128];
+        let mut qh = [0_u8; 64];
+        let mut scales = [0_i8; 16];
+        ql.copy_from_slice(&bytes[0..128]);
+        qh.copy_from_slice(&bytes[128..192]);
+        for (scale, &byte) in scales.iter_mut().zip(&bytes[192..208]) {
+            *scale = i8::from_le_bytes([byte]);
+        }
+        let scale_bits = u16::from_le_bytes([bytes[208], bytes[209]]);
+
+        Self {
+            ql,
+            qh,
+            scales,
+            scale_bits,
+        }
+    }
+
+    pub fn from_parts(ql: [u8; 128], qh: [u8; 64], scales: [i8; 16], scale_bits: u16) -> Self {
+        Self {
+            ql,
+            qh,
+            scales,
+            scale_bits,
+        }
+    }
+
+    pub fn scale_bits(&self) -> u16 {
+        self.scale_bits
+    }
+
+    pub fn scale_f32(&self) -> f32 {
+        f16_bits_to_f32(self.scale_bits)
+    }
+
+    pub fn dequantize(&self, out: &mut [f32; QK_K_BLOCK_SIZE]) {
+        let d = self.scale_f32();
+        let mut ql_offset = 0;
+        let mut qh_offset = 0;
+        let mut scale_offset = 0;
+
+        for n in (0..QK_K_BLOCK_SIZE).step_by(128) {
+            for l in 0..32 {
+                let is = l / 16;
+                let qh = self.qh[qh_offset + l];
+                let q1 = ((self.ql[ql_offset + l] & 0x0f) | ((qh & 0x03) << 4)) as i8 - 32;
+                let q2 =
+                    ((self.ql[ql_offset + l + 32] & 0x0f) | (((qh >> 2) & 0x03) << 4)) as i8 - 32;
+                let q3 = ((self.ql[ql_offset + l] >> 4) | (((qh >> 4) & 0x03) << 4)) as i8 - 32;
+                let q4 =
+                    ((self.ql[ql_offset + l + 32] >> 4) | (((qh >> 6) & 0x03) << 4)) as i8 - 32;
+
+                out[n + l] = d * self.scales[scale_offset + is] as f32 * q1 as f32;
+                out[n + l + 32] = d * self.scales[scale_offset + is + 2] as f32 * q2 as f32;
+                out[n + l + 64] = d * self.scales[scale_offset + is + 4] as f32 * q3 as f32;
+                out[n + l + 96] = d * self.scales[scale_offset + is + 6] as f32 * q4 as f32;
+            }
+
+            ql_offset += 64;
+            qh_offset += 32;
+            scale_offset += 8;
+        }
+    }
+}
+
 pub fn decode_q8_0_blocks(bytes: &[u8]) -> Result<Vec<Q8_0Block>, Q8BlockError> {
     if !bytes.len().is_multiple_of(Q8_0_BLOCK_BYTES) {
         return Err(Q8BlockError::MisalignedLength {
@@ -265,6 +384,62 @@ pub fn decode_q8_0_blocks(bytes: &[u8]) -> Result<Vec<Q8_0Block>, Q8BlockError> 
             Q8_0Block::from_bytes(bytes)
         })
         .collect())
+}
+
+pub fn decode_q4_0_blocks(bytes: &[u8]) -> Result<Vec<Q4_0Block>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(Q4_0_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: Q4_0_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(Q4_0_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; Q4_0_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees Q4_0 block length");
+            Q4_0Block::from_bytes(bytes)
+        })
+        .collect())
+}
+
+pub fn decode_q6_k_blocks(bytes: &[u8]) -> Result<Vec<Q6KBlock>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(Q6_K_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: Q6_K_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(Q6_K_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; Q6_K_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees Q6_K block length");
+            Q6KBlock::from_bytes(bytes)
+        })
+        .collect())
+}
+
+pub fn dot_q4_0_q8_0_scalar(weight: &Q4_0Block, activation: &[i8; Q8_BLOCK_SIZE]) -> i32 {
+    let weight_values = weight.unpack_values();
+    dot_i8_scalar(&weight_values, activation)
+}
+
+pub fn dot_q4_0_q8_0_with_selector(
+    weight: &Q4_0Block,
+    activation: &[i8; Q8_BLOCK_SIZE],
+    kernel_selector: Q8DotKernelSelector,
+) -> i32 {
+    let weight_values = weight.unpack_values();
+    match kernel_selector.selected {
+        Q8DotKernel::Scalar => dot_i8_scalar(&weight_values, activation),
+        Q8DotKernel::Neon => dot_i8_neon_32_selected(&weight_values, activation),
+        Q8DotKernel::Sdot => dot_i8_sdot_32_selected(&weight_values, activation),
+    }
 }
 
 impl Q8_0RowReader {
@@ -856,10 +1031,12 @@ mod tests {
     use crate::gguf::{GgufTensorDescriptor, GgufTensorType};
 
     use super::{
-        Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel,
-        Q8DotKernelSelector, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
+        Q4_0_BLOCK_BYTES, Q4_0Block, Q6_K_BLOCK_BYTES, Q6KBlock, Q8_0_BLOCK_BYTES, Q8_0Block,
+        Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector,
+        QK_K_BLOCK_SIZE, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
         dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
-        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
+        dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector, dot_q8_0_blocks_scalar,
+        dot_q8_0_rows_i32, f16_bits_to_f32,
     };
 
     #[test]
@@ -980,6 +1157,82 @@ mod tests {
                 block_bytes: Q8_0_BLOCK_BYTES,
             })
         );
+    }
+
+    #[test]
+    fn q4_0_block_decodes_low_then_high_nibbles() {
+        let mut bytes = [0_u8; Q4_0_BLOCK_BYTES];
+        bytes[..2].copy_from_slice(&0x3c00_u16.to_le_bytes());
+        for (idx, byte) in bytes[2..].iter_mut().enumerate() {
+            *byte = idx as u8 | ((15 - idx as u8) << 4);
+        }
+
+        let block = Q4_0Block::from_bytes(&bytes);
+        let values = block.unpack_values();
+
+        assert_eq!(block.scale_bits(), 0x3c00);
+        assert_eq!(block.scale_f32(), 1.0);
+        assert_eq!(values[0], -8);
+        assert_eq!(values[15], 7);
+        assert_eq!(values[16], 7);
+        assert_eq!(values[31], -8);
+    }
+
+    #[test]
+    fn q4_0_q8_0_scalar_dot_matches_unpacked_reference() {
+        let q4 = Q4_0Block::from_parts(
+            0x3c00,
+            [
+                0x80, 0x91, 0xa2, 0xb3, 0xc4, 0xd5, 0xe6, 0xf7, 0x08, 0x19, 0x2a, 0x3b, 0x4c, 0x5d,
+                0x6e, 0x7f,
+            ],
+        );
+        let q8: [i8; Q8_BLOCK_SIZE] = core::array::from_fn(|idx| idx as i8 - 16);
+        let unpacked = q4.unpack_values();
+        let expected: i32 = unpacked
+            .iter()
+            .zip(q8.iter())
+            .map(|(&left, &right)| i32::from(left) * i32::from(right))
+            .sum();
+
+        assert_eq!(dot_q4_0_q8_0_scalar(&q4, &q8), expected);
+        for kernel in [Q8DotKernel::Neon, Q8DotKernel::Sdot] {
+            assert_eq!(
+                dot_q4_0_q8_0_with_selector(
+                    &q4,
+                    &q8,
+                    Q8DotKernelSelector {
+                        requested: Some(kernel),
+                        selected: kernel,
+                        fallback_reason: None,
+                    },
+                ),
+                expected,
+                "{kernel:?} Q4/Q8 dot diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn q6_k_block_dequantizes_quantized_values_and_scales() {
+        let mut ql = [0_u8; 128];
+        let mut qh = [0_u8; 64];
+        let mut scales = [0_i8; 16];
+        scales.fill(1);
+        ql[0] = 0x10;
+        ql[32] = 0x02;
+        qh[0] = 0b11_10_01_00;
+
+        let block = Q6KBlock::from_parts(ql, qh, scales, 0x3c00);
+        let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
+        block.dequantize(&mut values);
+
+        assert_eq!(Q6_K_BLOCK_BYTES, 210);
+        assert_eq!(block.scale_bits(), 0x3c00);
+        assert_eq!(values[0], -32.0);
+        assert_eq!(values[32], -14.0);
+        assert_eq!(values[64], 1.0);
+        assert_eq!(values[96], 16.0);
     }
 
     #[test]

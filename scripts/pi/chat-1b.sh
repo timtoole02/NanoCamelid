@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# Start NanoCamelid's terminal chat against the default Pi-local 1B Q8_0 model.
+# Start NanoCamelid's terminal chat against the default Pi-local 1B model.
 set -euo pipefail
 
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
-MODEL="${NANOCAMELID_MODEL_GGUF:-$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf}"
+Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
+Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+if [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
+  MODEL="$NANOCAMELID_MODEL_GGUF"
+elif [[ -f "$Q4_MODEL" ]]; then
+  MODEL="$Q4_MODEL"
+else
+  MODEL="$Q8_MODEL"
+fi
 TEMP="${1:-${NANOCAMELID_TEMP:-0.0}}"
 MAX_TOKENS="${2:-${NANOCAMELID_MAX_TOKENS:-64}}"
 BINARY="${NANOCAMELID_BIN:-$WORKSPACE/target/release/nanocamelid}"
@@ -17,7 +25,7 @@ export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
 
 if [[ ! -f "$MODEL" ]]; then
   echo "Model not found: $MODEL" >&2
-  echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf or place the 1B Q8_0 GGUF at the default path." >&2
+  echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
   exit 2
 fi
 

@@ -49,18 +49,19 @@ session token-in/token-out counters, TTFT, and throughput.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
 
-On a prepared Pi workspace with the Llama 3.2 1B Instruct Q8_0 GGUF at the
-default model path, start the interactive 1B chat directly:
+On a prepared Pi workspace with the Llama 3.2 1B Instruct Q4_0 or Q8_0 GGUF at
+the default model path, start the interactive 1B chat directly:
 
 ```bash
 ./scripts/pi/chat-1b.sh
 ```
 
-The launcher defaults the Q8 dot-product path to NEON on Pi-class ARM64
-hardware and runs a `smoke q8-chat` preflight before opening the TUI, so the
-1B instruct path keeps the scalar-vs-selected-kernel parity gate in front of
-interactive chat. It still honors `NANOCAMELID_Q8_DOT_KERNEL` if you want to
-force a different kernel for comparison.
+The launcher prefers the Pi-local Q4_0 model when present, falls back to Q8_0,
+and defaults the block dot path to SDOT on Pi-class ARM64 hardware. It runs a
+`smoke q8-chat` preflight before opening the TUI, so the 1B instruct path keeps
+the scalar-vs-selected-kernel parity gate in front of interactive chat. It still
+honors `NANOCAMELID_MODEL_GGUF` and `NANOCAMELID_Q8_DOT_KERNEL` if you want to
+force a different model or kernel for comparison.
 
 Optional arguments set temperature and maximum assistant output tokens:
 

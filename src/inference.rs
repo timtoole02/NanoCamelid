@@ -1,5 +1,5 @@
-use crate::model::{LlamaModelConfig, LlamaWeights};
-use crate::q8::{Q8_0Block, Q8DotKernel, Q8DotKernelSelector};
+use crate::model::{LlamaModelConfig, LlamaWeights, QuantizedMatrix};
+use crate::q8::{Q4_0Block, Q8_0Block, Q8DotKernel, Q8DotKernelSelector};
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -243,6 +243,50 @@ pub fn matmul_q8_0(
     }
 }
 
+pub fn matmul_quantized(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &QuantizedMatrix,
+    rows: usize,
+    cols: usize,
+    selector: Q8DotKernelSelector,
+) {
+    match w {
+        QuantizedMatrix::Q8_0(blocks) => {
+            matmul_q8_0(out, x_i8, x_scales, blocks, rows, cols, selector)
+        }
+        QuantizedMatrix::Q4_0(blocks) => {
+            matmul_q4_0(out, x_i8, x_scales, blocks, rows, cols, selector)
+        }
+    }
+}
+
+pub fn matmul_q4_0(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    _rows: usize,
+    cols: usize,
+    selector: Q8DotKernelSelector,
+) {
+    let blocks_per_row = cols / 32;
+    out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
+        let mut sum = 0.0_f32;
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for b in 0..blocks_per_row {
+            let w_block = &w_row[b];
+            let x_block_vals = x_i8[b * 32..(b + 1) * 32]
+                .try_into()
+                .expect("Q8 activation blocks are always 32 lanes");
+            let dot_val = crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
+            sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
+        }
+        *out_val = sum;
+    });
+}
+
 pub fn matmul_f32(out: &mut [f32], x: &[f32], w: &[f32], rows: usize, cols: usize) {
     for r in 0..rows {
         let mut sum = 0.0_f32;
@@ -361,7 +405,7 @@ fn forward_pass_inner<'a>(
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
 
         // Q, K, V Projections
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.q,
             &ws.x_i8,
             &ws.x_scales,
@@ -370,7 +414,7 @@ fn forward_pass_inner<'a>(
             config.embedding_length,
             options.q8_selector,
         );
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.k,
             &ws.x_i8,
             &ws.x_scales,
@@ -379,7 +423,7 @@ fn forward_pass_inner<'a>(
             config.embedding_length,
             options.q8_selector,
         );
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.v,
             &ws.x_i8,
             &ws.x_scales,
@@ -457,7 +501,7 @@ fn forward_pass_inner<'a>(
 
         // Projection O (wo)
         quantize_f32_to_q8_0(&ws.attn_output, &mut ws.x_i8, &mut ws.x_scales);
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.hidden,
             &ws.x_i8,
             &ws.x_scales,
@@ -487,7 +531,7 @@ fn forward_pass_inner<'a>(
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
 
         // Gate (w1) & Up (w3) matmuls
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.ffn_gate,
             &ws.x_i8,
             &ws.x_scales,
@@ -496,7 +540,7 @@ fn forward_pass_inner<'a>(
             config.embedding_length,
             options.q8_selector,
         );
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.ffn_up,
             &ws.x_i8,
             &ws.x_scales,
@@ -516,7 +560,7 @@ fn forward_pass_inner<'a>(
 
         // Down projection (w2)
         quantize_f32_to_q8_0(&ws.ffn_gate_up, &mut ws.x_i8, &mut ws.x_scales);
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.hidden,
             &ws.x_i8,
             &ws.x_scales,
@@ -547,7 +591,7 @@ fn forward_pass_inner<'a>(
     // 4. Logits Projection
     if let Some(out_proj) = &weights.output_projection {
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
-        matmul_q8_0(
+        matmul_quantized(
             &mut ws.logits,
             &ws.x_i8,
             &ws.x_scales,
@@ -623,8 +667,8 @@ fn rand_simple() -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RopeScaling, apply_rope, matmul_q8_0};
-    use crate::q8::{Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector};
+    use super::{RopeScaling, apply_rope, matmul_q4_0, matmul_q8_0};
+    use crate::q8::{Q4_0Block, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector};
 
     fn selector(selected: Q8DotKernel) -> Q8DotKernelSelector {
         Q8DotKernelSelector {
@@ -640,6 +684,16 @@ mod tests {
             *value = ((seed + idx as i16 * 7) % 63 - 31) as i8;
         }
         Q8_0Block::from_parts(scale_bits, values)
+    }
+
+    fn q4_block(scale_bits: u16, seed: i16) -> Q4_0Block {
+        let mut values = [0_u8; Q8_BLOCK_SIZE / 2];
+        for (idx, value) in values.iter_mut().enumerate() {
+            let low = ((seed + idx as i16 * 3).rem_euclid(16)) as u8;
+            let high = ((seed + (idx as i16 + 16) * 3).rem_euclid(16)) as u8;
+            *value = low | (high << 4);
+        }
+        Q4_0Block::from_parts(scale_bits, values)
     }
 
     #[test]
@@ -679,6 +733,96 @@ mod tests {
                 selector(kernel),
             );
             assert_eq!(candidate, scalar, "{kernel:?} matmul diverged");
+        }
+    }
+
+    #[test]
+    fn matmul_q4_matches_dequantized_reference() {
+        let rows = 3;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 5) % 61) as i8 - 30).collect();
+        let x_scales = [0.25, 0.5];
+        let weights = [
+            q4_block(0x3800, 1),
+            q4_block(0x3c00, 2),
+            q4_block(0x4000, 3),
+            q4_block(0x4200, 4),
+            q4_block(0x4400, 5),
+            q4_block(0x4600, 6),
+        ];
+        let mut candidate = vec![0.0; rows];
+        matmul_q4_0(
+            &mut candidate,
+            &x_i8,
+            &x_scales,
+            &weights,
+            rows,
+            cols,
+            selector(Q8DotKernel::Scalar),
+        );
+
+        let blocks_per_row = cols / Q8_BLOCK_SIZE;
+        let mut expected = vec![0.0; rows];
+        for r in 0..rows {
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let block = &weights[r * blocks_per_row + b];
+                let scale = block.scale_f32() * x_scales[b];
+                let unpacked = block.unpack_values();
+                for i in 0..Q8_BLOCK_SIZE {
+                    sum += scale * unpacked[i] as f32 * x_i8[b * Q8_BLOCK_SIZE + i] as f32;
+                }
+            }
+            expected[r] = sum;
+        }
+
+        for r in 0..rows {
+            assert!(
+                (candidate[r] - expected[r]).abs() < 1e-5,
+                "row {r} candidate {} expected {}",
+                candidate[r],
+                expected[r]
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_q4_selected_kernels_match_scalar_reference() {
+        let rows = 3;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 5) % 61) as i8 - 30).collect();
+        let x_scales = [0.25, 0.5];
+        let weights = [
+            q4_block(0x3800, 1),
+            q4_block(0x3c00, 2),
+            q4_block(0x4000, 3),
+            q4_block(0x4200, 4),
+            q4_block(0x4400, 5),
+            q4_block(0x4600, 6),
+        ];
+        let mut scalar = vec![0.0; rows];
+        matmul_q4_0(
+            &mut scalar,
+            &x_i8,
+            &x_scales,
+            &weights,
+            rows,
+            cols,
+            selector(Q8DotKernel::Scalar),
+        );
+
+        for kernel in [Q8DotKernel::Neon, Q8DotKernel::Sdot] {
+            let mut candidate = vec![0.0; rows];
+            matmul_q4_0(
+                &mut candidate,
+                &x_i8,
+                &x_scales,
+                &weights,
+                rows,
+                cols,
+                selector(kernel),
+            );
+            assert_eq!(candidate, scalar, "{kernel:?} Q4 matmul diverged");
         }
     }
 

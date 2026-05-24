@@ -1,7 +1,10 @@
 use std::{fs::File, os::unix::fs::FileExt, path::Path};
 
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
-use crate::q8::{Q8_0Block, decode_q8_0_blocks};
+use crate::q8::{
+    Q4_0Block, Q8_0Block, QK_K_BLOCK_SIZE, decode_q4_0_blocks, decode_q6_k_blocks,
+    decode_q8_0_blocks,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LlamaModelConfig {
@@ -130,21 +133,26 @@ impl LlamaModelConfig {
 
 pub struct LlamaLayerWeights {
     pub attention_norm: Vec<f32>,
-    pub wq: Vec<Q8_0Block>,
-    pub wk: Vec<Q8_0Block>,
-    pub wav: Vec<Q8_0Block>, // or attention_v
-    pub wo: Vec<Q8_0Block>,
+    pub wq: QuantizedMatrix,
+    pub wk: QuantizedMatrix,
+    pub wav: QuantizedMatrix, // or attention_v
+    pub wo: QuantizedMatrix,
     pub ffn_norm: Vec<f32>,
-    pub w1: Vec<Q8_0Block>,
-    pub w3: Vec<Q8_0Block>,
-    pub w2: Vec<Q8_0Block>,
+    pub w1: QuantizedMatrix,
+    pub w3: QuantizedMatrix,
+    pub w2: QuantizedMatrix,
 }
 
 pub struct LlamaWeights {
     pub token_embeddings: Vec<f32>, // vocab_size * embedding_length
     pub output_norm: Vec<f32>,
-    pub output_projection: Option<Vec<Q8_0Block>>, // None if tied output
+    pub output_projection: Option<QuantizedMatrix>, // None if tied output
     pub layers: Vec<LlamaLayerWeights>,
+}
+
+pub enum QuantizedMatrix {
+    Q8_0(Vec<Q8_0Block>),
+    Q4_0(Vec<Q4_0Block>),
 }
 
 impl LlamaWeights {
@@ -156,7 +164,7 @@ impl LlamaWeights {
         let output_norm = load_f32_or_f16(&file, gguf, "output_norm.weight")?;
 
         let output_projection = if gguf.tensors.iter().any(|t| t.name == "output.weight") {
-            Some(load_q8_0(&file, gguf, "output.weight")?)
+            Some(load_quantized_matrix(&file, gguf, "output.weight")?)
         } else {
             None
         };
@@ -165,15 +173,15 @@ impl LlamaWeights {
         for i in 0..config.block_count {
             let attention_norm =
                 load_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_norm.weight"))?;
-            let wq = load_q8_0(&file, gguf, &format!("blk.{i}.attn_q.weight"))?;
-            let wk = load_q8_0(&file, gguf, &format!("blk.{i}.attn_k.weight"))?;
-            let wav = load_q8_0(&file, gguf, &format!("blk.{i}.attn_v.weight"))?;
-            let wo = load_q8_0(&file, gguf, &format!("blk.{i}.attn_output.weight"))?;
+            let wq = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_q.weight"))?;
+            let wk = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_k.weight"))?;
+            let wav = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_v.weight"))?;
+            let wo = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_output.weight"))?;
 
             let ffn_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
-            let w1 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
-            let w3 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_up.weight"))?;
-            let w2 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_down.weight"))?;
+            let w1 = load_quantized_matrix(&file, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
+            let w3 = load_quantized_matrix(&file, gguf, &format!("blk.{i}.ffn_up.weight"))?;
+            let w2 = load_quantized_matrix(&file, gguf, &format!("blk.{i}.ffn_down.weight"))?;
 
             layers.push(LlamaLayerWeights {
                 attention_norm,
@@ -331,25 +339,54 @@ fn load_f32_or_f16(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             }
             Ok(data)
         }
+        GgufTensorType::Q4_0 => {
+            let blocks = decode_q4_0_blocks(&bytes).map_err(|e| e.to_string())?;
+            let mut data = Vec::with_capacity(blocks.len() * 32);
+            for block in blocks {
+                let scale = block.scale_f32();
+                for val in block.unpack_values() {
+                    data.push(val as f32 * scale);
+                }
+            }
+            Ok(data)
+        }
+        GgufTensorType::Q6K => {
+            let blocks = decode_q6_k_blocks(&bytes).map_err(|e| e.to_string())?;
+            let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
+            for block in blocks {
+                let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
+                block.dequantize(&mut values);
+                data.extend_from_slice(&values);
+            }
+            Ok(data)
+        }
         other => Err(format!(
             "unsupported floating point type for {name}: {other:?}"
         )),
     }
 }
 
-fn load_q8_0(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<Q8_0Block>, String> {
+fn load_quantized_matrix(
+    file: &File,
+    gguf: &GgufFile,
+    name: &str,
+) -> Result<QuantizedMatrix, String> {
     let desc = load_tensor_desc(gguf, name)?;
-    if desc.tensor_type != GgufTensorType::Q8_0 {
-        return Err(format!(
-            "expected Q8_0 tensor type for {name}, got {:?}",
-            desc.tensor_type
-        ));
-    }
     let mut bytes = vec![0; desc.n_bytes as usize];
     file.read_exact_at(&mut bytes, desc.absolute_offset)
         .map_err(|e| e.to_string())?;
 
-    decode_q8_0_blocks(&bytes).map_err(|e| e.to_string())
+    match desc.tensor_type {
+        GgufTensorType::Q8_0 => decode_q8_0_blocks(&bytes)
+            .map(QuantizedMatrix::Q8_0)
+            .map_err(|e| e.to_string()),
+        GgufTensorType::Q4_0 => decode_q4_0_blocks(&bytes)
+            .map(QuantizedMatrix::Q4_0)
+            .map_err(|e| e.to_string()),
+        other => Err(format!(
+            "expected Q8_0 or Q4_0 tensor type for {name}, got {other:?}"
+        )),
+    }
 }
 
 fn require_descriptor_shape(
