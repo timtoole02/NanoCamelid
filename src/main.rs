@@ -62,6 +62,26 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("chat") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Chat);
+                return ExitCode::SUCCESS;
+            }
+
+            match parse_generate_args(&args[1..]) {
+                Ok(parsed) => run_chat(
+                    Path::new(&parsed.model_path),
+                    &parsed.prompt,
+                    parsed.temp,
+                    parsed.max_tokens,
+                ),
+                Err(err) => {
+                    eprintln!("{err}");
+                    print_help(HelpTopic::Chat);
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("bench") => {
             if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
                 print_help(HelpTopic::Bench);
@@ -145,6 +165,7 @@ enum HelpTopic {
     Probe,
     Inspect,
     Generate,
+    Chat,
     Bench,
     Smoke,
 }
@@ -162,6 +183,7 @@ fn help_topic_named(name: &str) -> Option<HelpTopic> {
         "probe" => Some(HelpTopic::Probe),
         "inspect" => Some(HelpTopic::Inspect),
         "generate" => Some(HelpTopic::Generate),
+        "chat" => Some(HelpTopic::Chat),
         "bench" => Some(HelpTopic::Bench),
         "smoke" => Some(HelpTopic::Smoke),
         _ => None,
@@ -178,6 +200,7 @@ fn print_help(topic: HelpTopic) {
         HelpTopic::Probe => print_probe_usage(),
         HelpTopic::Inspect => print_inspect_usage(),
         HelpTopic::Generate => print_generate_usage(),
+        HelpTopic::Chat => print_chat_usage(),
         HelpTopic::Bench => print_bench_usage(),
         HelpTopic::Smoke => print_smoke_usage(),
     }
@@ -199,6 +222,10 @@ fn print_usage() {
     println!("  generate <model.gguf> <prompt> [temp] [max_tokens]");
     println!(
         "                                            Generate text from prompt on Raspberry Pi 5"
+    );
+    println!("  chat <model.gguf> <prompt> [temp] [max_tokens]");
+    println!(
+        "                                            Render a single-turn chat prompt before generation"
     );
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
@@ -260,6 +287,31 @@ fn print_generate_usage() {
     println!();
     println!(
         "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
+    );
+}
+
+fn print_chat_usage() {
+    println!("NanoCamelid chat");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid chat <model.gguf> <prompt> [temp] [max_tokens]");
+    println!("  nanocamelid chat <prompt> [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set");
+    println!();
+    println!("Args:");
+    println!("  <model.gguf>                              Path to the GGUF model file");
+    println!(
+        "  <prompt>                                  User message content for a single-turn chat request"
+    );
+    println!("  [temp]                                    Sampling temperature, default 0.0");
+    println!("  [max_tokens]                              Maximum tokens to generate, default 128");
+    println!();
+    println!("Env:");
+    println!(
+        "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, and chat"
+    );
+    println!();
+    println!(
+        "Chat uses recognized tokenizer chat templates when present, including the Llama 3 instruct header/eot format."
     );
 }
 
@@ -728,6 +780,10 @@ fn inspect_gguf(path: &Path) -> ExitCode {
                         "  tokenizer_chat_template: {}",
                         tokenizer.chat_template_present
                     );
+                    println!(
+                        "  tokenizer_chat_template_format: {}",
+                        tokenizer.chat_template_format.unwrap_or("none")
+                    );
                     println!("  tokenizer_add_bos: {}", tokenizer.add_bos);
                     println!("  tokenizer_add_eos: {}", tokenizer.add_eos);
                     println!(
@@ -823,6 +879,7 @@ struct InspectTokenizerSummary {
     add_space_prefix: bool,
     remove_extra_whitespaces: bool,
     chat_template_present: bool,
+    chat_template_format: Option<&'static str>,
     bos: Option<u32>,
     eos: Option<u32>,
     eot: Option<u32>,
@@ -843,6 +900,7 @@ fn inspect_runtime_summary(gguf: &gguf::GgufFile) -> InspectRuntimeSummary {
             add_space_prefix: tokenizer.config.add_space_prefix,
             remove_extra_whitespaces: tokenizer.config.remove_extra_whitespaces,
             chat_template_present: tokenizer.chat_template.is_some(),
+            chat_template_format: tokenizer.chat_template_format(),
             bos: tokenizer.special.bos,
             eos: tokenizer.special.eos,
             eot: tokenizer.special.eot,
@@ -1096,7 +1154,52 @@ fn device_model(model: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+#[derive(Debug)]
+struct GenerationPromptPlan {
+    text: String,
+    add_special: bool,
+    parse_special: bool,
+    renderer: Option<&'static str>,
+    template_format: Option<&'static str>,
+}
+
 fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
+    run_generation_with_prompt_builder(model_path, temp, max_tokens, |_tokenizer| {
+        Ok(GenerationPromptPlan {
+            text: prompt.to_owned(),
+            add_special: true,
+            parse_special: true,
+            renderer: None,
+            template_format: None,
+        })
+    })
+}
+
+fn run_chat(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
+    run_generation_with_prompt_builder(model_path, temp, max_tokens, |tokenizer| {
+        let rendered = tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
+            role: "user",
+            content: prompt,
+        }]);
+        Ok(GenerationPromptPlan {
+            text: rendered.text,
+            add_special: rendered.add_special,
+            parse_special: rendered.parse_special,
+            renderer: Some(rendered.renderer),
+            template_format: tokenizer.chat_template_format(),
+        })
+    })
+}
+
+fn run_generation_with_prompt_builder<F>(
+    model_path: &Path,
+    temp: f32,
+    max_tokens: usize,
+    prompt_builder: F,
+) -> ExitCode
+where
+    F: FnOnce(&tokenizer::Tokenizer) -> Result<GenerationPromptPlan, String>,
+{
     println!("Loading GGUF file: {}...", model_path.display());
     let gguf = match gguf::read_file(model_path) {
         Ok(g) => g,
@@ -1127,6 +1230,14 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
         }
     };
 
+    let prompt_plan = match prompt_builder(&tokenizer) {
+        Ok(plan) => plan,
+        Err(err) => {
+            eprintln!("Failed to prepare prompt: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     println!("Loading model weights into memory...");
     let started_load = std::time::Instant::now();
     let weights = match model::LlamaWeights::load(model_path, &config, &gguf) {
@@ -1141,7 +1252,11 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
         started_load.elapsed().as_secs_f64()
     );
 
-    let prompt_tokens = match tokenizer.encode(prompt, true, true) {
+    let prompt_tokens = match tokenizer.encode(
+        &prompt_plan.text,
+        prompt_plan.add_special,
+        prompt_plan.parse_special,
+    ) {
         Ok(tokens) => tokens,
         Err(e) => {
             eprintln!("Failed to tokenize prompt: {e}");
@@ -1157,6 +1272,13 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
     {
         eprintln!("Prompt exceeds model context: {err}");
         return ExitCode::FAILURE;
+    }
+    if let Some(renderer) = prompt_plan.renderer {
+        println!("Chat renderer: {renderer}");
+        println!(
+            "Chat template format: {}",
+            prompt_plan.template_format.unwrap_or("none")
+        );
     }
     println!("Prompt tokens: {:?}", prompt_tokens);
 

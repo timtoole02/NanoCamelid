@@ -176,6 +176,20 @@ pub struct Tokenizer {
     pub chat_template: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatMessage<'a> {
+    pub role: &'a str,
+    pub content: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedChatPrompt {
+    pub text: String,
+    pub add_special: bool,
+    pub parse_special: bool,
+    pub renderer: &'static str,
+}
+
 impl Tokenizer {
     pub fn from_gguf(file: &GgufFile) -> Result<Self, String> {
         let model_name = file
@@ -409,6 +423,40 @@ impl Tokenizer {
 
     pub fn chat_prompt_parse_special(&self) -> bool {
         matches!(self.model, TokenizerModel::Gpt2Bpe)
+    }
+
+    pub fn chat_template_format(&self) -> Option<&'static str> {
+        self.chat_template
+            .as_deref()
+            .map(detect_chat_template_format)
+    }
+
+    pub fn render_chat_prompt(&self, messages: &[ChatMessage<'_>]) -> RenderedChatPrompt {
+        if let Some(template) = self.chat_template.as_deref() {
+            if is_tinyllama_marker_template(template) {
+                return RenderedChatPrompt {
+                    text: render_tinyllama_marker_prompt(messages, self),
+                    add_special: true,
+                    parse_special: self.chat_prompt_parse_special(),
+                    renderer: "tinyllama_marker",
+                };
+            }
+            if is_llama3_instruct_template(template) {
+                return RenderedChatPrompt {
+                    text: render_llama3_instruct_prompt(messages),
+                    add_special: true,
+                    parse_special: self.chat_prompt_parse_special(),
+                    renderer: "llama3_instruct",
+                };
+            }
+        }
+
+        RenderedChatPrompt {
+            text: render_role_colon_prompt(messages),
+            add_special: true,
+            parse_special: self.chat_prompt_parse_special(),
+            renderer: "role_colon_fallback",
+        }
     }
 
     fn encode_bpe_text(&self, text: &str, parse_special: bool) -> Result<Vec<TokenId>, String> {
@@ -1031,13 +1079,92 @@ fn flush_bytes(bytes: &mut Vec<u8>, text: &mut String) -> Result<(), String> {
     Ok(())
 }
 
+fn detect_chat_template_format(template: &str) -> &'static str {
+    if is_llama3_instruct_template(template) {
+        "llama3_instruct"
+    } else if is_tinyllama_marker_template(template) {
+        "tinyllama_marker"
+    } else {
+        "metadata_unparsed"
+    }
+}
+
+fn is_tinyllama_marker_template(template: &str) -> bool {
+    template.contains("<|user|>")
+        && template.contains("<|assistant|>")
+        && template.contains("<|system|>")
+}
+
+fn is_llama3_instruct_template(template: &str) -> bool {
+    template.contains("<|start_header_id|>")
+        && template.contains("<|end_header_id|>")
+        && template.contains("<|eot_id|>")
+}
+
+fn render_tinyllama_marker_prompt(messages: &[ChatMessage<'_>], tokenizer: &Tokenizer) -> String {
+    let eos = tokenizer
+        .token_text(tokenizer.special.eos)
+        .unwrap_or("</s>");
+    let mut prompt = String::new();
+    for message in messages {
+        prompt.push_str("<|");
+        prompt.push_str(message.role.trim());
+        prompt.push_str("|>\n");
+        prompt.push_str(message.content);
+        prompt.push_str(eos);
+        prompt.push('\n');
+    }
+    if messages
+        .last()
+        .is_none_or(|message| message.role.trim() != "assistant")
+    {
+        prompt.push_str("<|assistant|>\n");
+    }
+    prompt
+}
+
+fn render_llama3_instruct_prompt(messages: &[ChatMessage<'_>]) -> String {
+    let mut prompt = String::new();
+    for message in messages {
+        prompt.push_str("<|start_header_id|>");
+        prompt.push_str(message.role.trim());
+        prompt.push_str("<|end_header_id|>\n\n");
+        prompt.push_str(message.content);
+        prompt.push_str("<|eot_id|>");
+    }
+    if messages
+        .last()
+        .is_none_or(|message| message.role.trim() != "assistant")
+    {
+        prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+    }
+    prompt
+}
+
+fn render_role_colon_prompt(messages: &[ChatMessage<'_>]) -> String {
+    let mut prompt = String::new();
+    for message in messages {
+        prompt.push_str(message.role.trim());
+        prompt.push_str(": ");
+        prompt.push_str(message.content);
+        prompt.push('\n');
+    }
+    prompt
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        path::PathBuf,
+    };
 
     use crate::gguf::{GgufFile, GgufMetadataValue};
 
-    use super::{Tokenizer, TokenizerModel};
+    use super::{
+        BpeRegistry, ChatMessage, RenderedChatPrompt, SpecialTokens, Token, TokenKind, Tokenizer,
+        TokenizerConfig, TokenizerModel,
+    };
 
     #[test]
     fn tokenizer_reads_native_bool_config_flags() {
@@ -1085,6 +1212,147 @@ mod tests {
         assert!(!tokenizer.config.add_bos);
         assert!(tokenizer.config.add_space_prefix);
         assert!(!tokenizer.config.add_eos);
+    }
+
+    #[test]
+    fn tokenizer_detects_llama3_chat_template_format() {
+        let tokenizer = llama3_test_tokenizer();
+
+        assert_eq!(tokenizer.chat_template_format(), Some("llama3_instruct"));
+    }
+
+    #[test]
+    fn tokenizer_renders_llama3_single_turn_chat_prompt() {
+        let tokenizer = llama3_test_tokenizer();
+
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "Say alpha.",
+            }]),
+            RenderedChatPrompt {
+                text: "<|start_header_id|>user<|end_header_id|>\n\nSay alpha.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n".to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: "llama3_instruct",
+            }
+        );
+    }
+
+    #[test]
+    fn tokenizer_renders_llama3_chat_prompt_without_extra_generation_header_after_assistant() {
+        let tokenizer = llama3_test_tokenizer();
+
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[
+                ChatMessage {
+                    role: "user",
+                    content: "Complete cam",
+                },
+                ChatMessage {
+                    role: "assistant",
+                    content: "elid",
+                },
+            ]),
+            RenderedChatPrompt {
+                text: "<|start_header_id|>user<|end_header_id|>\n\nComplete cam<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nelid<|eot_id|>".to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: "llama3_instruct",
+            }
+        );
+    }
+
+    #[test]
+    fn tokenizer_falls_back_to_role_colon_prompt_for_unparsed_templates() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.chat_template = Some("{{ messages }}".to_owned());
+
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "hello",
+            }]),
+            RenderedChatPrompt {
+                text: "user: hello\n".to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: "role_colon_fallback",
+            }
+        );
+        assert_eq!(tokenizer.chat_template_format(), Some("metadata_unparsed"));
+    }
+
+    fn llama3_test_tokenizer() -> Tokenizer {
+        let begin_of_text = "<|begin_of_text|>".to_owned();
+        let end_of_text = "<|end_of_text|>".to_owned();
+        let start_header = "<|start_header_id|>".to_owned();
+        let end_header = "<|end_header_id|>".to_owned();
+        let eot = "<|eot_id|>".to_owned();
+        let tokens = vec![
+            Token {
+                id: 0,
+                text: begin_of_text.clone(),
+                score: 0.0,
+                kind: TokenKind::Control,
+            },
+            Token {
+                id: 1,
+                text: end_of_text.clone(),
+                score: 0.0,
+                kind: TokenKind::Control,
+            },
+            Token {
+                id: 2,
+                text: start_header.clone(),
+                score: 0.0,
+                kind: TokenKind::Control,
+            },
+            Token {
+                id: 3,
+                text: end_header.clone(),
+                score: 0.0,
+                kind: TokenKind::Control,
+            },
+            Token {
+                id: 4,
+                text: eot.clone(),
+                score: 0.0,
+                kind: TokenKind::Control,
+            },
+        ];
+        let token_to_id = HashMap::from([
+            (begin_of_text, 0),
+            (end_of_text, 1),
+            (start_header, 2),
+            (end_header, 3),
+            (eot, 4),
+        ]);
+
+        Tokenizer {
+            model: TokenizerModel::Gpt2Bpe,
+            tokens,
+            token_to_id,
+            byte_token_to_id: HashMap::new(),
+            bpe_ranks: HashMap::new(),
+            bpe_registry: BpeRegistry::default(),
+            special: SpecialTokens {
+                bos: Some(0),
+                eos: Some(1),
+                eot: Some(4),
+                ..SpecialTokens::default()
+            },
+            config: TokenizerConfig {
+                add_bos: true,
+                add_eos: false,
+                add_sep: false,
+                add_space_prefix: false,
+                remove_extra_whitespaces: false,
+            },
+            chat_template: Some(
+                "<|start_header_id|>{{ role }}<|end_header_id|>{{ content }}<|eot_id|>".to_owned(),
+            ),
+        }
     }
 
     fn tokenizer_fixture<const N: usize>(overrides: [(&str, GgufMetadataValue); N]) -> GgufFile {
