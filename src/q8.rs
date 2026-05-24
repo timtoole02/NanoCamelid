@@ -506,6 +506,25 @@ pub fn dot_q4_0_q8_0_with_selector(
     }
 }
 
+pub(crate) fn dot_q4_0_q8_0_1x4_sdot_selected(
+    weights: [&Q4_0Block; 4],
+    activation: &[i8; Q8_BLOCK_SIZE],
+) -> [i32; 4] {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if RuntimeFeatures::detect().dotprod {
+            return unsafe { dot_q4_0_q8_0_1x4_sdot_aarch64(weights, activation) };
+        }
+    }
+
+    [
+        dot_q4_0_q8_0_scalar(weights[0], activation),
+        dot_q4_0_q8_0_scalar(weights[1], activation),
+        dot_q4_0_q8_0_scalar(weights[2], activation),
+        dot_q4_0_q8_0_scalar(weights[3], activation),
+    ]
+}
+
 impl Q8_0RowReader {
     pub fn from_tensor_descriptor(desc: &GgufTensorDescriptor) -> Result<Self, Q8BlockError> {
         if desc.tensor_type != GgufTensorType::Q8_0 {
@@ -1196,6 +1215,67 @@ unsafe fn dot_q4_0_q8_0_sdot_32_aarch64(
     unsafe { vaddvq_s32(acc) }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot_q4_0_q8_0_1x4_sdot_aarch64(
+    weights: [&Q4_0Block; 4],
+    activation: &[i8; Q8_BLOCK_SIZE],
+) -> [i32; 4] {
+    use std::arch::{
+        aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8},
+        asm,
+    };
+
+    // SAFETY: Q8 activation blocks are exactly 32 i8 lanes.
+    let activation_low = unsafe { vld1q_s8(activation.as_ptr()) };
+    let activation_high = unsafe { vld1q_s8(activation.as_ptr().add(16)) };
+    let (w0_low, w0_high) = unsafe { unpack_q4_0_lanes_aarch64(weights[0]) };
+    let (w1_low, w1_high) = unsafe { unpack_q4_0_lanes_aarch64(weights[1]) };
+    let (w2_low, w2_high) = unsafe { unpack_q4_0_lanes_aarch64(weights[2]) };
+    let (w3_low, w3_high) = unsafe { unpack_q4_0_lanes_aarch64(weights[3]) };
+
+    let mut acc0 = unsafe { vdupq_n_s32(0) };
+    let mut acc1 = unsafe { vdupq_n_s32(0) };
+    let mut acc2 = unsafe { vdupq_n_s32(0) };
+    let mut acc3 = unsafe { vdupq_n_s32(0) };
+
+    unsafe {
+        asm!(
+            ".arch_extension dotprod",
+            "sdot {acc0:v}.4s, {w0_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc0:v}.4s, {w0_high:v}.16b, {activation_high:v}.16b",
+            "sdot {acc1:v}.4s, {w1_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc1:v}.4s, {w1_high:v}.16b, {activation_high:v}.16b",
+            "sdot {acc2:v}.4s, {w2_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc2:v}.4s, {w2_high:v}.16b, {activation_high:v}.16b",
+            "sdot {acc3:v}.4s, {w3_low:v}.16b, {activation_low:v}.16b",
+            "sdot {acc3:v}.4s, {w3_high:v}.16b, {activation_high:v}.16b",
+            acc0 = inout(vreg) acc0,
+            acc1 = inout(vreg) acc1,
+            acc2 = inout(vreg) acc2,
+            acc3 = inout(vreg) acc3,
+            w0_low = in(vreg) w0_low,
+            w0_high = in(vreg) w0_high,
+            w1_low = in(vreg) w1_low,
+            w1_high = in(vreg) w1_high,
+            w2_low = in(vreg) w2_low,
+            w2_high = in(vreg) w2_high,
+            w3_low = in(vreg) w3_low,
+            w3_high = in(vreg) w3_high,
+            activation_low = in(vreg) activation_low,
+            activation_high = in(vreg) activation_high,
+            options(nostack, preserves_flags),
+        );
+    }
+
+    [
+        unsafe { vaddvq_s32(acc0) },
+        unsafe { vaddvq_s32(acc1) },
+        unsafe { vaddvq_s32(acc2) },
+        unsafe { vaddvq_s32(acc3) },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -1207,8 +1287,8 @@ mod tests {
         Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector,
         QK_K_BLOCK_SIZE, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
         dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
-        dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector, dot_q8_0_blocks_scalar,
-        dot_q8_0_rows_i32, f16_bits_to_f32,
+        dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector,
+        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
     };
 
     #[test]
@@ -1383,6 +1463,37 @@ mod tests {
                 "{kernel:?} Q4/Q8 dot diverged"
             );
         }
+    }
+
+    #[test]
+    fn q4_0_q8_0_1x4_sdot_selected_matches_scalar_rows() {
+        let weights: [Q4_0Block; 4] = core::array::from_fn(|row| {
+            Q4_0Block::from_parts(
+                0x3c00,
+                core::array::from_fn(|idx| {
+                    let low = ((idx + row) % 16) as u8;
+                    let high = ((15 + row).wrapping_sub(idx) % 16) as u8;
+                    low | (high << 4)
+                }),
+            )
+        });
+        let activation: [i8; Q8_BLOCK_SIZE] =
+            core::array::from_fn(|idx| ((idx * 7) % 31) as i8 - 15);
+
+        let expected = [
+            dot_q4_0_q8_0_scalar(&weights[0], &activation),
+            dot_q4_0_q8_0_scalar(&weights[1], &activation),
+            dot_q4_0_q8_0_scalar(&weights[2], &activation),
+            dot_q4_0_q8_0_scalar(&weights[3], &activation),
+        ];
+
+        assert_eq!(
+            dot_q4_0_q8_0_1x4_sdot_selected(
+                [&weights[0], &weights[1], &weights[2], &weights[3]],
+                &activation,
+            ),
+            expected
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use std::{env, sync::OnceLock};
 
 pub const MATMUL_MIN_ROWS_ENV: &str = "NANOCAMELID_MATMUL_MIN_ROWS";
+pub const Q4_1X4_SDOT_ENV: &str = "NANOCAMELID_Q4_1X4_SDOT";
 const DEFAULT_MATMUL_MIN_ROWS: usize = 128;
 
 fn matmul_min_rows() -> usize {
@@ -21,6 +22,16 @@ fn matmul_min_rows() -> usize {
 
 fn should_parallelize_matmul(rows: usize) -> bool {
     rows >= matmul_min_rows()
+}
+
+fn q4_1x4_sdot_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q4_1X4_SDOT_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
 }
 
 fn for_each_matmul_row<F>(out: &mut [f32], compute_row: F)
@@ -361,6 +372,11 @@ pub fn matmul_q4_0(
     cols: usize,
     selector: Q8DotKernelSelector,
 ) {
+    if selector.selected == Q8DotKernel::Sdot && q4_1x4_sdot_enabled() {
+        matmul_q4_0_sdot_1x4(out, x_i8, x_scales, w, cols, selector);
+        return;
+    }
+
     let blocks_per_row = cols / 32;
     for_each_matmul_row(out, |r, out_val| {
         let mut sum = 0.0_f32;
@@ -373,6 +389,89 @@ pub fn matmul_q4_0(
         }
         *out_val = sum;
     });
+}
+
+fn matmul_q4_0_sdot_1x4(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    cols: usize,
+    selector: Q8DotKernelSelector,
+) {
+    let blocks_per_row = cols / 32;
+    if should_parallelize_matmul(out.len()) {
+        out.par_chunks_mut(4)
+            .enumerate()
+            .for_each(|(chunk_idx, out_chunk)| {
+                compute_q4_0_sdot_1x4_chunk(
+                    chunk_idx * 4,
+                    out_chunk,
+                    x_i8,
+                    x_scales,
+                    w,
+                    blocks_per_row,
+                    selector,
+                );
+            });
+    } else {
+        out.chunks_mut(4)
+            .enumerate()
+            .for_each(|(chunk_idx, out_chunk)| {
+                compute_q4_0_sdot_1x4_chunk(
+                    chunk_idx * 4,
+                    out_chunk,
+                    x_i8,
+                    x_scales,
+                    w,
+                    blocks_per_row,
+                    selector,
+                );
+            });
+    }
+}
+
+fn compute_q4_0_sdot_1x4_chunk(
+    row_base: usize,
+    out_chunk: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    blocks_per_row: usize,
+    selector: Q8DotKernelSelector,
+) {
+    if out_chunk.len() == 4 {
+        let mut sums = [0.0_f32; 4];
+        for (b, x_scale) in x_scales.iter().copied().enumerate().take(blocks_per_row) {
+            let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
+            let w_base = row_base * blocks_per_row + b;
+            let row0 = &w[w_base];
+            let row1 = &w[w_base + blocks_per_row];
+            let row2 = &w[w_base + 2 * blocks_per_row];
+            let row3 = &w[w_base + 3 * blocks_per_row];
+            let dots =
+                crate::q8::dot_q4_0_q8_0_1x4_sdot_selected([row0, row1, row2, row3], x_block_vals);
+            sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
+            sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
+            sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
+            sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+        }
+        out_chunk.copy_from_slice(&sums);
+        return;
+    }
+
+    for (lane, out_val) in out_chunk.iter_mut().enumerate() {
+        let row = row_base + lane;
+        let mut sum = 0.0_f32;
+        let w_row = &w[row * blocks_per_row..(row + 1) * blocks_per_row];
+        for b in 0..blocks_per_row {
+            let w_block = &w_row[b];
+            let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
+            let dot_val = crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
+            sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
+        }
+        *out_val = sum;
+    }
 }
 
 pub fn matmul_q6_k(
