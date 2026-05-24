@@ -1,10 +1,12 @@
-use std::{fs::File, os::unix::fs::FileExt, path::Path};
+use std::{env, fs::File, os::unix::fs::FileExt, path::Path, sync::OnceLock};
 
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{
     Q4_0Block, Q6KBlock, Q8_0Block, QK_K_BLOCK_SIZE, decode_q4_0_blocks, decode_q6_k_blocks,
-    decode_q8_0_blocks,
+    decode_q8_0_blocks, swizzle_q4_0_1x4,
 };
+
+pub const Q4_SWIZZLE_1X4_ENV: &str = "NANOCAMELID_Q4_SWIZZLE_1X4";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LlamaModelConfig {
@@ -182,7 +184,15 @@ pub struct LlamaWeights {
 pub enum QuantizedMatrix {
     Q8_0(Vec<Q8_0Block>),
     Q4_0(Vec<Q4_0Block>),
+    Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix),
     Q6K(Vec<Q6KBlock>),
+}
+
+pub struct Q4_0Swizzled1x4Matrix {
+    pub row_major: Vec<Q4_0Block>,
+    pub swizzled_1x4: Vec<Q4_0Block>,
+    pub rows: usize,
+    pub cols: usize,
 }
 
 impl LlamaWeights {
@@ -449,9 +459,7 @@ fn load_quantized_matrix(
         GgufTensorType::Q8_0 => decode_q8_0_blocks(&bytes)
             .map(QuantizedMatrix::Q8_0)
             .map_err(|e| e.to_string()),
-        GgufTensorType::Q4_0 => decode_q4_0_blocks(&bytes)
-            .map(QuantizedMatrix::Q4_0)
-            .map_err(|e| e.to_string()),
+        GgufTensorType::Q4_0 => load_q4_0_matrix(&bytes, desc),
         GgufTensorType::Q6K => decode_q6_k_blocks(&bytes)
             .map(QuantizedMatrix::Q6K)
             .map_err(|e| e.to_string()),
@@ -459,6 +467,47 @@ fn load_quantized_matrix(
             "expected Q8_0, Q4_0, or Q6_K tensor type for {name}, got {other:?}"
         )),
     }
+}
+
+fn load_q4_0_matrix(bytes: &[u8], desc: &GgufTensorDescriptor) -> Result<QuantizedMatrix, String> {
+    let row_major = decode_q4_0_blocks(bytes).map_err(|e| e.to_string())?;
+    if !q4_swizzle_1x4_enabled() {
+        return Ok(QuantizedMatrix::Q4_0(row_major));
+    }
+
+    let dims = descriptor_dims(desc)?;
+    let Some((&cols, rest)) = dims.split_first() else {
+        return Ok(QuantizedMatrix::Q4_0(row_major));
+    };
+    let &[rows] = rest else {
+        return Ok(QuantizedMatrix::Q4_0(row_major));
+    };
+    if rows == 0
+        || cols == 0
+        || !rows.is_multiple_of(4)
+        || !cols.is_multiple_of(32)
+        || row_major.len() != rows * (cols / 32)
+    {
+        return Ok(QuantizedMatrix::Q4_0(row_major));
+    }
+
+    let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, cols / 32);
+    Ok(QuantizedMatrix::Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix {
+        row_major,
+        swizzled_1x4,
+        rows,
+        cols,
+    }))
+}
+
+fn q4_swizzle_1x4_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q4_SWIZZLE_1X4_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
 }
 
 fn require_descriptor_shape(

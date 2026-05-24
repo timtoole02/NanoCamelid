@@ -781,7 +781,14 @@ fn synthetic_q4_blocks(rows: usize, blocks_per_row: usize) -> Vec<Q4_0Block> {
     weights
 }
 
-fn swizzle_q4_0_1x4(row_major: &[Q4_0Block], rows: usize, blocks_per_row: usize) -> Vec<Q4_0Block> {
+pub(crate) fn swizzle_q4_0_1x4(
+    row_major: &[Q4_0Block],
+    rows: usize,
+    blocks_per_row: usize,
+) -> Vec<Q4_0Block> {
+    debug_assert_eq!(row_major.len(), rows * blocks_per_row);
+    debug_assert!(rows.is_multiple_of(4));
+
     let mut swizzled = Vec::with_capacity(row_major.len());
     for row_base in (0..rows).step_by(4) {
         for block in 0..blocks_per_row {

@@ -362,6 +362,17 @@ pub fn matmul_quantized(
         QuantizedMatrix::Q4_0(blocks) => {
             matmul_q4_0(out, x_i8, x_scales, blocks, rows, cols, selector)
         }
+        QuantizedMatrix::Q4_0Swizzled1x4(matrix) => {
+            if selector.selected == Q8DotKernel::Sdot
+                && q4_1x4_sdot_enabled()
+                && matrix.rows == rows
+                && matrix.cols == cols
+            {
+                matmul_q4_0_sdot_1x4_swizzled(out, x_i8, x_scales, &matrix.swizzled_1x4, cols);
+            } else {
+                matmul_q4_0(out, x_i8, x_scales, &matrix.row_major, rows, cols, selector);
+            }
+        }
         QuantizedMatrix::Q6K(blocks) => matmul_q6_k(out, x_i8, x_scales, blocks, rows, cols),
     }
 }
@@ -474,6 +485,74 @@ fn compute_q4_0_sdot_1x4_chunk(
         }
         *out_val = sum;
     }
+}
+
+fn matmul_q4_0_sdot_1x4_swizzled(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    cols: usize,
+) {
+    let blocks_per_row = cols / 32;
+    debug_assert_eq!(w.len(), out.len() * blocks_per_row);
+    debug_assert!(out.len().is_multiple_of(4));
+
+    if should_parallelize_matmul(out.len()) {
+        out.par_chunks_mut(4)
+            .enumerate()
+            .for_each(|(chunk_idx, out_chunk)| {
+                compute_q4_0_sdot_1x4_swizzled_chunk(
+                    chunk_idx,
+                    out_chunk,
+                    x_i8,
+                    x_scales,
+                    w,
+                    blocks_per_row,
+                );
+            });
+    } else {
+        out.chunks_mut(4)
+            .enumerate()
+            .for_each(|(chunk_idx, out_chunk)| {
+                compute_q4_0_sdot_1x4_swizzled_chunk(
+                    chunk_idx,
+                    out_chunk,
+                    x_i8,
+                    x_scales,
+                    w,
+                    blocks_per_row,
+                );
+            });
+    }
+}
+
+fn compute_q4_0_sdot_1x4_swizzled_chunk(
+    chunk_idx: usize,
+    out_chunk: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    blocks_per_row: usize,
+) {
+    debug_assert_eq!(out_chunk.len(), 4);
+
+    let mut sums = [0.0_f32; 4];
+    let chunk_base = chunk_idx * blocks_per_row * 4;
+    for (b, x_scale) in x_scales.iter().copied().enumerate().take(blocks_per_row) {
+        let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
+        let w_base = chunk_base + b * 4;
+        let row0 = &w[w_base];
+        let row1 = &w[w_base + 1];
+        let row2 = &w[w_base + 2];
+        let row3 = &w[w_base + 3];
+        let dots = dot_q4_0_q8_0_1x4_sdot([row0, row1, row2, row3], x_block_vals);
+        sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
+        sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
+        sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
+        sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+    }
+    out_chunk.copy_from_slice(&sums);
 }
 
 fn dot_q4_0_q8_0_1x4_sdot(weights: [&Q4_0Block; 4], activation: &[i8; 32]) -> [i32; 4] {
@@ -1017,11 +1096,11 @@ fn rand_simple() -> f32 {
 mod tests {
     use super::{
         RopeScaling, add_weighted_f32, add_weighted_f32_scalar, apply_rope, dot_f32,
-        dot_f32_scalar, matmul_q4_0, matmul_q6_k, matmul_q8_0,
+        dot_f32_scalar, matmul_q4_0, matmul_q4_0_sdot_1x4_swizzled, matmul_q6_k, matmul_q8_0,
     };
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
-        QK_K_BLOCK_SIZE,
+        QK_K_BLOCK_SIZE, swizzle_q4_0_1x4,
     };
 
     fn selector(selected: Q8DotKernel) -> Q8DotKernelSelector {
@@ -1262,6 +1341,36 @@ mod tests {
             );
             assert_eq!(candidate, scalar, "{kernel:?} Q4 matmul diverged");
         }
+    }
+
+    #[test]
+    fn matmul_q4_swizzled_1x4_matches_row_major_reference() {
+        let rows = 4;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..cols)
+            .map(|idx| ((idx as i16 * 11).rem_euclid(83) - 41) as i8)
+            .collect();
+        let x_scales = [0.125, 0.375];
+        let weights: Vec<Q4_0Block> = (0..rows * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| q4_block(0x3800 + idx as u16, idx as i16 + 1))
+            .collect();
+        let swizzled = swizzle_q4_0_1x4(&weights, rows, cols / Q8_BLOCK_SIZE);
+
+        let mut expected = vec![0.0; rows];
+        matmul_q4_0(
+            &mut expected,
+            &x_i8,
+            &x_scales,
+            &weights,
+            rows,
+            cols,
+            selector(Q8DotKernel::Scalar),
+        );
+
+        let mut candidate = vec![0.0; rows];
+        matmul_q4_0_sdot_1x4_swizzled(&mut candidate, &x_i8, &x_scales, &swizzled, cols);
+
+        assert_eq!(candidate, expected);
     }
 
     #[test]
