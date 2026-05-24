@@ -924,7 +924,7 @@ fn run_q8_model_smoke(
     if prompt_tokens.is_empty() {
         return Err("prompt tokenized to an empty sequence".to_owned());
     }
-    validate_prompt_fits_context(prompt_tokens.len(), config.context_length)?;
+    validate_generation_budget(prompt_tokens.len(), max_tokens, config.context_length)?;
 
     let selected = q8::Q8DotKernelSelector::from_env();
     let scalar = q8::Q8DotKernelSelector {
@@ -1053,13 +1053,21 @@ fn max_abs_delta(lhs: &[f32], rhs: &[f32]) -> f32 {
         .fold(0.0_f32, f32::max)
 }
 
-fn validate_prompt_fits_context(
+fn validate_generation_budget(
     prompt_token_count: usize,
+    requested_generation_tokens: usize,
     context_length: usize,
 ) -> Result<(), String> {
     if prompt_token_count > context_length {
         return Err(format!(
             "prompt requires {prompt_token_count} tokens but model context length is {context_length}"
+        ));
+    }
+
+    let remaining_tokens = context_length - prompt_token_count;
+    if requested_generation_tokens > remaining_tokens {
+        return Err(format!(
+            "prompt uses {prompt_token_count} of {context_length} context tokens; requested {requested_generation_tokens} generation tokens but only {remaining_tokens} remain"
         ));
     }
 
@@ -1144,7 +1152,9 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
         eprintln!("Prompt tokenized to an empty sequence");
         return ExitCode::FAILURE;
     }
-    if let Err(err) = validate_prompt_fits_context(prompt_tokens.len(), config.context_length) {
+    if let Err(err) =
+        validate_generation_budget(prompt_tokens.len(), max_tokens, config.context_length)
+    {
         eprintln!("Prompt exceeds model context: {err}");
         return ExitCode::FAILURE;
     }
@@ -1266,7 +1276,7 @@ mod tests {
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
         inspect_runtime_summary, is_help_flag, parse_generate_args_with_env,
-        parse_smoke_q8_model_args_with_env, resolve_model_path_arg, validate_prompt_fits_context,
+        parse_smoke_q8_model_args_with_env, resolve_model_path_arg, validate_generation_budget,
     };
 
     #[test]
@@ -1308,14 +1318,25 @@ flags\t\t: sse4_2 avx2
 
     #[test]
     fn prompt_context_validation_accepts_equal_length() {
-        assert_eq!(validate_prompt_fits_context(128, 128), Ok(()));
+        assert_eq!(validate_generation_budget(128, 0, 128), Ok(()));
     }
 
     #[test]
     fn prompt_context_validation_rejects_overflow() {
         assert_eq!(
-            validate_prompt_fits_context(129, 128),
+            validate_generation_budget(129, 0, 128),
             Err("prompt requires 129 tokens but model context length is 128".to_owned())
+        );
+    }
+
+    #[test]
+    fn prompt_context_validation_rejects_generation_budget_overflow() {
+        assert_eq!(
+            validate_generation_budget(127, 2, 128),
+            Err(
+                "prompt uses 127 of 128 context tokens; requested 2 generation tokens but only 1 remain"
+                    .to_owned()
+            )
         );
     }
 
