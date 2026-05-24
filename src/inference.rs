@@ -303,13 +303,12 @@ pub fn matmul_q6_k(
         let mut sum = 0.0_f32;
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
         for (block_idx, w_block) in w_row.iter().enumerate() {
-            let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
-            w_block.dequantize(&mut values);
             let x_block_start = block_idx * QK_K_BLOCK_SIZE;
-            for (i, value) in values.iter().enumerate() {
-                let x_idx = x_block_start + i;
-                sum += *value * x_i8[x_idx] as f32 * x_scales[x_idx / 32];
-            }
+            let x_scale_start = x_block_start / 32;
+            sum += w_block.dot_q8_scaled(
+                &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / 32)],
+            );
         }
         *out_val = sum;
     });
@@ -711,8 +710,11 @@ fn rand_simple() -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RopeScaling, apply_rope, matmul_q4_0, matmul_q8_0};
-    use crate::q8::{Q4_0Block, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector};
+    use super::{RopeScaling, apply_rope, matmul_q4_0, matmul_q6_k, matmul_q8_0};
+    use crate::q8::{
+        Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
+        QK_K_BLOCK_SIZE,
+    };
 
     fn selector(selected: Q8DotKernel) -> Q8DotKernelSelector {
         Q8DotKernelSelector {
@@ -738,6 +740,22 @@ mod tests {
             *value = low | (high << 4);
         }
         Q4_0Block::from_parts(scale_bits, values)
+    }
+
+    fn q6_k_block(scale_bits: u16, seed: i16) -> Q6KBlock {
+        let mut ql = [0_u8; 128];
+        let mut qh = [0_u8; 64];
+        let mut scales = [0_i8; 16];
+        for (idx, value) in ql.iter_mut().enumerate() {
+            *value = ((seed + idx as i16 * 5).rem_euclid(256)) as u8;
+        }
+        for (idx, value) in qh.iter_mut().enumerate() {
+            *value = ((seed + idx as i16 * 7).rem_euclid(256)) as u8;
+        }
+        for (idx, scale) in scales.iter_mut().enumerate() {
+            *scale = ((seed + idx as i16 * 3).rem_euclid(15) - 7) as i8;
+        }
+        Q6KBlock::from_parts(ql, qh, scales, scale_bits)
     }
 
     #[test]
@@ -823,6 +841,50 @@ mod tests {
         for r in 0..rows {
             assert!(
                 (candidate[r] - expected[r]).abs() < 1e-5,
+                "row {r} candidate {} expected {}",
+                candidate[r],
+                expected[r]
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_q6_k_matches_dequantized_reference() {
+        let rows = 2;
+        let cols = QK_K_BLOCK_SIZE * 2;
+        let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 5) % 61) as i8 - 30).collect();
+        let x_scales: Vec<f32> = (0..cols / Q8_BLOCK_SIZE)
+            .map(|idx| 0.125 + idx as f32 * 0.03125)
+            .collect();
+        let weights = [
+            q6_k_block(0x3800, 1),
+            q6_k_block(0x3c00, 2),
+            q6_k_block(0x4000, 3),
+            q6_k_block(0x4200, 4),
+        ];
+        let mut candidate = vec![0.0; rows];
+        matmul_q6_k(&mut candidate, &x_i8, &x_scales, &weights, rows, cols);
+
+        let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+        let mut expected = vec![0.0; rows];
+        for r in 0..rows {
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let block = &weights[r * blocks_per_row + b];
+                let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
+                block.dequantize(&mut values);
+                let x_block_start = b * QK_K_BLOCK_SIZE;
+                for (i, value) in values.iter().enumerate() {
+                    let x_idx = x_block_start + i;
+                    sum += *value * x_i8[x_idx] as f32 * x_scales[x_idx / Q8_BLOCK_SIZE];
+                }
+            }
+            expected[r] = sum;
+        }
+
+        for r in 0..rows {
+            assert!(
+                (candidate[r] - expected[r]).abs() < 1e-4,
                 "row {r} candidate {} expected {}",
                 candidate[r],
                 expected[r]

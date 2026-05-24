@@ -365,6 +365,71 @@ impl Q6KBlock {
             scale_offset += 8;
         }
     }
+
+    #[inline]
+    pub fn dot_q8_scaled(&self, x_i8: &[i8], x_scales: &[f32]) -> f32 {
+        debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+        debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+
+        let d = self.scale_f32();
+        let mut weight_scales = [0.0_f32; 16];
+        for (idx, scale) in weight_scales.iter_mut().enumerate() {
+            *scale = d * self.scales[idx] as f32;
+        }
+
+        let mut sum = 0.0_f32;
+        let mut ql_offset = 0;
+        let mut qh_offset = 0;
+        let mut scale_offset = 0;
+
+        for n in (0..QK_K_BLOCK_SIZE).step_by(128) {
+            let x_scale_offset = n / Q8_BLOCK_SIZE;
+            let c1_low = weight_scales[scale_offset] * x_scales[x_scale_offset];
+            let c1_high = weight_scales[scale_offset + 1] * x_scales[x_scale_offset];
+            let c2_low = weight_scales[scale_offset + 2] * x_scales[x_scale_offset + 1];
+            let c2_high = weight_scales[scale_offset + 3] * x_scales[x_scale_offset + 1];
+            let c3_low = weight_scales[scale_offset + 4] * x_scales[x_scale_offset + 2];
+            let c3_high = weight_scales[scale_offset + 5] * x_scales[x_scale_offset + 2];
+            let c4_low = weight_scales[scale_offset + 6] * x_scales[x_scale_offset + 3];
+            let c4_high = weight_scales[scale_offset + 7] * x_scales[x_scale_offset + 3];
+
+            for l in 0..16 {
+                let qh = self.qh[qh_offset + l];
+                let q1 = ((self.ql[ql_offset + l] & 0x0f) | ((qh & 0x03) << 4)) as i8 - 32;
+                let q2 =
+                    ((self.ql[ql_offset + l + 32] & 0x0f) | (((qh >> 2) & 0x03) << 4)) as i8 - 32;
+                let q3 = ((self.ql[ql_offset + l] >> 4) | (((qh >> 4) & 0x03) << 4)) as i8 - 32;
+                let q4 =
+                    ((self.ql[ql_offset + l + 32] >> 4) | (((qh >> 6) & 0x03) << 4)) as i8 - 32;
+
+                sum += c1_low * q1 as f32 * x_i8[n + l] as f32;
+                sum += c2_low * q2 as f32 * x_i8[n + l + 32] as f32;
+                sum += c3_low * q3 as f32 * x_i8[n + l + 64] as f32;
+                sum += c4_low * q4 as f32 * x_i8[n + l + 96] as f32;
+            }
+
+            for l in 16..32 {
+                let qh = self.qh[qh_offset + l];
+                let q1 = ((self.ql[ql_offset + l] & 0x0f) | ((qh & 0x03) << 4)) as i8 - 32;
+                let q2 =
+                    ((self.ql[ql_offset + l + 32] & 0x0f) | (((qh >> 2) & 0x03) << 4)) as i8 - 32;
+                let q3 = ((self.ql[ql_offset + l] >> 4) | (((qh >> 4) & 0x03) << 4)) as i8 - 32;
+                let q4 =
+                    ((self.ql[ql_offset + l + 32] >> 4) | (((qh >> 6) & 0x03) << 4)) as i8 - 32;
+
+                sum += c1_high * q1 as f32 * x_i8[n + l] as f32;
+                sum += c2_high * q2 as f32 * x_i8[n + l + 32] as f32;
+                sum += c3_high * q3 as f32 * x_i8[n + l + 64] as f32;
+                sum += c4_high * q4 as f32 * x_i8[n + l + 96] as f32;
+            }
+
+            ql_offset += 64;
+            qh_offset += 32;
+            scale_offset += 8;
+        }
+
+        sum
+    }
 }
 
 pub fn decode_q8_0_blocks(bytes: &[u8]) -> Result<Vec<Q8_0Block>, Q8BlockError> {

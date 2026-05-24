@@ -1822,7 +1822,7 @@ where
             return ExitCode::FAILURE;
         }
     };
-    println!("Architecture: LLaMA");
+    println!("Architecture: {}", config.architecture);
     println!("Vocab size: {}", config.vocab_size);
     println!("Layers: {}", config.block_count);
     println!("Embedding width: {}", config.embedding_length);
