@@ -17,13 +17,16 @@ evidence.
   across turns.
 - Prompt ingestion uses guarded batched prefill by default. The current default
   batch size is `16`.
+- Long-context models can be smoke-tested with an explicit
+  `NANOCAMELID_CONTEXT_LIMIT` cap to avoid allocating their full advertised KV
+  cache.
 - Scalar reference paths remain in the test suite. Optimized kernels have to
   prove parity before they are treated as production paths.
 
 ## Recent Pi Results
 
-Latest runtime evidence below was captured on `7621ba6`
-(`perf(q8): split sdot accumulators`).
+Latest runtime evidence below was captured through `b467d2c`
+(`feat(runtime): allow capped smoke context`).
 
 On the Pi 2 benchmark lane, Qwen2.5-Coder-7B-Instruct Q4_0 currently validates
 through the smoke path with exact scalar-vs-selected logit parity:
@@ -50,6 +53,17 @@ Recent experiments that did not land:
 - Fully vectorized activation quantization was correctness-safe but slightly
   slower on the real 7B Q4 generate path (`4.05s` prefill and `1.34 tok/sec`
   baseline vs `4.07s` and `1.33 tok/sec` experiment).
+
+Strand Rust Coder 14B Q6_K now inspects and runs with a capped context on the
+Pi 2 benchmark lane. It is useful compatibility evidence for Qwen2 + Q6_K, but
+it is not a practical Pi target yet:
+
+- model: `Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF`
+- file: `Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf`
+- size: `12.1 GB`
+- metadata: Qwen2, 48 layers, 5120 hidden width, 32k advertised context
+- short run with `NANOCAMELID_CONTEXT_LIMIT=128`: load about `39-54s`, one-token
+  prompt prefill about `6.6s`, 8-token generation `46.06s` (`0.17 tok/sec`)
 
 ## Runtime Design
 
@@ -128,6 +142,18 @@ session token-in/token-out counters, TTFT, and throughput.
 before decode begins. The default is `16`. Set it to `1` for the old
 single-token reference behavior, or use `bench q4-prefill` to compare candidate
 batch sizes on the current host without loading a GGUF model.
+
+For very long-context GGUFs, `NANOCAMELID_CONTEXT_LIMIT` can cap the runtime KV
+cache during local smoke tests:
+
+```bash
+NANOCAMELID_CONTEXT_LIMIT=128 \
+  NANOCAMELID_MODEL_GGUF=/path/to/model.gguf \
+  cargo run --release -- generate "Hello" 0.0 8
+```
+
+This does not change the model metadata or make broad context-length support
+claims; it only bounds memory for short validation runs.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
 
@@ -208,6 +234,8 @@ results as specific to the exact Pi, model, build, and environment used.
 Useful environment controls:
 
 - `NANOCAMELID_PREFILL_BATCH`: prompt-token batch size; default `16`.
+- `NANOCAMELID_CONTEXT_LIMIT`: optional runtime KV-cache context cap for short
+  smoke tests of long-context models.
 - `NANOCAMELID_RAYON_THREADS`: global Rayon worker count.
 - `NANOCAMELID_MATMUL_MIN_ROWS`: row-count threshold before matmuls enter Rayon.
 - `NANOCAMELID_Q8_DOT_KERNEL=scalar|neon|sdot`: force the selected Q8 kernel.
@@ -230,6 +258,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat. |
 | Llama 3.2 1B Instruct | Q8_0 | Working | Baseline path for Q8 validation and Q4 comparison. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
+| Strand Rust Coder 14B v1 | Q6_K | Experimental | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
 
 ## Pi Performance Snapshot
 
@@ -244,6 +273,9 @@ Current Pi 2 evidence, measured on local release builds:
   `10.45s` (`1.34 tok/sec`).
 - Qwen2.5-Coder-7B-Instruct Q4_0 145-token chat prompt: prefill improved from
   `48.90s` at batch 1 to about `17.0s` with loop-inverted batch 16 prefill.
+- Strand Rust Coder 14B v1 Q6_K capped-context smoke: load about `39-54s`,
+  one-token prompt prefill about `6.6s`, 8 generated tokens in `46.06s`
+  (`0.17 tok/sec`).
 - Q8 SDOT single-block microkernel: split accumulators moved the Pi 2 SDOT
   median from about `1.683 ns/block` to about `1.679 ns/block`.
 

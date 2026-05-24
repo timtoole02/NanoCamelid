@@ -398,6 +398,9 @@ fn print_generate_usage() {
     println!(
         "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
     );
+    println!(
+        "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
+    );
     println!();
     println!(
         "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
@@ -425,6 +428,9 @@ fn print_chat_usage() {
     );
     println!(
         "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
+    );
+    println!(
+        "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
     );
     println!();
     println!(
@@ -455,6 +461,9 @@ fn print_tui_usage() {
     );
     println!(
         "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
+    );
+    println!(
+        "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
     );
     println!();
     println!("Commands inside the TUI: /help, /model <path>, /clear, /exit, /quit");
@@ -530,6 +539,9 @@ fn print_smoke_usage() {
     );
     println!(
         "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
+    );
+    println!(
+        "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
     );
     println!();
     println!(
