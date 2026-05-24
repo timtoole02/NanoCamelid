@@ -8,6 +8,7 @@ use std::{env, sync::OnceLock};
 
 pub const MATMUL_MIN_ROWS_ENV: &str = "NANOCAMELID_MATMUL_MIN_ROWS";
 pub const Q4_1X4_SDOT_ENV: &str = "NANOCAMELID_Q4_1X4_SDOT";
+pub const Q6K_SDOT_ENV: &str = "NANOCAMELID_Q6K_SDOT";
 const DEFAULT_MATMUL_MIN_ROWS: usize = 128;
 
 fn matmul_min_rows() -> usize {
@@ -29,6 +30,16 @@ fn q4_1x4_sdot_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(Q4_1X4_SDOT_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
+fn q6_k_sdot_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q6K_SDOT_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
             .unwrap_or(false)
@@ -779,6 +790,33 @@ pub fn matmul_q6_k_batch(
     let blocks_per_row = cols / QK_K_BLOCK_SIZE;
     let q8_blocks_per_token = cols / Q8_BLOCK_SIZE;
     let out_addr = out.as_mut_ptr() as usize;
+    #[cfg(target_arch = "aarch64")]
+    if q6_k_sdot_enabled() && std::arch::is_aarch64_feature_detected!("dotprod") {
+        for_each_batch_matmul_row(rows, |r| {
+            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+            for token_idx in 0..batch_size {
+                let x_offset = token_idx * cols;
+                let scale_offset = token_idx * q8_blocks_per_token;
+                let x_token = &x_i8[x_offset..x_offset + cols];
+                let x_token_scales = &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                let mut sum = 0.0_f32;
+                for (block_idx, w_block) in w_row.iter().enumerate() {
+                    let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                    let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                    sum += unsafe {
+                        w_block.dot_q8_scaled_sdot(
+                            &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                            &x_token_scales
+                                [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                        )
+                    };
+                }
+                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            }
+        });
+        return;
+    }
+
     for_each_batch_matmul_row(rows, |r| {
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
         for token_idx in 0..batch_size {
@@ -1018,15 +1056,35 @@ pub fn matmul_q6_k(
     cols: usize,
 ) {
     let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    if q6_k_sdot_enabled() && std::arch::is_aarch64_feature_detected!("dotprod") {
+        for_each_matmul_row(out, |r, out_val| {
+            let mut sum = 0.0_f32;
+            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+            for (block_idx, w_block) in w_row.iter().enumerate() {
+                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                sum += unsafe {
+                    w_block.dot_q8_scaled_sdot(
+                        &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                        &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                    )
+                };
+            }
+            *out_val = sum;
+        });
+        return;
+    }
+
     for_each_matmul_row(out, |r, out_val| {
         let mut sum = 0.0_f32;
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
         for (block_idx, w_block) in w_row.iter().enumerate() {
             let x_block_start = block_idx * QK_K_BLOCK_SIZE;
-            let x_scale_start = x_block_start / 32;
+            let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
             sum += w_block.dot_q8_scaled(
                 &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / 32)],
+                &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
             );
         }
         *out_val = sum;

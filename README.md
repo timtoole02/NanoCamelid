@@ -246,6 +246,8 @@ Useful environment controls:
 - `NANOCAMELID_Q4_1X4_SDOT=1`: enable the experimental Q4_0 1x4 SDOT path.
 - `NANOCAMELID_Q4_SWIZZLE_1X4=1`: load compatible Q4_0 tensors in the swizzled
   1x4 runtime layout.
+- `NANOCAMELID_Q6K_SDOT=1`: enable the experimental AArch64 SDOT path for
+  Q6_K-by-Q8 matmuls when the CPU reports dot-product support.
 
 The swizzled Q4_0 1x4 path is an opt-in performance path. It has shown a real
 Pi 2 short-chat win with smoke parity, but it remains explicit until broader
@@ -279,6 +281,8 @@ Current Pi 2 evidence, measured on local release builds:
 - Strand Rust Coder 14B v1 Q6_K capped-context smoke: load about `39-54s`,
   one-token prompt prefill about `6.6s`, 8 generated tokens in `46.06s`
   (`0.17 tok/sec`).
+- Experimental Q6_K SDOT on Pi 2 preserved the Strand 14B one-token smoke output
+  and reduced a capped one-token wall-clock run from `78s` to `54s`.
 - mmap-backed source reads improve the warm Qwen2.5-Coder-7B-Instruct Q4_0
   load path to `2.63s`, but they do not make large models instant. Strand 14B
   Q6_K still takes about `47s` to load because the current runtime still
