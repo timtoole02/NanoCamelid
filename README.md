@@ -42,6 +42,8 @@ the Llama 3 instruct header/eot format used by Llama 3.2 1B Instruct rows.
 connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
 session token-in/token-out counters.
 
+![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
+
 ## Benchmarks
 
 Run the Q8 dot benchmark on the target Pi:
