@@ -8,6 +8,56 @@ and small-model smoke tests easy to run on a Pi. Performance work is
 intentionally gated behind explicit commands and environment variables until it
 has repeatable Pi evidence.
 
+## Engineering Under the Hood
+
+NanoCamelid is built as a small systems runtime for edge inference, not a
+wrapper around a larger desktop stack. The design goal is to keep the useful
+parts of local chat running on Raspberry Pi-class hardware while making every
+performance claim traceable to a smoke test, benchmark, or explicit opt-in
+experiment.
+
+### Conversational Prefix Reuse
+
+The interactive TUI keeps the model loaded and reuses the matching prompt-prefix
+KV cache across turns. When the next rendered chat prompt shares the same
+history prefix, NanoCamelid preserves that cache and only pre-fills the new
+suffix. If the model changes or the prompt prefix no longer matches, the session
+is reset cleanly instead of reusing invalid state.
+
+This is deliberately narrower than full batched prefill. New long prompts are
+still processed token by token today, and the README calls that out in the
+performance section because larger Qwen2.5-Coder prompts are currently
+prefill-bound on Pi hardware.
+
+### Pi-Aware CPU Scheduling
+
+NanoCamelid uses a bounded Rayon setup tuned for small ARM boards. Worker count
+defaults to up to four threads, and when the platform exposes CPU affinity the
+runtime pins those workers to available cores. Small matrix-vector workloads can
+also bypass Rayon entirely through the `NANOCAMELID_MATMUL_MIN_ROWS` threshold,
+which avoids paying thread-pool scheduling overhead for tiny GEMV calls.
+
+### Vectorized Hot Paths With Reference Fallbacks
+
+The runtime includes ARM NEON helpers for decode-time attention dot products and
+weighted value accumulation. Q8_0 and Q4_0 matmul paths use selected scalar,
+NEON, or SDOT kernels, with scalar references kept in the test suite so optimized
+paths must prove logit parity before they are trusted.
+
+Recent Pi work also moved several inner loops away from repeated slice-to-array
+conversion and added a NEON max-abs scan for dynamic Q8 activation quantization
+while preserving scalar rounding and clamping semantics. More aggressive ideas,
+such as Q4_0 1x4 SDOT row blocking, stay behind opt-in flags when measured Pi
+results do not beat the normal path.
+
+### Rust-First Edge Deployment
+
+NanoCamelid is a Rust command-line runtime with no Python service dependency and
+no required C++ build step for normal use. That keeps the Pi deployment path
+small: clone the repo, build with Cargo, point it at local GGUF files, and use
+the same binary for inspection, smoke validation, single-turn generation, and
+interactive terminal chat.
+
 ## Requirements
 
 - Raspberry Pi 5 or another ARM64 Linux machine
