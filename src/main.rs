@@ -1,4 +1,9 @@
-use std::{env, fs, path::Path, process::ExitCode};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::Path,
+    process::ExitCode,
+};
 
 use nanocamelid::{gguf, inference, model, q8, tokenizer};
 
@@ -78,6 +83,25 @@ fn main() -> ExitCode {
                 Err(err) => {
                     eprintln!("{err}");
                     print_help(HelpTopic::Chat);
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("tui") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Tui);
+                return ExitCode::SUCCESS;
+            }
+
+            match parse_tui_args(&args[1..]) {
+                Ok(parsed) => run_chat_tui(
+                    Path::new(&parsed.model_path),
+                    parsed.temp,
+                    parsed.max_tokens,
+                ),
+                Err(err) => {
+                    eprintln!("{err}");
+                    print_help(HelpTopic::Tui);
                     ExitCode::from(2)
                 }
             }
@@ -166,6 +190,7 @@ enum HelpTopic {
     Inspect,
     Generate,
     Chat,
+    Tui,
     Bench,
     Smoke,
 }
@@ -184,6 +209,7 @@ fn help_topic_named(name: &str) -> Option<HelpTopic> {
         "inspect" => Some(HelpTopic::Inspect),
         "generate" => Some(HelpTopic::Generate),
         "chat" => Some(HelpTopic::Chat),
+        "tui" => Some(HelpTopic::Tui),
         "bench" => Some(HelpTopic::Bench),
         "smoke" => Some(HelpTopic::Smoke),
         _ => None,
@@ -201,6 +227,7 @@ fn print_help(topic: HelpTopic) {
         HelpTopic::Inspect => print_inspect_usage(),
         HelpTopic::Generate => print_generate_usage(),
         HelpTopic::Chat => print_chat_usage(),
+        HelpTopic::Tui => print_tui_usage(),
         HelpTopic::Bench => print_bench_usage(),
         HelpTopic::Smoke => print_smoke_usage(),
     }
@@ -227,6 +254,8 @@ fn print_usage() {
     println!(
         "                                            Render a single-turn chat prompt before generation"
     );
+    println!("  tui <model.gguf> [temp] [max_tokens]");
+    println!("                                            Open an interactive terminal chat");
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!(
@@ -315,6 +344,28 @@ fn print_chat_usage() {
     );
 }
 
+fn print_tui_usage() {
+    println!("NanoCamelid tui");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid tui <model.gguf> [temp] [max_tokens]");
+    println!("  nanocamelid tui [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set");
+    println!();
+    println!("Args:");
+    println!("  <model.gguf>                              Path to the GGUF model file");
+    println!("  [temp]                                    Sampling temperature, default 0.0");
+    println!(
+        "  [max_tokens]                              Maximum tokens per assistant turn, default 128"
+    );
+    println!();
+    println!("Env:");
+    println!(
+        "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, chat, and tui"
+    );
+    println!();
+    println!("Commands inside the TUI: /help, /clear, /exit, /quit");
+}
+
 fn print_bench_usage() {
     println!("NanoCamelid bench");
     println!();
@@ -376,6 +427,13 @@ struct GenerateArgs {
     max_tokens: usize,
 }
 
+#[derive(Debug, PartialEq)]
+struct TuiArgs {
+    model_path: String,
+    temp: f32,
+    max_tokens: usize,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct SmokeQ8ModelArgs {
     model_path: String,
@@ -385,6 +443,43 @@ struct SmokeQ8ModelArgs {
 
 fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
     parse_generate_args_with_env(args, default_model_path_from_env())
+}
+
+fn parse_tui_args(args: &[String]) -> Result<TuiArgs, &'static str> {
+    parse_tui_args_with_env(args, default_model_path_from_env())
+}
+
+fn parse_tui_args_with_env(
+    args: &[String],
+    env_model_path: Option<String>,
+) -> Result<TuiArgs, &'static str> {
+    let first_looks_like_model = args
+        .first()
+        .is_some_and(|value| looks_like_gguf_path(value));
+
+    let (model_path, option_idx) = match (args.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
+        (Some(path), None) => (path.clone(), 1),
+        (_, Some(path)) => (path, 0),
+        (None, None) => {
+            return Err("missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF");
+        }
+    };
+
+    let temp = args
+        .get(option_idx)
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let max_tokens = args
+        .get(option_idx + 1)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(128);
+
+    Ok(TuiArgs {
+        model_path,
+        temp,
+        max_tokens,
+    })
 }
 
 fn parse_generate_args_with_env(
@@ -1191,6 +1286,266 @@ fn run_chat(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> Ex
     })
 }
 
+#[derive(Debug, Clone)]
+struct ChatTurn {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug)]
+struct ChatTurnReport {
+    input_tokens: usize,
+    output_tokens: usize,
+    elapsed_secs: f64,
+}
+
+fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
+    println!("Loading GGUF file: {}...", model_path.display());
+    let gguf = match gguf::read_file(model_path) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Failed to read GGUF: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let config = match model::LlamaModelConfig::from_gguf(&gguf) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to parse config: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let tokenizer = match tokenizer::Tokenizer::from_gguf(&gguf) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Failed to load tokenizer: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("Loading model weights into memory...");
+    let started_load = std::time::Instant::now();
+    let weights = match model::LlamaWeights::load(model_path, &config, &gguf) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to load weights: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let selector = q8::Q8DotKernelSelector::from_env();
+    let runtime_options = runtime_options_from_gguf(&gguf, selector);
+    let model_name = gguf
+        .metadata_string("general.name")
+        .map(str::to_owned)
+        .or_else(|| {
+            model_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into())
+        })
+        .unwrap_or_else(|| model_path.display().to_string());
+    let renderer = tokenizer.render_chat_prompt(&[]).renderer.to_owned();
+    let mut history = Vec::<ChatTurn>::new();
+    let mut total_in = 0usize;
+    let mut total_out = 0usize;
+
+    print_tui_banner(TuiBanner {
+        model_name: &model_name,
+        model_path,
+        config: &config,
+        kernel: selector.selected.name(),
+        renderer: &renderer,
+        temp,
+        max_tokens,
+        load_secs: started_load.elapsed().as_secs_f64(),
+    });
+
+    let stdin = io::stdin();
+    loop {
+        print!("{}nano>{} ", ansi::INPUT, ansi::RESET);
+        if io::stdout().flush().is_err() {
+            return ExitCode::FAILURE;
+        }
+
+        let mut input = String::new();
+        match stdin.read_line(&mut input) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("Failed to read input: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+
+        let input = input.trim();
+        if input.is_empty() {
+            continue;
+        }
+        match input {
+            "/exit" | "/quit" => break,
+            "/help" => {
+                print_tui_commands();
+                continue;
+            }
+            "/clear" => {
+                history.clear();
+                total_in = 0;
+                total_out = 0;
+                println!("{}conversation cleared{}", ansi::DIM, ansi::RESET);
+                print_tui_status(
+                    &model_name,
+                    selector.selected.name(),
+                    0,
+                    0,
+                    total_in,
+                    total_out,
+                    0.0,
+                );
+                continue;
+            }
+            _ => {}
+        }
+
+        history.push(ChatTurn {
+            role: "user".to_owned(),
+            content: input.to_owned(),
+        });
+
+        print!("{}assistant>{} ", ansi::ASSISTANT, ansi::RESET);
+        if io::stdout().flush().is_err() {
+            return ExitCode::FAILURE;
+        }
+
+        let report = match generate_chat_turn(
+            &history,
+            &config,
+            &weights,
+            &tokenizer,
+            runtime_options,
+            temp,
+            max_tokens,
+        ) {
+            Ok((assistant_text, report)) => {
+                history.push(ChatTurn {
+                    role: "assistant".to_owned(),
+                    content: assistant_text,
+                });
+                report
+            }
+            Err(err) => {
+                history.pop();
+                eprintln!("\n{}generation failed:{} {err}", ansi::ERROR, ansi::RESET);
+                continue;
+            }
+        };
+
+        total_in += report.input_tokens;
+        total_out += report.output_tokens;
+        print_tui_status(
+            &model_name,
+            selector.selected.name(),
+            report.input_tokens,
+            report.output_tokens,
+            total_in,
+            total_out,
+            report.elapsed_secs,
+        );
+    }
+
+    println!("{}disconnected{}", ansi::DIM, ansi::RESET);
+    ExitCode::SUCCESS
+}
+
+fn generate_chat_turn(
+    history: &[ChatTurn],
+    config: &model::LlamaModelConfig,
+    weights: &model::LlamaWeights,
+    tokenizer: &tokenizer::Tokenizer,
+    runtime_options: inference::LlamaRuntimeOptions,
+    temp: f32,
+    max_tokens: usize,
+) -> Result<(String, ChatTurnReport), String> {
+    let messages = history
+        .iter()
+        .map(|turn| tokenizer::ChatMessage {
+            role: turn.role.as_str(),
+            content: turn.content.as_str(),
+        })
+        .collect::<Vec<_>>();
+    let rendered = tokenizer.render_chat_prompt(&messages);
+    let prompt_tokens =
+        tokenizer.encode(&rendered.text, rendered.add_special, rendered.parse_special)?;
+    if prompt_tokens.is_empty() {
+        return Err("prompt tokenized to an empty sequence".to_owned());
+    }
+    validate_generation_budget(prompt_tokens.len(), max_tokens, config.context_length)?;
+
+    let mut cache =
+        inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+    let mut ws = inference::LlamaWorkspace::new(config);
+    let mut pos = 0usize;
+    for &token in &prompt_tokens {
+        inference::forward_pass(
+            token as usize,
+            pos,
+            config,
+            weights,
+            &mut cache,
+            &mut ws,
+            runtime_options,
+        );
+        pos += 1;
+    }
+
+    let mut generated_tokens = Vec::new();
+    let mut last_printed_len = 0usize;
+    let started = std::time::Instant::now();
+    loop {
+        let next_token = inference::sample_logits(&ws.logits, temp);
+        if Some(next_token as u32) == tokenizer.special.eos
+            || Some(next_token as u32) == tokenizer.special.eot
+            || pos >= config.context_length
+            || generated_tokens.len() >= max_tokens
+        {
+            break;
+        }
+
+        generated_tokens.push(next_token as u32);
+        if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
+            && full_text.len() > last_printed_len
+        {
+            print!("{}", &full_text[last_printed_len..]);
+            io::stdout()
+                .flush()
+                .map_err(|err| format!("failed to flush stdout: {err}"))?;
+            last_printed_len = full_text.len();
+        }
+
+        inference::forward_pass(
+            next_token,
+            pos,
+            config,
+            weights,
+            &mut cache,
+            &mut ws,
+            runtime_options,
+        );
+        pos += 1;
+    }
+
+    let assistant_text = tokenizer.decode(&generated_tokens, true)?;
+    println!();
+    Ok((
+        assistant_text,
+        ChatTurnReport {
+            input_tokens: prompt_tokens.len(),
+            output_tokens: generated_tokens.len(),
+            elapsed_secs: started.elapsed().as_secs_f64(),
+        },
+    ))
+}
+
 fn run_generation_with_prompt_builder<F>(
     model_path: &Path,
     temp: f32,
@@ -1286,17 +1641,7 @@ where
         inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
     let mut ws = inference::LlamaWorkspace::new(&config);
     let selector = q8::Q8DotKernelSelector::from_env();
-    let runtime_options = inference::LlamaRuntimeOptions {
-        q8_selector: selector,
-        rope_scaling: inference::RopeScaling {
-            factor: gguf.metadata_f32("llama.rope.scaling.factor"),
-            original_context_length: gguf
-                .metadata_u32("llama.rope.scaling.original_context_length")
-                .map(|v| v as f32),
-            low_freq_factor: gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
-            high_freq_factor: gguf.metadata_f32("llama.rope.scaling.high_freq_factor"),
-        },
-    };
+    let runtime_options = runtime_options_from_gguf(&gguf, selector);
 
     println!("Selected dot-product kernel: {}", selector.selected.name());
     println!("\nGenerating response:\n");
@@ -1368,6 +1713,112 @@ where
     ExitCode::SUCCESS
 }
 
+fn runtime_options_from_gguf(
+    gguf: &gguf::GgufFile,
+    selector: q8::Q8DotKernelSelector,
+) -> inference::LlamaRuntimeOptions {
+    inference::LlamaRuntimeOptions {
+        q8_selector: selector,
+        rope_scaling: inference::RopeScaling {
+            factor: gguf.metadata_f32("llama.rope.scaling.factor"),
+            original_context_length: gguf
+                .metadata_u32("llama.rope.scaling.original_context_length")
+                .map(|v| v as f32),
+            low_freq_factor: gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
+            high_freq_factor: gguf.metadata_f32("llama.rope.scaling.high_freq_factor"),
+        },
+    }
+}
+
+struct TuiBanner<'a> {
+    model_name: &'a str,
+    model_path: &'a Path,
+    config: &'a model::LlamaModelConfig,
+    kernel: &'a str,
+    renderer: &'a str,
+    temp: f32,
+    max_tokens: usize,
+    load_secs: f64,
+}
+
+fn print_tui_banner(banner: TuiBanner<'_>) {
+    println!();
+    println!(
+        "{}llama NanoCamelid 0.1.0{} - Pi-local terminal chat",
+        ansi::TITLE,
+        ansi::RESET
+    );
+    println!(
+        "{}model{} {}  {}path{} {}",
+        ansi::LABEL,
+        ansi::RESET,
+        banner.model_name,
+        ansi::LABEL,
+        ansi::RESET,
+        banner.model_path.display()
+    );
+    println!(
+        "{}runtime{} LLaMA | layers {} | ctx {} | kernel {} | renderer {} | temp {:.2} | max out {} | load {:.2}s",
+        ansi::LABEL,
+        ansi::RESET,
+        banner.config.block_count,
+        banner.config.context_length,
+        banner.kernel,
+        banner.renderer,
+        banner.temp,
+        banner.max_tokens,
+        banner.load_secs
+    );
+    println!("{}commands{} /help /clear /exit", ansi::LABEL, ansi::RESET);
+    println!();
+}
+
+fn print_tui_commands() {
+    println!("{}commands{}", ansi::LABEL, ansi::RESET);
+    println!("  /clear  reset the conversation and token counters");
+    println!("  /exit   leave the chat");
+    println!("  /quit   leave the chat");
+}
+
+fn print_tui_status(
+    model_name: &str,
+    kernel: &str,
+    input_tokens: usize,
+    output_tokens: usize,
+    total_in: usize,
+    total_out: usize,
+    elapsed_secs: f64,
+) {
+    let tok_per_sec = if elapsed_secs > 0.0 {
+        output_tokens as f64 / elapsed_secs
+    } else {
+        0.0
+    };
+    println!(
+        "{}connected | model {} | kernel {} | last in {} | last out {} | total in/out {}/{} | {:.2} tok/sec{}",
+        ansi::DIM,
+        model_name,
+        kernel,
+        input_tokens,
+        output_tokens,
+        total_in,
+        total_out,
+        tok_per_sec,
+        ansi::RESET
+    );
+    println!();
+}
+
+mod ansi {
+    pub const RESET: &str = "\x1b[0m";
+    pub const TITLE: &str = "\x1b[38;5;208;1m";
+    pub const LABEL: &str = "\x1b[38;5;226;1m";
+    pub const ASSISTANT: &str = "\x1b[38;5;46;1m";
+    pub const INPUT: &str = "\x1b[38;5;244m";
+    pub const DIM: &str = "\x1b[38;5;240m";
+    pub const ERROR: &str = "\x1b[38;5;196;1m";
+}
+
 #[cfg(target_arch = "aarch64")]
 fn runtime_neon() -> bool {
     std::arch::is_aarch64_feature_detected!("neon")
@@ -1398,7 +1849,8 @@ mod tests {
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
         inspect_runtime_summary, is_help_flag, parse_generate_args_with_env,
-        parse_smoke_q8_model_args_with_env, resolve_model_path_arg, validate_generation_budget,
+        parse_smoke_q8_model_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
+        validate_generation_budget,
     };
 
     #[test]
@@ -1467,6 +1919,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(help_topic_named("probe"), Some(HelpTopic::Probe));
         assert_eq!(help_topic_named("inspect"), Some(HelpTopic::Inspect));
         assert_eq!(help_topic_named("generate"), Some(HelpTopic::Generate));
+        assert_eq!(help_topic_named("tui"), Some(HelpTopic::Tui));
         assert_eq!(help_topic_named("bench"), Some(HelpTopic::Bench));
         assert_eq!(help_topic_named("smoke"), Some(HelpTopic::Smoke));
         assert_eq!(help_topic_named("unknown"), None);
@@ -1493,6 +1946,10 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "smoke".to_owned()]),
             Some(HelpTopic::Smoke)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "tui".to_owned()]),
+            Some(HelpTopic::Tui)
         );
     }
 
@@ -1577,6 +2034,47 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             err,
             "missing prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first"
+        );
+    }
+
+    #[test]
+    fn tui_args_use_explicit_model_path_without_env() {
+        let parsed = parse_tui_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "0.2".to_owned(),
+                "64".to_owned(),
+            ],
+            None,
+        )
+        .expect("explicit model path should parse");
+
+        assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.temp, 0.2);
+        assert_eq!(parsed.max_tokens, 64);
+    }
+
+    #[test]
+    fn tui_args_fall_back_to_env_model_path() {
+        let parsed = parse_tui_args_with_env(
+            &["0.1".to_owned(), "32".to_owned()],
+            Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
+        )
+        .expect("env-backed tui path should parse");
+
+        assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.temp, 0.1);
+        assert_eq!(parsed.max_tokens, 32);
+    }
+
+    #[test]
+    fn tui_args_require_model_without_env() {
+        let err = parse_tui_args_with_env(&[], None)
+            .expect_err("missing model path should fail without env");
+
+        assert_eq!(
+            err,
+            "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF"
         );
     }
 

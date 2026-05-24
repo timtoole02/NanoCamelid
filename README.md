@@ -26,6 +26,7 @@ cargo run --release -- smoke q8-model /path/to/model.gguf "Hello" 1
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run -- inspect
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- generate "Hello" 0.0 32
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- chat "Say hello in one sentence." 0.0 32
+NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- tui 0.0 64
 NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-model "Hello" 1
 ```
 
@@ -37,6 +38,9 @@ logit parity, and runs a short greedy generation path. Set
 override that shared default just for smoke validation. `chat` renders a
 single-turn user prompt through recognized tokenizer chat templates, including
 the Llama 3 instruct header/eot format used by Llama 3.2 1B Instruct rows.
+`tui` opens an interactive terminal chat that keeps the model loaded, shows the
+connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
+session token-in/token-out counters.
 
 ## Benchmarks
 
@@ -89,6 +93,7 @@ in the scripts for development workflows.
 - GGUF metadata and tensor layout inspection are available.
 - Q8_0 scalar, NEON, and default-off SDOT dot-product paths are available.
 - Single-turn chat prompt rendering is available for recognized instruct templates.
+- Interactive terminal chat is available with model/kernel and token telemetry.
 - Q8_0 model smoke validation is available for supported Llama-style GGUFs.
 - Broader model support and performance claims require Pi-local artifacts.
 
