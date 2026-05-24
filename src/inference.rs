@@ -14,6 +14,7 @@ pub struct RopeScaling {
 pub struct LlamaRuntimeOptions {
     pub q8_selector: Q8DotKernelSelector,
     pub rope_scaling: RopeScaling,
+    pub compute_logits: bool,
 }
 
 pub struct LlamaKvCache {
@@ -55,6 +56,8 @@ impl LlamaKvCache {
 }
 
 pub struct LlamaWorkspace {
+    pub hidden: Vec<f32>,
+    pub residual: Vec<f32>,
     pub norm_x: Vec<f32>,
     pub q: Vec<f32>,
     pub k: Vec<f32>,
@@ -76,6 +79,8 @@ impl LlamaWorkspace {
             .max(config.feed_forward_length)
             .max(config.embedding_length);
         Self {
+            hidden: vec![0.0; config.embedding_length],
+            residual: vec![0.0; config.embedding_length],
             norm_x: vec![0.0; config.embedding_length],
             q: vec![0.0; config.embedding_length],
             k: vec![0.0; config.kv_width],
@@ -279,10 +284,56 @@ pub fn forward_pass<'a>(
     ws: &'a mut LlamaWorkspace,
     options: LlamaRuntimeOptions,
 ) -> &'a [f32] {
+    forward_pass_inner(
+        token_id,
+        pos,
+        config,
+        weights,
+        cache,
+        ws,
+        LlamaRuntimeOptions {
+            compute_logits: true,
+            ..options
+        },
+    )
+}
+
+pub fn prefill_pass(
+    token_id: usize,
+    pos: usize,
+    config: &LlamaModelConfig,
+    weights: &LlamaWeights,
+    cache: &mut LlamaKvCache,
+    ws: &mut LlamaWorkspace,
+    options: LlamaRuntimeOptions,
+) {
+    let _ = forward_pass_inner(
+        token_id,
+        pos,
+        config,
+        weights,
+        cache,
+        ws,
+        LlamaRuntimeOptions {
+            compute_logits: false,
+            ..options
+        },
+    );
+}
+
+fn forward_pass_inner<'a>(
+    token_id: usize,
+    pos: usize,
+    config: &LlamaModelConfig,
+    weights: &LlamaWeights,
+    cache: &mut LlamaKvCache,
+    ws: &'a mut LlamaWorkspace,
+    options: LlamaRuntimeOptions,
+) -> &'a [f32] {
     // 1. Embedding lookup
     let emb_start = token_id * config.embedding_length;
-    let mut x = vec![0.0; config.embedding_length];
-    x.copy_from_slice(&weights.token_embeddings[emb_start..emb_start + config.embedding_length]);
+    ws.hidden
+        .copy_from_slice(&weights.token_embeddings[emb_start..emb_start + config.embedding_length]);
 
     // 2. Transformer layers
     for layer_idx in 0..config.block_count {
@@ -290,12 +341,12 @@ pub fn forward_pass<'a>(
 
         // --- Attention block ---
         // Save residual
-        let mut residual = x.clone();
+        ws.residual.copy_from_slice(&ws.hidden);
 
         // RMSNorm
         rms_norm(
             &mut ws.norm_x,
-            &x,
+            &ws.hidden,
             &layer.attention_norm,
             config.rms_norm_epsilon,
         );
@@ -401,7 +452,7 @@ pub fn forward_pass<'a>(
         // Projection O (wo)
         quantize_f32_to_q8_0(&ws.attn_output, &mut ws.x_i8, &mut ws.x_scales);
         matmul_q8_0(
-            &mut x,
+            &mut ws.hidden,
             &ws.x_i8,
             &ws.x_scales,
             &layer.wo,
@@ -412,14 +463,19 @@ pub fn forward_pass<'a>(
 
         // Residual addition
         for i in 0..config.embedding_length {
-            x[i] += residual[i];
+            ws.hidden[i] += ws.residual[i];
         }
 
         // --- FFN block ---
-        residual.copy_from_slice(&x);
+        ws.residual.copy_from_slice(&ws.hidden);
 
         // RMSNorm
-        rms_norm(&mut ws.norm_x, &x, &layer.ffn_norm, config.rms_norm_epsilon);
+        rms_norm(
+            &mut ws.norm_x,
+            &ws.hidden,
+            &layer.ffn_norm,
+            config.rms_norm_epsilon,
+        );
 
         // Quantize
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
@@ -455,7 +511,7 @@ pub fn forward_pass<'a>(
         // Down projection (w2)
         quantize_f32_to_q8_0(&ws.ffn_gate_up, &mut ws.x_i8, &mut ws.x_scales);
         matmul_q8_0(
-            &mut x,
+            &mut ws.hidden,
             &ws.x_i8,
             &ws.x_scales,
             &layer.w2,
@@ -466,14 +522,18 @@ pub fn forward_pass<'a>(
 
         // Residual addition
         for i in 0..config.embedding_length {
-            x[i] += residual[i];
+            ws.hidden[i] += ws.residual[i];
         }
+    }
+
+    if !options.compute_logits {
+        return &ws.logits;
     }
 
     // 3. Final RMSNorm
     rms_norm(
         &mut ws.norm_x,
-        &x,
+        &ws.hidden,
         &weights.output_norm,
         config.rms_norm_epsilon,
     );

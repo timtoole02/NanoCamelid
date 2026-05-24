@@ -8,6 +8,7 @@ MODEL="${NANOCAMELID_MODEL_GGUF:-$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gg
 TEMP="${1:-${NANOCAMELID_TEMP:-0.0}}"
 MAX_TOKENS="${2:-${NANOCAMELID_MAX_TOKENS:-64}}"
 BINARY="${NANOCAMELID_BIN:-$WORKSPACE/target/release/nanocamelid}"
+export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-neon}"
 
 if [[ ! -f "$MODEL" ]]; then
   echo "Model not found: $MODEL" >&2

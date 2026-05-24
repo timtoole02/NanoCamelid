@@ -1150,10 +1150,12 @@ where
     let scalar_options = inference::LlamaRuntimeOptions {
         q8_selector: scalar,
         rope_scaling,
+        compute_logits: true,
     };
     let selected_options = inference::LlamaRuntimeOptions {
         q8_selector: selected,
         rope_scaling,
+        compute_logits: true,
     };
 
     let mut scalar_cache =
@@ -1391,6 +1393,7 @@ struct ChatTurn {
 struct ChatTurnReport {
     input_tokens: usize,
     output_tokens: usize,
+    ttft_secs: Option<f64>,
     elapsed_secs: f64,
 }
 
@@ -1488,15 +1491,16 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
                 total_in = 0;
                 total_out = 0;
                 println!("{}conversation cleared{}", ansi::DIM, ansi::RESET);
-                print_tui_status(
-                    &model_name,
-                    selector.selected.name(),
-                    0,
-                    0,
+                print_tui_status(TuiStatus {
+                    model_name: &model_name,
+                    kernel: selector.selected.name(),
+                    input_tokens: 0,
+                    output_tokens: 0,
                     total_in,
                     total_out,
-                    0.0,
-                );
+                    ttft_secs: None,
+                    elapsed_secs: 0.0,
+                });
                 continue;
             }
             _ => {}
@@ -1537,15 +1541,16 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
 
         total_in += report.input_tokens;
         total_out += report.output_tokens;
-        print_tui_status(
-            &model_name,
-            selector.selected.name(),
-            report.input_tokens,
-            report.output_tokens,
+        print_tui_status(TuiStatus {
+            model_name: &model_name,
+            kernel: selector.selected.name(),
+            input_tokens: report.input_tokens,
+            output_tokens: report.output_tokens,
             total_in,
             total_out,
-            report.elapsed_secs,
-        );
+            ttft_secs: report.ttft_secs,
+            elapsed_secs: report.elapsed_secs,
+        });
     }
 
     println!("{}disconnected{}", ansi::DIM, ansi::RESET);
@@ -1580,22 +1585,35 @@ fn generate_chat_turn(
         inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
     let mut ws = inference::LlamaWorkspace::new(config);
     let mut pos = 0usize;
-    for &token in &prompt_tokens {
-        inference::forward_pass(
-            token as usize,
-            pos,
-            config,
-            weights,
-            &mut cache,
-            &mut ws,
-            runtime_options,
-        );
+    let started_turn = std::time::Instant::now();
+    for (idx, &token) in prompt_tokens.iter().enumerate() {
+        if idx + 1 == prompt_tokens.len() {
+            inference::forward_pass(
+                token as usize,
+                pos,
+                config,
+                weights,
+                &mut cache,
+                &mut ws,
+                runtime_options,
+            );
+        } else {
+            inference::prefill_pass(
+                token as usize,
+                pos,
+                config,
+                weights,
+                &mut cache,
+                &mut ws,
+                runtime_options,
+            );
+        }
         pos += 1;
     }
 
     let mut generated_tokens = Vec::new();
     let mut last_printed_len = 0usize;
-    let started = std::time::Instant::now();
+    let mut ttft_secs = None;
     loop {
         let next_token = inference::sample_logits(&ws.logits, temp);
         if Some(next_token as u32) == tokenizer.special.eos
@@ -1607,6 +1625,7 @@ fn generate_chat_turn(
         }
 
         generated_tokens.push(next_token as u32);
+        ttft_secs.get_or_insert_with(|| started_turn.elapsed().as_secs_f64());
         if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
             && full_text.len() > last_printed_len
         {
@@ -1615,6 +1634,10 @@ fn generate_chat_turn(
                 .flush()
                 .map_err(|err| format!("failed to flush stdout: {err}"))?;
             last_printed_len = full_text.len();
+        }
+
+        if generated_tokens.len() >= max_tokens {
+            break;
         }
 
         inference::forward_pass(
@@ -1636,7 +1659,8 @@ fn generate_chat_turn(
         ChatTurnReport {
             input_tokens: prompt_tokens.len(),
             output_tokens: generated_tokens.len(),
-            elapsed_secs: started.elapsed().as_secs_f64(),
+            ttft_secs,
+            elapsed_secs: started_turn.elapsed().as_secs_f64(),
         },
     ))
 }
@@ -1744,21 +1768,32 @@ where
     let mut pos = 0;
 
     // Decode prompt tokens (prefill path)
-    for &token in &prompt_tokens {
-        inference::forward_pass(
-            token as usize,
-            pos,
-            &config,
-            &weights,
-            &mut cache,
-            &mut ws,
-            runtime_options,
-        );
+    for (idx, &token) in prompt_tokens.iter().enumerate() {
+        if idx + 1 == prompt_tokens.len() {
+            inference::forward_pass(
+                token as usize,
+                pos,
+                &config,
+                &weights,
+                &mut cache,
+                &mut ws,
+                runtime_options,
+            );
+        } else {
+            inference::prefill_pass(
+                token as usize,
+                pos,
+                &config,
+                &weights,
+                &mut cache,
+                &mut ws,
+                runtime_options,
+            );
+        }
         pos += 1;
     }
 
     // Now generate the next tokens
-    let mut generated_count = 0;
     let mut generated_tokens = Vec::new();
     let mut last_printed_len = 0;
     let start_gen = std::time::Instant::now();
@@ -1769,7 +1804,7 @@ where
         if Some(next_token as u32) == tokenizer.special.eos
             || Some(next_token as u32) == tokenizer.special.eot
             || pos >= config.context_length
-            || generated_count >= max_tokens
+            || generated_tokens.len() >= max_tokens
         {
             break;
         }
@@ -1783,6 +1818,10 @@ where
             last_printed_len = full_text.len();
         }
 
+        if generated_tokens.len() >= max_tokens {
+            break;
+        }
+
         inference::forward_pass(
             next_token,
             pos,
@@ -1794,15 +1833,14 @@ where
         );
 
         pos += 1;
-        generated_count += 1;
     }
 
     let elapsed = start_gen.elapsed().as_secs_f64();
     println!(
         "\n\nGenerated {} tokens in {:.2}s ({:.2} tokens/sec)",
-        generated_count,
+        generated_tokens.len(),
         elapsed,
-        generated_count as f64 / elapsed
+        generated_tokens.len() as f64 / elapsed
     );
 
     ExitCode::SUCCESS
@@ -1814,6 +1852,7 @@ fn runtime_options_from_gguf(
 ) -> inference::LlamaRuntimeOptions {
     inference::LlamaRuntimeOptions {
         q8_selector: selector,
+        compute_logits: true,
         rope_scaling: inference::RopeScaling {
             factor: gguf.metadata_f32("llama.rope.scaling.factor"),
             original_context_length: gguf
@@ -1834,6 +1873,17 @@ struct TuiBanner<'a> {
     temp: f32,
     max_tokens: usize,
     load_secs: f64,
+}
+
+struct TuiStatus<'a> {
+    model_name: &'a str,
+    kernel: &'a str,
+    input_tokens: usize,
+    output_tokens: usize,
+    total_in: usize,
+    total_out: usize,
+    ttft_secs: Option<f64>,
+    elapsed_secs: f64,
 }
 
 fn print_tui_banner(banner: TuiBanner<'_>) {
@@ -1875,29 +1925,26 @@ fn print_tui_commands() {
     println!("  /quit   leave the chat");
 }
 
-fn print_tui_status(
-    model_name: &str,
-    kernel: &str,
-    input_tokens: usize,
-    output_tokens: usize,
-    total_in: usize,
-    total_out: usize,
-    elapsed_secs: f64,
-) {
-    let tok_per_sec = if elapsed_secs > 0.0 {
-        output_tokens as f64 / elapsed_secs
+fn print_tui_status(status: TuiStatus<'_>) {
+    let tok_per_sec = if status.elapsed_secs > 0.0 {
+        status.output_tokens as f64 / status.elapsed_secs
     } else {
         0.0
     };
+    let ttft = status
+        .ttft_secs
+        .map(|secs| format!("{:.0} ms", secs * 1000.0))
+        .unwrap_or_else(|| "n/a".to_owned());
     println!(
-        "{}connected | model {} | kernel {} | last in {} | last out {} | total in/out {}/{} | {:.2} tok/sec{}",
+        "{}connected | model {} | kernel {} | last in {} | last out {} | total in/out {}/{} | ttft {} | {:.2} tok/sec{}",
         ansi::DIM,
-        model_name,
-        kernel,
-        input_tokens,
-        output_tokens,
-        total_in,
-        total_out,
+        status.model_name,
+        status.kernel,
+        status.input_tokens,
+        status.output_tokens,
+        status.total_in,
+        status.total_out,
+        ttft,
         tok_per_sec,
         ansi::RESET
     );

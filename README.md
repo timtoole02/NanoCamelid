@@ -45,7 +45,7 @@ tokenizer chat templates, including the Llama 3 instruct header/eot format
 used by Llama 3.2 1B Instruct rows.
 `tui` opens an interactive terminal chat that keeps the model loaded, shows the
 connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
-session token-in/token-out counters.
+session token-in/token-out counters, TTFT, and throughput.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
 
@@ -55,6 +55,10 @@ default model path, start the interactive 1B chat directly:
 ```bash
 ./scripts/pi/chat-1b.sh
 ```
+
+The launcher defaults the Q8 dot-product path to NEON on Pi-class ARM64
+hardware and still honors `NANOCAMELID_Q8_DOT_KERNEL` if you want to force a
+different kernel for comparison.
 
 Optional arguments set temperature and maximum assistant output tokens:
 
@@ -121,7 +125,8 @@ in the scripts for development workflows.
 - GGUF metadata and tensor layout inspection are available.
 - Q8_0 scalar, NEON, and default-off SDOT dot-product paths are available.
 - Single-turn chat prompt rendering is available for recognized instruct templates.
-- Interactive terminal chat is available with model/kernel and token telemetry.
+- Interactive terminal chat is available with model/kernel, token, TTFT, and throughput telemetry.
+- The Pi 1B chat launcher defaults to the NEON Q8 dot-product path and preserves scalar-vs-NEON parity through the smoke gate.
 - Q8_0 model smoke validation is available for supported Llama-style GGUFs.
 - Broader model support and performance claims require Pi-local artifacts.
 
