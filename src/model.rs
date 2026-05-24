@@ -2,12 +2,14 @@ use std::{fs::File, os::unix::fs::FileExt, path::Path};
 
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{
-    Q4_0Block, Q8_0Block, QK_K_BLOCK_SIZE, decode_q4_0_blocks, decode_q6_k_blocks,
+    Q4_0Block, Q6KBlock, Q8_0Block, QK_K_BLOCK_SIZE, decode_q4_0_blocks, decode_q6_k_blocks,
     decode_q8_0_blocks,
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LlamaModelConfig {
+    pub architecture: String,
+    pub metadata_prefix: String,
     pub context_length: usize,
     pub embedding_length: usize,
     pub block_count: usize,
@@ -27,32 +29,35 @@ impl LlamaModelConfig {
         let arch = gguf
             .metadata_string("general.architecture")
             .ok_or_else(|| "missing general.architecture".to_owned())?;
-        if arch != "llama" {
-            return Err(format!("unsupported architecture: {arch}"));
-        }
+        let metadata_prefix = match arch {
+            "llama" => "llama",
+            "qwen2" => "qwen2",
+            _ => {
+                return Err(format!("unsupported architecture: {arch}"));
+            }
+        };
 
-        let context_length =
-            gguf.metadata_u32("llama.context_length")
-                .ok_or_else(|| "missing llama.context_length".to_owned())? as usize;
-        let embedding_length =
-            gguf.metadata_u32("llama.embedding_length")
-                .ok_or_else(|| "missing llama.embedding_length".to_owned())? as usize;
-        let block_count =
-            gguf.metadata_u32("llama.block_count")
-                .ok_or_else(|| "missing llama.block_count".to_owned())? as usize;
+        let context_length = metadata_u32(gguf, metadata_prefix, "context_length")?;
+        let embedding_length = metadata_u32(gguf, metadata_prefix, "embedding_length")?;
+        let block_count = metadata_u32(gguf, metadata_prefix, "block_count")?;
         let feed_forward_length = gguf
-            .metadata_u32("llama.feed_forward_length")
-            .ok_or_else(|| "missing llama.feed_forward_length".to_owned())?
+            .metadata_u32(&metadata_key(metadata_prefix, "feed_forward_length"))
+            .or_else(|| {
+                gguf.metadata_u32(&metadata_key(metadata_prefix, "feed_forward_length_expert"))
+            })
+            .ok_or_else(|| format!("missing {metadata_prefix}.feed_forward_length"))?
             as usize;
         let attention_head_count = gguf
-            .metadata_u32("llama.attention.head_count")
-            .ok_or_else(|| "missing llama.attention.head_count".to_owned())?
+            .metadata_u32(&metadata_key(metadata_prefix, "attention.head_count"))
+            .ok_or_else(|| format!("missing {metadata_prefix}.attention.head_count"))?
             as usize;
         let attention_head_count_kv = gguf
-            .metadata_u32("llama.attention.head_count_kv")
+            .metadata_u32(&metadata_key(metadata_prefix, "attention.head_count_kv"))
             .unwrap_or(attention_head_count as u32) as usize;
         if attention_head_count == 0 {
-            return Err("llama.attention.head_count must be greater than zero".to_owned());
+            return Err(format!(
+                "{metadata_prefix}.attention.head_count must be greater than zero"
+            ));
         }
         if !embedding_length.is_multiple_of(attention_head_count) {
             return Err(format!(
@@ -60,7 +65,9 @@ impl LlamaModelConfig {
             ));
         }
         if attention_head_count_kv == 0 {
-            return Err("llama.attention.head_count_kv must be greater than zero".to_owned());
+            return Err(format!(
+                "{metadata_prefix}.attention.head_count_kv must be greater than zero"
+            ));
         }
         if !attention_head_count.is_multiple_of(attention_head_count_kv) {
             return Err(format!(
@@ -68,9 +75,14 @@ impl LlamaModelConfig {
             ));
         }
 
-        let rope_freq_base = gguf.metadata_f32("llama.rope.freq_base").unwrap_or(10000.0);
+        let rope_freq_base = gguf
+            .metadata_f32(&metadata_key(metadata_prefix, "rope.freq_base"))
+            .unwrap_or(10000.0);
         let rms_norm_epsilon = gguf
-            .metadata_f32("llama.attention.layer_norm_rms_epsilon")
+            .metadata_f32(&metadata_key(
+                metadata_prefix,
+                "attention.layer_norm_rms_epsilon",
+            ))
             .unwrap_or(1e-5);
 
         // Find token embedding weight to infer vocab size if not explicitly given
@@ -80,7 +92,9 @@ impl LlamaModelConfig {
             .find(|t| t.name == "token_embd.weight")
             .ok_or_else(|| "missing token_embd.weight tensor".to_owned())?;
 
-        let vocab_size = if let Some(v) = gguf.metadata_u32("llama.vocab_size") {
+        let vocab_size = if let Some(v) =
+            gguf.metadata_u32(&metadata_key(metadata_prefix, "vocab_size"))
+        {
             v as usize
         } else {
             if token_emb_desc.dimensions.len() == 2 {
@@ -102,7 +116,7 @@ impl LlamaModelConfig {
 
         let head_dim = embedding_length / attention_head_count;
         let rope_dimension_count = gguf
-            .metadata_u32("llama.rope.dimension_count")
+            .metadata_u32(&metadata_key(metadata_prefix, "rope.dimension_count"))
             .unwrap_or(head_dim as u32) as usize;
         if rope_dimension_count == 0
             || rope_dimension_count > head_dim
@@ -115,6 +129,8 @@ impl LlamaModelConfig {
         let kv_width = attention_head_count_kv * head_dim;
 
         Ok(Self {
+            architecture: arch.to_owned(),
+            metadata_prefix: metadata_prefix.to_owned(),
             context_length,
             embedding_length,
             block_count,
@@ -131,11 +147,24 @@ impl LlamaModelConfig {
     }
 }
 
+fn metadata_key(prefix: &str, suffix: &str) -> String {
+    format!("{prefix}.{suffix}")
+}
+
+fn metadata_u32(gguf: &GgufFile, prefix: &str, suffix: &str) -> Result<usize, String> {
+    gguf.metadata_u32(&metadata_key(prefix, suffix))
+        .map(|value| value as usize)
+        .ok_or_else(|| format!("missing {prefix}.{suffix}"))
+}
+
 pub struct LlamaLayerWeights {
     pub attention_norm: Vec<f32>,
     pub wq: QuantizedMatrix,
     pub wk: QuantizedMatrix,
     pub wav: QuantizedMatrix, // or attention_v
+    pub wq_bias: Option<Vec<f32>>,
+    pub wk_bias: Option<Vec<f32>>,
+    pub wav_bias: Option<Vec<f32>>,
     pub wo: QuantizedMatrix,
     pub ffn_norm: Vec<f32>,
     pub w1: QuantizedMatrix,
@@ -153,6 +182,7 @@ pub struct LlamaWeights {
 pub enum QuantizedMatrix {
     Q8_0(Vec<Q8_0Block>),
     Q4_0(Vec<Q4_0Block>),
+    Q6K(Vec<Q6KBlock>),
 }
 
 impl LlamaWeights {
@@ -176,6 +206,9 @@ impl LlamaWeights {
             let wq = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_q.weight"))?;
             let wk = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_k.weight"))?;
             let wav = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_v.weight"))?;
+            let wq_bias = load_optional_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_q.bias"))?;
+            let wk_bias = load_optional_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_k.bias"))?;
+            let wav_bias = load_optional_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_v.bias"))?;
             let wo = load_quantized_matrix(&file, gguf, &format!("blk.{i}.attn_output.weight"))?;
 
             let ffn_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
@@ -188,6 +221,9 @@ impl LlamaWeights {
                 wq,
                 wk,
                 wav,
+                wq_bias,
+                wk_bias,
+                wav_bias,
                 wo,
                 ffn_norm,
                 w1,
@@ -250,18 +286,39 @@ pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Res
             config.embedding_length,
             &format!("layer {layer_idx} attention q"),
         )?;
+        if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.bias")) {
+            require_descriptor_shape(
+                bias,
+                &[config.embedding_length],
+                &format!("layer {layer_idx} attention q bias"),
+            )?;
+        }
         require_descriptor_matrix_shape(
             load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_k.weight"))?,
             config.embedding_length,
             config.kv_width,
             &format!("layer {layer_idx} attention k"),
         )?;
+        if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_k.bias")) {
+            require_descriptor_shape(
+                bias,
+                &[config.kv_width],
+                &format!("layer {layer_idx} attention k bias"),
+            )?;
+        }
         require_descriptor_matrix_shape(
             load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_v.weight"))?,
             config.embedding_length,
             config.kv_width,
             &format!("layer {layer_idx} attention v"),
         )?;
+        if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_v.bias")) {
+            require_descriptor_shape(
+                bias,
+                &[config.kv_width],
+                &format!("layer {layer_idx} attention v bias"),
+            )?;
+        }
         require_descriptor_matrix_shape(
             load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_output.weight"))?,
             config.embedding_length,
@@ -366,6 +423,18 @@ fn load_f32_or_f16(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
     }
 }
 
+fn load_optional_f32_or_f16(
+    file: &File,
+    gguf: &GgufFile,
+    name: &str,
+) -> Result<Option<Vec<f32>>, String> {
+    if gguf.tensors.iter().any(|tensor| tensor.name == name) {
+        load_f32_or_f16(file, gguf, name).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 fn load_quantized_matrix(
     file: &File,
     gguf: &GgufFile,
@@ -383,8 +452,11 @@ fn load_quantized_matrix(
         GgufTensorType::Q4_0 => decode_q4_0_blocks(&bytes)
             .map(QuantizedMatrix::Q4_0)
             .map_err(|e| e.to_string()),
+        GgufTensorType::Q6K => decode_q6_k_blocks(&bytes)
+            .map(QuantizedMatrix::Q6K)
+            .map_err(|e| e.to_string()),
         other => Err(format!(
-            "expected Q8_0 or Q4_0 tensor type for {name}, got {other:?}"
+            "expected Q8_0, Q4_0, or Q6_K tensor type for {name}, got {other:?}"
         )),
     }
 }
@@ -570,6 +642,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_qwen2_metadata_namespace() {
+        let gguf = gguf_fixture(
+            [
+                (
+                    "general.architecture",
+                    GgufMetadataValue::String("qwen2".to_owned()),
+                ),
+                ("qwen2.context_length", GgufMetadataValue::U32(32768)),
+                ("qwen2.embedding_length", GgufMetadataValue::U32(3584)),
+                ("qwen2.block_count", GgufMetadataValue::U32(28)),
+                ("qwen2.feed_forward_length", GgufMetadataValue::U32(18944)),
+                ("qwen2.attention.head_count", GgufMetadataValue::U32(28)),
+                ("qwen2.attention.head_count_kv", GgufMetadataValue::U32(4)),
+                ("qwen2.rope.freq_base", GgufMetadataValue::F32(1_000_000.0)),
+            ],
+            vec![tensor_desc(
+                "token_embd.weight",
+                vec![152064, 3584],
+                GgufTensorType::Q4_0,
+                q8_bytes(3584, 152064),
+            )],
+        );
+
+        let config = LlamaModelConfig::from_gguf(&gguf).expect("qwen2 config should parse");
+        assert_eq!(config.architecture, "qwen2");
+        assert_eq!(config.metadata_prefix, "qwen2");
+        assert_eq!(config.vocab_size, 152064);
+        assert_eq!(config.head_dim, 128);
+        assert_eq!(config.kv_width, 512);
+        assert_eq!(config.rope_freq_base, 1_000_000.0);
+    }
+
+    #[test]
     fn validates_tinyllama_style_hidden_vocab_storage_layouts() {
         let gguf = full_tensor_fixture(q8_bytes(2048, 32000));
         validate_model_tensors(&gguf, &base_config()).expect("fixture shapes should validate");
@@ -588,6 +693,8 @@ mod tests {
 
     fn base_config() -> LlamaModelConfig {
         LlamaModelConfig {
+            architecture: "llama".to_owned(),
+            metadata_prefix: "llama".to_owned(),
             context_length: 2048,
             embedding_length: 2048,
             block_count: 1,

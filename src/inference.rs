@@ -1,5 +1,7 @@
 use crate::model::{LlamaModelConfig, LlamaWeights, QuantizedMatrix};
-use crate::q8::{Q4_0Block, Q8_0Block, Q8DotKernel, Q8DotKernelSelector};
+use crate::q8::{
+    Q4_0Block, Q6KBlock, Q8_0Block, Q8DotKernel, Q8DotKernelSelector, QK_K_BLOCK_SIZE,
+};
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -259,6 +261,7 @@ pub fn matmul_quantized(
         QuantizedMatrix::Q4_0(blocks) => {
             matmul_q4_0(out, x_i8, x_scales, blocks, rows, cols, selector)
         }
+        QuantizedMatrix::Q6K(blocks) => matmul_q6_k(out, x_i8, x_scales, blocks, rows, cols),
     }
 }
 
@@ -287,6 +290,31 @@ pub fn matmul_q4_0(
     });
 }
 
+pub fn matmul_q6_k(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q6KBlock],
+    _rows: usize,
+    cols: usize,
+) {
+    let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+    out.par_iter_mut().enumerate().for_each(|(r, out_val)| {
+        let mut sum = 0.0_f32;
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for (block_idx, w_block) in w_row.iter().enumerate() {
+            let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
+            w_block.dequantize(&mut values);
+            let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+            for (i, value) in values.iter().enumerate() {
+                let x_idx = x_block_start + i;
+                sum += *value * x_i8[x_idx] as f32 * x_scales[x_idx / 32];
+            }
+        }
+        *out_val = sum;
+    });
+}
+
 pub fn matmul_f32(out: &mut [f32], x: &[f32], w: &[f32], rows: usize, cols: usize) {
     for r in 0..rows {
         let mut sum = 0.0_f32;
@@ -295,6 +323,13 @@ pub fn matmul_f32(out: &mut [f32], x: &[f32], w: &[f32], rows: usize, cols: usiz
             sum += x[c] * w_row[c];
         }
         out[r] = sum;
+    }
+}
+
+fn add_bias(values: &mut [f32], bias: &[f32]) {
+    debug_assert_eq!(values.len(), bias.len());
+    for (value, bias) in values.iter_mut().zip(bias) {
+        *value += bias;
     }
 }
 
@@ -414,6 +449,9 @@ fn forward_pass_inner<'a>(
             config.embedding_length,
             options.q8_selector,
         );
+        if let Some(bias) = &layer.wq_bias {
+            add_bias(&mut ws.q, bias);
+        }
         matmul_quantized(
             &mut ws.k,
             &ws.x_i8,
@@ -423,6 +461,9 @@ fn forward_pass_inner<'a>(
             config.embedding_length,
             options.q8_selector,
         );
+        if let Some(bias) = &layer.wk_bias {
+            add_bias(&mut ws.k, bias);
+        }
         matmul_quantized(
             &mut ws.v,
             &ws.x_i8,
@@ -432,6 +473,9 @@ fn forward_pass_inner<'a>(
             config.embedding_length,
             options.q8_selector,
         );
+        if let Some(bias) = &layer.wav_bias {
+            add_bias(&mut ws.v, bias);
+        }
 
         // Apply RoPE
         apply_rope(

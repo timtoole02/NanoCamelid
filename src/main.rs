@@ -867,7 +867,7 @@ fn inspect_gguf(path: &Path) -> ExitCode {
 
             match &runtime.model_config {
                 Ok(config) => {
-                    println!("  architecture: llama");
+                    println!("  architecture: {}", config.architecture);
                     println!("  vocab_size: {}", config.vocab_size);
                     println!("  context_length: {}", config.context_length);
                     println!("  embedding_length: {}", config.embedding_length);
@@ -917,18 +917,26 @@ fn inspect_gguf(path: &Path) -> ExitCode {
                 Err(err) => println!("  tokenizer_error: {err}"),
             }
 
-            if let Some(factor) = file.metadata_f32("llama.rope.scaling.factor") {
+            let rope_prefix = runtime
+                .model_config
+                .as_ref()
+                .map(|config| config.metadata_prefix.as_str())
+                .unwrap_or("llama");
+            if let Some(factor) = file.metadata_f32(&format!("{rope_prefix}.rope.scaling.factor")) {
                 println!("  rope_scaling_factor: {factor}");
             }
-            if let Some(original_context_length) =
-                file.metadata_u32("llama.rope.scaling.original_context_length")
-            {
+            if let Some(original_context_length) = file.metadata_u32(&format!(
+                "{rope_prefix}.rope.scaling.original_context_length"
+            )) {
                 println!("  rope_scaling_original_context_length: {original_context_length}");
             }
-            if let Some(low_freq_factor) = file.metadata_f32("llama.rope.scaling.low_freq_factor") {
+            if let Some(low_freq_factor) =
+                file.metadata_f32(&format!("{rope_prefix}.rope.scaling.low_freq_factor"))
+            {
                 println!("  rope_scaling_low_freq_factor: {low_freq_factor}");
             }
-            if let Some(high_freq_factor) = file.metadata_f32("llama.rope.scaling.high_freq_factor")
+            if let Some(high_freq_factor) =
+                file.metadata_f32(&format!("{rope_prefix}.rope.scaling.high_freq_factor"))
             {
                 println!("  rope_scaling_high_freq_factor: {high_freq_factor}");
             }
@@ -1286,13 +1294,17 @@ fn print_q8_smoke_report(title: &str, model_path: &Path, report: &Q8ModelSmokeRe
 }
 
 fn rope_scaling_from_gguf(gguf: &gguf::GgufFile) -> inference::RopeScaling {
+    let prefix = gguf
+        .metadata_string("general.architecture")
+        .filter(|arch| matches!(*arch, "llama" | "qwen2"))
+        .unwrap_or("llama");
     inference::RopeScaling {
-        factor: gguf.metadata_f32("llama.rope.scaling.factor"),
+        factor: gguf.metadata_f32(&format!("{prefix}.rope.scaling.factor")),
         original_context_length: gguf
-            .metadata_u32("llama.rope.scaling.original_context_length")
+            .metadata_u32(&format!("{prefix}.rope.scaling.original_context_length"))
             .map(|value| value as f32),
-        low_freq_factor: gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
-        high_freq_factor: gguf.metadata_f32("llama.rope.scaling.high_freq_factor"),
+        low_freq_factor: gguf.metadata_f32(&format!("{prefix}.rope.scaling.low_freq_factor")),
+        high_freq_factor: gguf.metadata_f32(&format!("{prefix}.rope.scaling.high_freq_factor")),
     }
 }
 
@@ -1914,14 +1926,7 @@ fn runtime_options_from_gguf(
     inference::LlamaRuntimeOptions {
         q8_selector: selector,
         compute_logits: true,
-        rope_scaling: inference::RopeScaling {
-            factor: gguf.metadata_f32("llama.rope.scaling.factor"),
-            original_context_length: gguf
-                .metadata_u32("llama.rope.scaling.original_context_length")
-                .map(|v| v as f32),
-            low_freq_factor: gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
-            high_freq_factor: gguf.metadata_f32("llama.rope.scaling.high_freq_factor"),
-        },
+        rope_scaling: rope_scaling_from_gguf(gguf),
     }
 }
 
@@ -1964,9 +1969,10 @@ fn print_tui_banner(banner: TuiBanner<'_>) {
         banner.model_path.display()
     );
     println!(
-        "{}runtime{} LLaMA | layers {} | ctx {} | kernel {} | renderer {} | temp {:.2} | max out {} | load {:.2}s",
+        "{}runtime{} {} | layers {} | ctx {} | kernel {} | renderer {} | temp {:.2} | max out {} | load {:.2}s",
         ansi::LABEL,
         ansi::RESET,
+        banner.config.architecture,
         banner.config.block_count,
         banner.config.context_length,
         banner.kernel,
@@ -2047,15 +2053,15 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use nanocamelid::gguf::{GgufFile, GgufMetadataValue, GgufTensorDescriptor, GgufTensorType};
+    use nanocamelid::q8;
     use nanocamelid::tokenizer::TokenizerModel;
 
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
         inspect_runtime_summary, is_help_flag, parse_generate_args_with_env,
         parse_smoke_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
-        shared_token_prefix_len, validate_generation_budget,
+        runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
     };
-
     #[test]
     fn parses_aarch64_cpuinfo() {
         let cpuinfo = "\
@@ -2377,6 +2383,77 @@ flags\t\t: sse4_2 avx2
             .tensor_layouts
             .expect_err("broken fixture should fail tensor layout validation");
         assert!(err.contains("blk.0.ffn_down.weight"));
+    }
+
+    #[test]
+    fn runtime_options_read_qwen2_rope_scaling_metadata() {
+        let mut fixture = inspect_fixture(false);
+        fixture.metadata.insert(
+            "general.architecture".to_owned(),
+            GgufMetadataValue::String("qwen2".to_owned()),
+        );
+        fixture.metadata.remove("llama.context_length");
+        fixture.metadata.remove("llama.embedding_length");
+        fixture.metadata.remove("llama.block_count");
+        fixture.metadata.remove("llama.feed_forward_length");
+        fixture.metadata.remove("llama.attention.head_count");
+        fixture.metadata.remove("llama.attention.head_count_kv");
+        fixture.metadata.remove("llama.vocab_size");
+        fixture.metadata.insert(
+            "qwen2.context_length".to_owned(),
+            GgufMetadataValue::U32(128),
+        );
+        fixture.metadata.insert(
+            "qwen2.embedding_length".to_owned(),
+            GgufMetadataValue::U32(32),
+        );
+        fixture
+            .metadata
+            .insert("qwen2.block_count".to_owned(), GgufMetadataValue::U32(1));
+        fixture.metadata.insert(
+            "qwen2.feed_forward_length".to_owned(),
+            GgufMetadataValue::U32(64),
+        );
+        fixture.metadata.insert(
+            "qwen2.attention.head_count".to_owned(),
+            GgufMetadataValue::U32(4),
+        );
+        fixture.metadata.insert(
+            "qwen2.attention.head_count_kv".to_owned(),
+            GgufMetadataValue::U32(4),
+        );
+        fixture
+            .metadata
+            .insert("qwen2.vocab_size".to_owned(), GgufMetadataValue::U32(64));
+        fixture.metadata.insert(
+            "qwen2.rope.scaling.factor".to_owned(),
+            GgufMetadataValue::F32(2.0),
+        );
+        fixture.metadata.insert(
+            "qwen2.rope.scaling.original_context_length".to_owned(),
+            GgufMetadataValue::U32(4096),
+        );
+        fixture.metadata.insert(
+            "qwen2.rope.scaling.low_freq_factor".to_owned(),
+            GgufMetadataValue::F32(1.0),
+        );
+        fixture.metadata.insert(
+            "qwen2.rope.scaling.high_freq_factor".to_owned(),
+            GgufMetadataValue::F32(4.0),
+        );
+
+        let runtime = runtime_options_from_gguf(
+            &fixture,
+            q8::Q8DotKernelSelector {
+                requested: None,
+                selected: q8::Q8DotKernel::Scalar,
+                fallback_reason: None,
+            },
+        );
+        assert_eq!(runtime.rope_scaling.factor, Some(2.0));
+        assert_eq!(runtime.rope_scaling.original_context_length, Some(4096.0));
+        assert_eq!(runtime.rope_scaling.low_freq_factor, Some(1.0));
+        assert_eq!(runtime.rope_scaling.high_freq_factor, Some(4.0));
     }
 
     fn inspect_fixture(break_ffn_down: bool) -> GgufFile {

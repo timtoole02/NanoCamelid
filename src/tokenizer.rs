@@ -202,7 +202,7 @@ impl Tokenizer {
         };
         if model == TokenizerModel::Gpt2Bpe {
             let pre_tokenizer = file.metadata_string("tokenizer.ggml.pre");
-            if pre_tokenizer != Some("llama-bpe") {
+            if !matches!(pre_tokenizer, Some("llama-bpe" | "qwen2")) {
                 return Err(format!(
                     "unsupported GPT-2/BPE pre-tokenizer: {pre_tokenizer:?}"
                 ));
@@ -447,6 +447,14 @@ impl Tokenizer {
                     add_special: true,
                     parse_special: self.chat_prompt_parse_special(),
                     renderer: "llama3_instruct",
+                };
+            }
+            if is_qwen_im_template(template) {
+                return RenderedChatPrompt {
+                    text: render_qwen_im_prompt(messages),
+                    add_special: true,
+                    parse_special: self.chat_prompt_parse_special(),
+                    renderer: "qwen_im",
                 };
             }
         }
@@ -1082,6 +1090,8 @@ fn flush_bytes(bytes: &mut Vec<u8>, text: &mut String) -> Result<(), String> {
 fn detect_chat_template_format(template: &str) -> &'static str {
     if is_llama3_instruct_template(template) {
         "llama3_instruct"
+    } else if is_qwen_im_template(template) {
+        "qwen_im"
     } else if is_tinyllama_marker_template(template) {
         "tinyllama_marker"
     } else {
@@ -1099,6 +1109,10 @@ fn is_llama3_instruct_template(template: &str) -> bool {
     template.contains("<|start_header_id|>")
         && template.contains("<|end_header_id|>")
         && template.contains("<|eot_id|>")
+}
+
+fn is_qwen_im_template(template: &str) -> bool {
+    template.contains("<|im_start|>") && template.contains("<|im_end|>")
 }
 
 fn render_tinyllama_marker_prompt(messages: &[ChatMessage<'_>], tokenizer: &Tokenizer) -> String {
@@ -1137,6 +1151,24 @@ fn render_llama3_instruct_prompt(messages: &[ChatMessage<'_>]) -> String {
         .is_none_or(|message| message.role.trim() != "assistant")
     {
         prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+    }
+    prompt
+}
+
+fn render_qwen_im_prompt(messages: &[ChatMessage<'_>]) -> String {
+    let mut prompt = String::new();
+    for message in messages {
+        prompt.push_str("<|im_start|>");
+        prompt.push_str(message.role.trim());
+        prompt.push('\n');
+        prompt.push_str(message.content);
+        prompt.push_str("<|im_end|>\n");
+    }
+    if messages
+        .last()
+        .is_none_or(|message| message.role.trim() != "assistant")
+    {
+        prompt.push_str("<|im_start|>assistant\n");
     }
     prompt
 }
@@ -1215,6 +1247,28 @@ mod tests {
     }
 
     #[test]
+    fn tokenizer_accepts_qwen2_bpe_pre_tokenizer() {
+        let tokenizer = Tokenizer::from_gguf(&tokenizer_fixture([
+            (
+                "tokenizer.ggml.model",
+                GgufMetadataValue::String("gpt2".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.pre",
+                GgufMetadataValue::String("qwen2".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.add_bos_token",
+                GgufMetadataValue::Bool(false),
+            ),
+        ]))
+        .expect("qwen2 BPE tokenizer should load");
+
+        assert_eq!(tokenizer.model, TokenizerModel::Gpt2Bpe);
+        assert!(!tokenizer.config.add_bos);
+    }
+
+    #[test]
     fn tokenizer_detects_llama3_chat_template_format() {
         let tokenizer = llama3_test_tokenizer();
 
@@ -1259,6 +1313,28 @@ mod tests {
                 add_special: true,
                 parse_special: true,
                 renderer: "llama3_instruct",
+            }
+        );
+    }
+
+    #[test]
+    fn tokenizer_renders_qwen_im_chat_prompt() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.chat_template =
+            Some("<|im_start|>{{ role }}\n{{ content }}<|im_end|>".to_owned());
+
+        assert_eq!(tokenizer.chat_template_format(), Some("qwen_im"));
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "Write fizzbuzz.",
+            }]),
+            RenderedChatPrompt {
+                text: "<|im_start|>user\nWrite fizzbuzz.<|im_end|>\n<|im_start|>assistant\n"
+                    .to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: "qwen_im",
             }
         );
     }
