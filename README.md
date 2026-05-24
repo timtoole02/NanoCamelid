@@ -23,11 +23,14 @@ cd NanoCamelid
 cargo run -- probe
 cargo run -- inspect /path/to/model.gguf
 cargo run --release -- smoke q8-model /path/to/model.gguf "Hello" 1
+NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-model "Hello" 1
 ```
 
 `probe` prints CPU and SIMD feature information. `inspect` reads GGUF metadata
 and tensor layout. `smoke q8-model` loads a Q8_0 model, checks scalar/runtime
-logit parity, and runs a short greedy generation path.
+logit parity, and runs a short greedy generation path. Set
+`NANOCAMELID_SMOKE_GGUF` to reuse the same 1B GGUF path across repeated smoke
+runs.
 
 ## Benchmarks
 

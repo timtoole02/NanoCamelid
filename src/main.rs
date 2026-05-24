@@ -101,28 +101,18 @@ fn main() -> ExitCode {
             }
 
             match args.get(1).map(String::as_str) {
-                Some("q8-model") => {
-                    let model_path = args
-                        .get(2)
-                        .cloned()
-                        .or_else(|| env::var("NANOCAMELID_SMOKE_GGUF").ok());
-                    let prompt = args.get(3).map(String::as_str).unwrap_or("Hello");
-                    let max_tokens = args
-                        .get(4)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(1);
-
-                    match model_path {
-                        Some(path) => smoke_q8_model(Path::new(&path), prompt, max_tokens),
-                        None => {
-                            eprintln!(
-                                "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF"
-                            );
-                            print_help(HelpTopic::Smoke);
-                            ExitCode::from(2)
-                        }
+                Some("q8-model") => match parse_smoke_q8_model_args(&args[2..]) {
+                    Ok(parsed) => smoke_q8_model(
+                        Path::new(&parsed.model_path),
+                        &parsed.prompt,
+                        parsed.max_tokens,
+                    ),
+                    Err(err) => {
+                        eprintln!("{err}");
+                        print_help(HelpTopic::Smoke);
+                        ExitCode::from(2)
                     }
-                }
+                },
                 Some(other) => {
                     eprintln!("unknown smoke: {other}");
                     print_help(HelpTopic::Smoke);
@@ -301,6 +291,58 @@ fn print_smoke_usage() {
     println!(
         "  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot kernel selection"
     );
+    println!();
+    println!(
+        "When NANOCAMELID_SMOKE_GGUF is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SmokeQ8ModelArgs {
+    model_path: String,
+    prompt: String,
+    max_tokens: usize,
+}
+
+fn parse_smoke_q8_model_args(args: &[String]) -> Result<SmokeQ8ModelArgs, &'static str> {
+    parse_smoke_q8_model_args_with_env(args, env::var("NANOCAMELID_SMOKE_GGUF").ok())
+}
+
+fn parse_smoke_q8_model_args_with_env(
+    args: &[String],
+    env_model_path: Option<String>,
+) -> Result<SmokeQ8ModelArgs, &'static str> {
+    let first_looks_like_model = args
+        .first()
+        .is_some_and(|value| looks_like_gguf_path(value));
+
+    let (model_path, prompt_idx) = match (args.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
+        (Some(path), None) => (path.clone(), 1),
+        (_, Some(path)) => (path, 0),
+        (None, None) => {
+            return Err("missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF");
+        }
+    };
+
+    let prompt = args
+        .get(prompt_idx)
+        .cloned()
+        .unwrap_or_else(|| "Hello".to_owned());
+    let max_tokens = args
+        .get(prompt_idx + 1)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1);
+
+    Ok(SmokeQ8ModelArgs {
+        model_path,
+        prompt,
+        max_tokens,
+    })
+}
+
+fn looks_like_gguf_path(value: &str) -> bool {
+    value.ends_with(".gguf") || value.ends_with(".gguf/")
 }
 
 fn print_probe() {
@@ -1134,7 +1176,8 @@ mod tests {
 
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
-        inspect_runtime_summary, is_help_flag, validate_prompt_fits_context,
+        inspect_runtime_summary, is_help_flag, parse_smoke_q8_model_args_with_env,
+        validate_prompt_fits_context,
     };
 
     #[test]
@@ -1234,6 +1277,64 @@ flags\t\t: sse4_2 avx2
         assert!(is_help_flag("-h"));
         assert!(is_help_flag("--help"));
         assert!(!is_help_flag("help"));
+    }
+
+    #[test]
+    fn smoke_q8_model_args_use_explicit_model_path_without_env() {
+        let parsed = parse_smoke_q8_model_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "Hello".to_owned(),
+                "4".to_owned(),
+            ],
+            None,
+        )
+        .expect("explicit model path should parse");
+
+        assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, 4);
+    }
+
+    #[test]
+    fn smoke_q8_model_args_fall_back_to_env_model_path() {
+        let parsed = parse_smoke_q8_model_args_with_env(
+            &["Explain rotary embeddings".to_owned(), "2".to_owned()],
+            Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
+        )
+        .expect("env-backed smoke path should parse");
+
+        assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.prompt, "Explain rotary embeddings");
+        assert_eq!(parsed.max_tokens, 2);
+    }
+
+    #[test]
+    fn smoke_q8_model_args_prefer_explicit_gguf_even_when_env_is_set() {
+        let parsed = parse_smoke_q8_model_args_with_env(
+            &[
+                "/override/model.gguf".to_owned(),
+                "Hello".to_owned(),
+                "3".to_owned(),
+            ],
+            Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
+        )
+        .expect("explicit gguf path should override env");
+
+        assert_eq!(parsed.model_path, "/override/model.gguf");
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, 3);
+    }
+
+    #[test]
+    fn smoke_q8_model_args_require_model_when_env_is_missing() {
+        let err = parse_smoke_q8_model_args_with_env(&[], None)
+            .expect_err("missing model path should fail without env");
+
+        assert_eq!(
+            err,
+            "missing GGUF model path; pass one or set NANOCAMELID_SMOKE_GGUF"
+        );
     }
 
     #[test]
