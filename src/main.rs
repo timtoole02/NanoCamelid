@@ -9,8 +9,12 @@ use nanocamelid::{gguf, inference, model, q8, tokenizer};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
 const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
+const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
+const DEFAULT_RAYON_THREADS: usize = 4;
 
 fn main() -> ExitCode {
+    setup_thread_pool();
+
     let args = env::args().skip(1).collect::<Vec<_>>();
 
     if let Some(help_topic) = help_topic_for_args(&args) {
@@ -193,6 +197,25 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn setup_thread_pool() {
+    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let default_threads = core_ids.len().clamp(1, DEFAULT_RAYON_THREADS);
+    let thread_count = env::var(RAYON_THREADS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(default_threads);
+
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .start_handler(move |thread_idx| {
+            if let Some(core_id) = core_ids.get(thread_idx % core_ids.len().max(1)) {
+                core_affinity::set_for_current(*core_id);
+            }
+        })
+        .build_global();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,6 +401,9 @@ fn print_tui_usage() {
     println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, chat, and tui"
     );
+    println!(
+        "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
+    );
     println!();
     println!("Commands inside the TUI: /help, /model <path>, /clear, /exit, /quit");
 }
@@ -402,6 +428,9 @@ fn print_bench_usage() {
     println!("  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot selection");
     println!(
         "  NANOCAMELID_Q8_DOT_SDOT                   Enable SDOT candidate benchmarking when supported"
+    );
+    println!(
+        "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
     );
 }
 
@@ -1691,12 +1720,11 @@ fn generate_chat_turn(
 
     let shared_prefix = shared_token_prefix_len(&session.context_tokens, &prompt_tokens);
     if shared_prefix < session.context_tokens.len() {
-        session.reset(env.config);
+        session.context_tokens.truncate(shared_prefix);
+        session.pos = shared_prefix;
     }
-    let input_tokens = prompt_tokens
-        .len()
-        .saturating_sub(session.context_tokens.len());
-    let new_prompt_tokens = &prompt_tokens[session.context_tokens.len()..];
+    let input_tokens = prompt_tokens.len().saturating_sub(shared_prefix);
+    let new_prompt_tokens = &prompt_tokens[shared_prefix..];
     let started_turn = std::time::Instant::now();
     for (idx, &token) in new_prompt_tokens.iter().enumerate() {
         if idx + 1 == new_prompt_tokens.len() {

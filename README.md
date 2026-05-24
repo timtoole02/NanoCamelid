@@ -124,17 +124,22 @@ benchmark output as specific to the exact Pi, model, build, and configuration
 where it was captured.
 
 For GEMV scheduling experiments, `NANOCAMELID_MATMUL_MIN_ROWS` controls the
-minimum Rayon split size for Q8_0, Q4_0, and Q6_K matmul rows. The default is
-`128`, which was neutral-to-slightly-positive on the Pi 2 short prompts tested.
-Set it to `1` to approximate the old row-splitting behavior.
+minimum output row count required before Q8_0, Q4_0, and Q6_K matmuls enter
+Rayon. Smaller matrices run sequentially to avoid Rayon queue overhead. The
+default is `128`, which was neutral-to-slightly-positive on the Pi 2 short
+prompts tested. Set it to `1` to approximate the old always-parallel behavior.
+`NANOCAMELID_RAYON_THREADS` controls the global Rayon worker count; by default
+the CLI uses up to four workers and pins them to available CPU cores when the
+platform exposes affinity controls.
 
 Decode-time attention now uses ARM NEON helpers for Q/K dot products and V
 weighted accumulation when running on `aarch64`, with scalar reference fallbacks
-for portability. This keeps the long-context decode hot path moving in the right
-direction, but prompt ingestion is still sequential token-by-token prefill.
-Large prompt tests on Qwen2.5-Coder-7B Q4_0 are therefore prefill-bound today;
-batched prefill with 32-64 token chunks is the next required step before claiming
-4096-token or 8192-token Pi chat usability.
+for portability. The TUI reuses matching prompt-prefix KV cache across chat
+turns, so repeated conversation prefixes are not re-ingested. New prompt suffixes
+are still processed with sequential token-by-token prefill; large new prompts on
+Qwen2.5-Coder-7B Q4_0 are therefore prefill-bound today. Batched prefill with
+32-64 token chunks is the next required step before claiming 4096-token or
+8192-token Pi chat usability.
 
 ## Tested Models
 

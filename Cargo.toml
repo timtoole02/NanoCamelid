@@ -5,4 +5,5 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+core_affinity = "0.8"
 rayon = "1"

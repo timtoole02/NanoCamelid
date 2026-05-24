@@ -19,6 +19,26 @@ fn matmul_min_rows() -> usize {
     })
 }
 
+fn should_parallelize_matmul(rows: usize) -> bool {
+    rows >= matmul_min_rows()
+}
+
+fn for_each_matmul_row<F>(out: &mut [f32], compute_row: F)
+where
+    F: Fn(usize, &mut f32) + Sync,
+{
+    if should_parallelize_matmul(out.len()) {
+        out.par_iter_mut()
+            .with_min_len(matmul_min_rows())
+            .enumerate()
+            .for_each(|(r, out_val)| compute_row(r, out_val));
+    } else {
+        out.iter_mut()
+            .enumerate()
+            .for_each(|(r, out_val)| compute_row(r, out_val));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RopeScaling {
     pub factor: Option<f32>,
@@ -213,58 +233,49 @@ pub fn matmul_q8_0(
     let blocks_per_row = cols / 32;
     match selector.selected {
         Q8DotKernel::Scalar => {
-            out.par_iter_mut()
-                .with_min_len(matmul_min_rows())
-                .enumerate()
-                .for_each(|(r, out_val)| {
-                    let mut sum = 0.0_f32;
-                    let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
-                    for b in 0..blocks_per_row {
-                        let w_block = &w_row[b];
-                        let x_block_vals = &x_i8[b * 32..(b + 1) * 32];
-                        let dot_val = crate::q8::dot_i8_scalar(w_block.values(), x_block_vals);
-                        sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
-                    }
-                    *out_val = sum;
-                });
+            for_each_matmul_row(out, |r, out_val| {
+                let mut sum = 0.0_f32;
+                let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+                for b in 0..blocks_per_row {
+                    let w_block = &w_row[b];
+                    let x_block_vals = &x_i8[b * 32..(b + 1) * 32];
+                    let dot_val = crate::q8::dot_i8_scalar(w_block.values(), x_block_vals);
+                    sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
+                }
+                *out_val = sum;
+            });
         }
         Q8DotKernel::Neon => {
-            out.par_iter_mut()
-                .with_min_len(matmul_min_rows())
-                .enumerate()
-                .for_each(|(r, out_val)| {
-                    let mut sum = 0.0_f32;
-                    let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
-                    for b in 0..blocks_per_row {
-                        let w_block = &w_row[b];
-                        let x_block_vals = x_i8[b * 32..(b + 1) * 32]
-                            .try_into()
-                            .expect("Q8 activation blocks are always 32 lanes");
-                        let dot_val =
-                            crate::q8::dot_i8_neon_32_selected(w_block.values(), x_block_vals);
-                        sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
-                    }
-                    *out_val = sum;
-                });
+            for_each_matmul_row(out, |r, out_val| {
+                let mut sum = 0.0_f32;
+                let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+                for b in 0..blocks_per_row {
+                    let w_block = &w_row[b];
+                    let x_block_vals = x_i8[b * 32..(b + 1) * 32]
+                        .try_into()
+                        .expect("Q8 activation blocks are always 32 lanes");
+                    let dot_val =
+                        crate::q8::dot_i8_neon_32_selected(w_block.values(), x_block_vals);
+                    sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
+                }
+                *out_val = sum;
+            });
         }
         Q8DotKernel::Sdot => {
-            out.par_iter_mut()
-                .with_min_len(matmul_min_rows())
-                .enumerate()
-                .for_each(|(r, out_val)| {
-                    let mut sum = 0.0_f32;
-                    let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
-                    for b in 0..blocks_per_row {
-                        let w_block = &w_row[b];
-                        let x_block_vals = x_i8[b * 32..(b + 1) * 32]
-                            .try_into()
-                            .expect("Q8 activation blocks are always 32 lanes");
-                        let dot_val =
-                            crate::q8::dot_i8_sdot_32_selected(w_block.values(), x_block_vals);
-                        sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
-                    }
-                    *out_val = sum;
-                });
+            for_each_matmul_row(out, |r, out_val| {
+                let mut sum = 0.0_f32;
+                let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+                for b in 0..blocks_per_row {
+                    let w_block = &w_row[b];
+                    let x_block_vals = x_i8[b * 32..(b + 1) * 32]
+                        .try_into()
+                        .expect("Q8 activation blocks are always 32 lanes");
+                    let dot_val =
+                        crate::q8::dot_i8_sdot_32_selected(w_block.values(), x_block_vals);
+                    sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
+                }
+                *out_val = sum;
+            });
         }
     }
 }
@@ -299,23 +310,19 @@ pub fn matmul_q4_0(
     selector: Q8DotKernelSelector,
 ) {
     let blocks_per_row = cols / 32;
-    out.par_iter_mut()
-        .with_min_len(matmul_min_rows())
-        .enumerate()
-        .for_each(|(r, out_val)| {
-            let mut sum = 0.0_f32;
-            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
-            for b in 0..blocks_per_row {
-                let w_block = &w_row[b];
-                let x_block_vals = x_i8[b * 32..(b + 1) * 32]
-                    .try_into()
-                    .expect("Q8 activation blocks are always 32 lanes");
-                let dot_val =
-                    crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
-                sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
-            }
-            *out_val = sum;
-        });
+    for_each_matmul_row(out, |r, out_val| {
+        let mut sum = 0.0_f32;
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for b in 0..blocks_per_row {
+            let w_block = &w_row[b];
+            let x_block_vals = x_i8[b * 32..(b + 1) * 32]
+                .try_into()
+                .expect("Q8 activation blocks are always 32 lanes");
+            let dot_val = crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
+            sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
+        }
+        *out_val = sum;
+    });
 }
 
 pub fn matmul_q6_k(
@@ -327,22 +334,19 @@ pub fn matmul_q6_k(
     cols: usize,
 ) {
     let blocks_per_row = cols / QK_K_BLOCK_SIZE;
-    out.par_iter_mut()
-        .with_min_len(matmul_min_rows())
-        .enumerate()
-        .for_each(|(r, out_val)| {
-            let mut sum = 0.0_f32;
-            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
-            for (block_idx, w_block) in w_row.iter().enumerate() {
-                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
-                let x_scale_start = x_block_start / 32;
-                sum += w_block.dot_q8_scaled(
-                    &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                    &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / 32)],
-                );
-            }
-            *out_val = sum;
-        });
+    for_each_matmul_row(out, |r, out_val| {
+        let mut sum = 0.0_f32;
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for (block_idx, w_block) in w_row.iter().enumerate() {
+            let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+            let x_scale_start = x_block_start / 32;
+            sum += w_block.dot_q8_scaled(
+                &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / 32)],
+            );
+        }
+        *out_val = sum;
+    });
 }
 
 pub fn matmul_f32(out: &mut [f32], x: &[f32], w: &[f32], rows: usize, cols: usize) {
