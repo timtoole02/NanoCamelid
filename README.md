@@ -106,6 +106,11 @@ The benchmark prints repeated scalar/NEON timing and a JSON summary line. Treat
 benchmark output as specific to the exact Pi, model, build, and configuration
 where it was captured.
 
+For GEMV scheduling experiments, `NANOCAMELID_MATMUL_MIN_ROWS` controls the
+minimum Rayon split size for Q8_0, Q4_0, and Q6_K matmul rows. The default is
+`128`, which was neutral-to-slightly-positive on the Pi 2 short prompts tested.
+Set it to `1` to approximate the old row-splitting behavior.
+
 ## Tested Models
 
 These rows reflect models that have been loaded and smoke-tested on Raspberry Pi
