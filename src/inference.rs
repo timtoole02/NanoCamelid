@@ -338,7 +338,7 @@ pub fn forward_pass<'a>(
             pos,
             config.attention_head_count,
             config.head_dim,
-            config.head_dim, // rope_dim defaults to head_dim
+            config.rope_dimension_count,
             config.rope_freq_base,
             options.rope_scaling,
         );
@@ -348,7 +348,7 @@ pub fn forward_pass<'a>(
             pos,
             config.attention_head_count_kv,
             config.head_dim,
-            config.head_dim,
+            config.rope_dimension_count,
             config.rope_freq_base,
             options.rope_scaling,
         );
@@ -557,7 +557,7 @@ fn rand_simple() -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::matmul_q8_0;
+    use super::{RopeScaling, apply_rope, matmul_q8_0};
     use crate::q8::{Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector};
 
     fn selector(selected: Q8DotKernel) -> Q8DotKernelSelector {
@@ -615,5 +615,16 @@ mod tests {
             );
             assert_eq!(candidate, scalar, "{kernel:?} matmul diverged");
         }
+    }
+
+    #[test]
+    fn apply_rope_respects_partial_rope_dimension_count() {
+        let mut data = vec![1.0, 0.0, 10.0, 20.0];
+        apply_rope(&mut data, 1, 1, 4, 2, 10000.0, RopeScaling::default());
+
+        assert!((data[0] - 1.0_f32.cos()).abs() < 1e-6);
+        assert!((data[1] - 1.0_f32.sin()).abs() < 1e-6);
+        assert_eq!(data[2], 10.0);
+        assert_eq!(data[3], 20.0);
     }
 }

@@ -11,6 +11,7 @@ pub struct LlamaModelConfig {
     pub feed_forward_length: usize,
     pub attention_head_count: usize,
     pub attention_head_count_kv: usize,
+    pub rope_dimension_count: usize,
     pub rope_freq_base: f32,
     pub rms_norm_epsilon: f32,
     pub vocab_size: usize,
@@ -47,6 +48,22 @@ impl LlamaModelConfig {
         let attention_head_count_kv = gguf
             .metadata_u32("llama.attention.head_count_kv")
             .unwrap_or(attention_head_count as u32) as usize;
+        if attention_head_count == 0 {
+            return Err("llama.attention.head_count must be greater than zero".to_owned());
+        }
+        if !embedding_length.is_multiple_of(attention_head_count) {
+            return Err(format!(
+                "embedding length {embedding_length} is not divisible by attention head count {attention_head_count}"
+            ));
+        }
+        if attention_head_count_kv == 0 {
+            return Err("llama.attention.head_count_kv must be greater than zero".to_owned());
+        }
+        if !attention_head_count.is_multiple_of(attention_head_count_kv) {
+            return Err(format!(
+                "attention head count {attention_head_count} must be a multiple of kv head count {attention_head_count_kv}"
+            ));
+        }
 
         let rope_freq_base = gguf.metadata_f32("llama.rope.freq_base").unwrap_or(10000.0);
         let rms_norm_epsilon = gguf
@@ -63,15 +80,35 @@ impl LlamaModelConfig {
         let vocab_size = if let Some(v) = gguf.metadata_u32("llama.vocab_size") {
             v as usize
         } else {
-            // dimensions[1] of token_embd.weight is usually the vocab size
-            if token_emb_desc.dimensions.len() >= 2 {
-                token_emb_desc.dimensions[1] as usize
+            if token_emb_desc.dimensions.len() == 2 {
+                let dims = token_emb_desc.dimensions.as_slice();
+                if dims[0] == embedding_length as u64 {
+                    dims[1] as usize
+                } else if dims[1] == embedding_length as u64 {
+                    dims[0] as usize
+                } else {
+                    return Err(format!(
+                        "cannot infer vocab size from token_embd.weight dimensions {:?} for embedding length {embedding_length}",
+                        token_emb_desc.dimensions
+                    ));
+                }
             } else {
                 return Err("cannot infer vocab size from token_embd.weight dimensions".to_owned());
             }
         };
 
         let head_dim = embedding_length / attention_head_count;
+        let rope_dimension_count = gguf
+            .metadata_u32("llama.rope.dimension_count")
+            .unwrap_or(head_dim as u32) as usize;
+        if rope_dimension_count == 0
+            || rope_dimension_count > head_dim
+            || !rope_dimension_count.is_multiple_of(2)
+        {
+            return Err(format!(
+                "RoPE dimension count {rope_dimension_count} must be even and within head dimension {head_dim}"
+            ));
+        }
         let kv_width = attention_head_count_kv * head_dim;
 
         Ok(Self {
@@ -81,6 +118,7 @@ impl LlamaModelConfig {
             feed_forward_length,
             attention_head_count,
             attention_head_count_kv,
+            rope_dimension_count,
             rope_freq_base,
             rms_norm_epsilon,
             vocab_size,
@@ -111,6 +149,7 @@ pub struct LlamaWeights {
 
 impl LlamaWeights {
     pub fn load(path: &Path, config: &LlamaModelConfig, gguf: &GgufFile) -> Result<Self, String> {
+        validate_model_tensors(gguf, config)?;
         let file = File::open(path).map_err(|e| e.to_string())?;
 
         let token_embeddings = load_f32_or_f16(&file, gguf, "token_embd.weight")?;
@@ -156,6 +195,97 @@ impl LlamaWeights {
             layers,
         })
     }
+}
+
+fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Result<(), String> {
+    let token_embedding = load_tensor_desc(gguf, "token_embd.weight")?;
+    require_descriptor_matrix_shape(
+        token_embedding,
+        config.embedding_length,
+        config.vocab_size,
+        "token embedding",
+    )?;
+    validate_token_row_storage_layout(
+        token_embedding,
+        config.embedding_length,
+        config.vocab_size,
+        "token embedding",
+    )?;
+
+    let output_norm = load_tensor_desc(gguf, "output_norm.weight")?;
+    require_descriptor_shape(output_norm, &[config.embedding_length], "output norm")?;
+
+    if let Ok(output) = load_tensor_desc(gguf, "output.weight") {
+        require_descriptor_matrix_shape(
+            output,
+            config.embedding_length,
+            config.vocab_size,
+            "output projection",
+        )?;
+        validate_token_row_storage_layout(
+            output,
+            config.embedding_length,
+            config.vocab_size,
+            "output projection",
+        )?;
+    }
+
+    for layer_idx in 0..config.block_count {
+        require_descriptor_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_norm.weight"))?,
+            &[config.embedding_length],
+            &format!("layer {layer_idx} attention norm"),
+        )?;
+        require_descriptor_matrix_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.weight"))?,
+            config.embedding_length,
+            config.embedding_length,
+            &format!("layer {layer_idx} attention q"),
+        )?;
+        require_descriptor_matrix_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_k.weight"))?,
+            config.embedding_length,
+            config.kv_width,
+            &format!("layer {layer_idx} attention k"),
+        )?;
+        require_descriptor_matrix_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_v.weight"))?,
+            config.embedding_length,
+            config.kv_width,
+            &format!("layer {layer_idx} attention v"),
+        )?;
+        require_descriptor_matrix_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_output.weight"))?,
+            config.embedding_length,
+            config.embedding_length,
+            &format!("layer {layer_idx} attention output"),
+        )?;
+        require_descriptor_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_norm.weight"))?,
+            &[config.embedding_length],
+            &format!("layer {layer_idx} ffn norm"),
+        )?;
+        require_descriptor_matrix_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_gate.weight"))?,
+            config.embedding_length,
+            config.feed_forward_length,
+            &format!("layer {layer_idx} ffn gate"),
+        )?;
+        require_descriptor_matrix_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_up.weight"))?,
+            config.embedding_length,
+            config.feed_forward_length,
+            &format!("layer {layer_idx} ffn up"),
+        )?;
+        require_descriptor_matrix_shape(
+            load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_down.weight"))?,
+            config.feed_forward_length,
+            config.embedding_length,
+            &format!("layer {layer_idx} ffn down"),
+        )?;
+    }
+
+    Ok(())
 }
 
 fn load_tensor_desc<'a>(
@@ -222,6 +352,102 @@ fn load_q8_0(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<Q8_0Block>,
     decode_q8_0_blocks(&bytes).map_err(|e| e.to_string())
 }
 
+fn require_descriptor_shape(
+    tensor: &GgufTensorDescriptor,
+    expected: &[usize],
+    role: &str,
+) -> Result<(), String> {
+    let actual = descriptor_dims(tensor)?;
+    if actual != expected {
+        return Err(format!(
+            "{role} tensor {} expected descriptor shape {:?}, got {:?}",
+            tensor.name, expected, actual
+        ));
+    }
+    Ok(())
+}
+
+fn require_descriptor_matrix_shape(
+    tensor: &GgufTensorDescriptor,
+    input_width: usize,
+    output_width: usize,
+    role: &str,
+) -> Result<(), String> {
+    let actual = descriptor_dims(tensor)?;
+    let direct = [input_width, output_width];
+    let transposed = [output_width, input_width];
+    if actual.as_slice() != direct && actual.as_slice() != transposed {
+        return Err(format!(
+            "{role} tensor {} expected descriptor shape {:?} or {:?}, got {:?}",
+            tensor.name, direct, transposed, actual
+        ));
+    }
+    Ok(())
+}
+
+fn validate_token_row_storage_layout(
+    tensor: &GgufTensorDescriptor,
+    hidden_width: usize,
+    vocab_size: usize,
+    role: &str,
+) -> Result<(), String> {
+    let actual = descriptor_dims(tensor)?;
+    let (row_values, row_count, layout) = match actual.as_slice() {
+        [hidden, vocab] if *hidden == hidden_width && *vocab == vocab_size => {
+            (*hidden, *vocab, "gguf_hidden_vocab_token_rows")
+        }
+        [vocab, hidden] if *hidden == hidden_width && *vocab == vocab_size => {
+            (*hidden, *vocab, "output_input_token_rows")
+        }
+        _ => return Ok(()),
+    };
+
+    let (block_size, type_size_bytes) = tensor.tensor_type.layout().ok_or_else(|| {
+        format!(
+            "{role} tensor {} has unsupported storage type {:?} for token-row validation",
+            tensor.name, tensor.tensor_type
+        )
+    })?;
+    let row_values = u64::try_from(row_values)
+        .map_err(|_| format!("{role} tensor {} row width overflow", tensor.name))?;
+    let row_count = u64::try_from(row_count)
+        .map_err(|_| format!("{role} tensor {} row count overflow", tensor.name))?;
+    if row_values % block_size != 0 {
+        return Err(format!(
+            "{role} tensor {} token-row width {row_values} is not divisible by {:?} block size {block_size}",
+            tensor.name, tensor.tensor_type
+        ));
+    }
+
+    let row_size_bytes = row_values
+        .checked_div(block_size)
+        .and_then(|blocks| blocks.checked_mul(type_size_bytes))
+        .ok_or_else(|| format!("{role} tensor {} row size overflow", tensor.name))?;
+    let expected_bytes = row_size_bytes
+        .checked_mul(row_count)
+        .ok_or_else(|| format!("{role} tensor {} byte size overflow", tensor.name))?;
+
+    if tensor.n_bytes != expected_bytes {
+        return Err(format!(
+            "{role} tensor {} token-major storage validation failed for {layout}: row_values={row_values}, row_count={row_count}, row_size_bytes={row_size_bytes}, expected_n_bytes={expected_bytes}, actual_n_bytes={}",
+            tensor.name, tensor.n_bytes
+        ));
+    }
+
+    Ok(())
+}
+
+fn descriptor_dims(tensor: &GgufTensorDescriptor) -> Result<Vec<usize>, String> {
+    tensor
+        .dimensions
+        .iter()
+        .map(|dim| {
+            usize::try_from(*dim)
+                .map_err(|_| format!("tensor {} dimension {dim} does not fit usize", tensor.name))
+        })
+        .collect()
+}
+
 // Convert F16 bits to F32 (duplicate helper from q8.rs to keep model.rs self-contained)
 fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = (u32::from(bits & 0x8000)) << 16;
@@ -246,5 +472,230 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
             let f32_exponent = u32::from(exponent) + (127 - 15);
             f32::from_bits(sign | (f32_exponent << 23) | (fraction << 13))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use crate::gguf::{GgufFile, GgufMetadataValue, GgufTensorDescriptor, GgufTensorType};
+
+    use super::{LlamaModelConfig, validate_model_tensors};
+
+    #[test]
+    fn infers_vocab_size_from_transposed_token_embedding() {
+        let gguf = gguf_fixture(
+            [
+                ("llama.context_length", GgufMetadataValue::U32(2048)),
+                ("llama.embedding_length", GgufMetadataValue::U32(2048)),
+                ("llama.block_count", GgufMetadataValue::U32(1)),
+                ("llama.feed_forward_length", GgufMetadataValue::U32(5632)),
+                ("llama.attention.head_count", GgufMetadataValue::U32(32)),
+                ("llama.attention.head_count_kv", GgufMetadataValue::U32(4)),
+            ],
+            vec![tensor_desc(
+                "token_embd.weight",
+                vec![32000, 2048],
+                GgufTensorType::Q8_0,
+                q8_bytes(2048, 32000),
+            )],
+        );
+
+        let config = LlamaModelConfig::from_gguf(&gguf).expect("config should parse");
+        assert_eq!(config.vocab_size, 32000);
+        assert_eq!(config.head_dim, 64);
+        assert_eq!(config.rope_dimension_count, 64);
+    }
+
+    #[test]
+    fn rejects_invalid_rope_dimension_count() {
+        let gguf = gguf_fixture(
+            [
+                ("llama.context_length", GgufMetadataValue::U32(2048)),
+                ("llama.embedding_length", GgufMetadataValue::U32(2048)),
+                ("llama.block_count", GgufMetadataValue::U32(1)),
+                ("llama.feed_forward_length", GgufMetadataValue::U32(5632)),
+                ("llama.attention.head_count", GgufMetadataValue::U32(32)),
+                ("llama.attention.head_count_kv", GgufMetadataValue::U32(4)),
+                ("llama.rope.dimension_count", GgufMetadataValue::U32(65)),
+            ],
+            vec![tensor_desc(
+                "token_embd.weight",
+                vec![2048, 32000],
+                GgufTensorType::Q8_0,
+                q8_bytes(2048, 32000),
+            )],
+        );
+
+        let err = LlamaModelConfig::from_gguf(&gguf).unwrap_err();
+        assert!(err.contains("RoPE dimension count 65"));
+    }
+
+    #[test]
+    fn validates_tinyllama_style_hidden_vocab_storage_layouts() {
+        let gguf = full_tensor_fixture(q8_bytes(2048, 32000));
+        validate_model_tensors(&gguf, &base_config()).expect("fixture shapes should validate");
+    }
+
+    #[test]
+    fn rejects_mismatched_output_row_storage_bytes() {
+        let err = validate_model_tensors(
+            &full_tensor_fixture(q8_bytes(2048, 32000) + 34),
+            &base_config(),
+        )
+        .unwrap_err();
+        assert!(err.contains("output.weight"));
+        assert!(err.contains("expected_n_bytes=69632000"));
+    }
+
+    fn base_config() -> LlamaModelConfig {
+        LlamaModelConfig {
+            context_length: 2048,
+            embedding_length: 2048,
+            block_count: 1,
+            feed_forward_length: 5632,
+            attention_head_count: 32,
+            attention_head_count_kv: 4,
+            rope_dimension_count: 64,
+            rope_freq_base: 10000.0,
+            rms_norm_epsilon: 1e-5,
+            vocab_size: 32000,
+            head_dim: 64,
+            kv_width: 256,
+        }
+    }
+
+    fn full_tensor_fixture(output_n_bytes: u64) -> GgufFile {
+        gguf_fixture(
+            [
+                ("llama.context_length", GgufMetadataValue::U32(2048)),
+                ("llama.embedding_length", GgufMetadataValue::U32(2048)),
+                ("llama.block_count", GgufMetadataValue::U32(1)),
+                ("llama.feed_forward_length", GgufMetadataValue::U32(5632)),
+                ("llama.attention.head_count", GgufMetadataValue::U32(32)),
+                ("llama.attention.head_count_kv", GgufMetadataValue::U32(4)),
+                ("llama.vocab_size", GgufMetadataValue::U32(32000)),
+            ],
+            vec![
+                tensor_desc(
+                    "token_embd.weight",
+                    vec![2048, 32000],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 32000),
+                ),
+                tensor_desc(
+                    "output_norm.weight",
+                    vec![2048],
+                    GgufTensorType::F32,
+                    2048 * 4,
+                ),
+                tensor_desc(
+                    "output.weight",
+                    vec![2048, 32000],
+                    GgufTensorType::Q8_0,
+                    output_n_bytes,
+                ),
+                tensor_desc(
+                    "blk.0.attn_norm.weight",
+                    vec![2048],
+                    GgufTensorType::F32,
+                    2048 * 4,
+                ),
+                tensor_desc(
+                    "blk.0.attn_q.weight",
+                    vec![2048, 2048],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 2048),
+                ),
+                tensor_desc(
+                    "blk.0.attn_k.weight",
+                    vec![2048, 256],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 256),
+                ),
+                tensor_desc(
+                    "blk.0.attn_v.weight",
+                    vec![2048, 256],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 256),
+                ),
+                tensor_desc(
+                    "blk.0.attn_output.weight",
+                    vec![2048, 2048],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 2048),
+                ),
+                tensor_desc(
+                    "blk.0.ffn_norm.weight",
+                    vec![2048],
+                    GgufTensorType::F32,
+                    2048 * 4,
+                ),
+                tensor_desc(
+                    "blk.0.ffn_gate.weight",
+                    vec![2048, 5632],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 5632),
+                ),
+                tensor_desc(
+                    "blk.0.ffn_up.weight",
+                    vec![2048, 5632],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 5632),
+                ),
+                tensor_desc(
+                    "blk.0.ffn_down.weight",
+                    vec![5632, 2048],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(5632, 2048),
+                ),
+            ],
+        )
+    }
+
+    fn gguf_fixture<const N: usize>(
+        overrides: [(&str, GgufMetadataValue); N],
+        tensors: Vec<GgufTensorDescriptor>,
+    ) -> GgufFile {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "general.architecture".to_owned(),
+            GgufMetadataValue::String("llama".to_owned()),
+        );
+        for (key, value) in overrides {
+            metadata.insert(key.to_owned(), value);
+        }
+
+        GgufFile {
+            path: PathBuf::from("model-fixture.gguf"),
+            version: 3,
+            tensor_count: tensors.len() as u64,
+            metadata_count: metadata.len() as u64,
+            alignment: 32,
+            data_start_offset: 0,
+            metadata,
+            tensors,
+        }
+    }
+
+    fn tensor_desc(
+        name: &str,
+        dimensions: Vec<u64>,
+        tensor_type: GgufTensorType,
+        n_bytes: u64,
+    ) -> GgufTensorDescriptor {
+        GgufTensorDescriptor {
+            name: name.to_owned(),
+            dimensions,
+            tensor_type,
+            relative_offset: 0,
+            absolute_offset: 0,
+            n_bytes,
+        }
+    }
+
+    fn q8_bytes(row_values: u64, row_count: u64) -> u64 {
+        row_values / 32 * 34 * row_count
     }
 }
