@@ -57,14 +57,29 @@ default model path, start the interactive 1B chat directly:
 ```
 
 The launcher defaults the Q8 dot-product path to NEON on Pi-class ARM64
-hardware and still honors `NANOCAMELID_Q8_DOT_KERNEL` if you want to force a
-different kernel for comparison.
+hardware and runs a `smoke q8-chat` preflight before opening the TUI, so the
+1B instruct path keeps the scalar-vs-selected-kernel parity gate in front of
+interactive chat. It still honors `NANOCAMELID_Q8_DOT_KERNEL` if you want to
+force a different kernel for comparison.
 
 Optional arguments set temperature and maximum assistant output tokens:
 
 ```bash
 ./scripts/pi/chat-1b.sh 0.0 64
 ```
+
+For faster local iteration, disable the preflight smoke gate explicitly:
+
+```bash
+NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh
+```
+
+The preflight smoke defaults to `q8-chat` with a one-token response budget, and
+you can override the gate with:
+
+- `NANOCAMELID_CHAT_SMOKE_KIND=q8-model|q8-chat`
+- `NANOCAMELID_CHAT_SMOKE_PROMPT="..."`
+- `NANOCAMELID_CHAT_SMOKE_TOKENS=1`
 
 ## Benchmarks
 

@@ -8,6 +8,10 @@ MODEL="${NANOCAMELID_MODEL_GGUF:-$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gg
 TEMP="${1:-${NANOCAMELID_TEMP:-0.0}}"
 MAX_TOKENS="${2:-${NANOCAMELID_MAX_TOKENS:-64}}"
 BINARY="${NANOCAMELID_BIN:-$WORKSPACE/target/release/nanocamelid}"
+SMOKE_ENABLED="${NANOCAMELID_CHAT_SMOKE:-1}"
+SMOKE_KIND="${NANOCAMELID_CHAT_SMOKE_KIND:-q8-chat}"
+SMOKE_PROMPT="${NANOCAMELID_CHAT_SMOKE_PROMPT:-Say hello in one sentence.}"
+SMOKE_TOKENS="${NANOCAMELID_CHAT_SMOKE_TOKENS:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-neon}"
 
 if [[ ! -f "$MODEL" ]]; then
@@ -17,15 +21,39 @@ if [[ ! -f "$MODEL" ]]; then
 fi
 
 if [[ -x "$BINARY" ]]; then
-  exec "$BINARY" tui "$MODEL" "$TEMP" "$MAX_TOKENS"
+  launcher_mode="binary"
+elif command -v cargo >/dev/null 2>&1; then
+  launcher_mode="cargo"
+else
+  echo "NanoCamelid release binary not found and cargo is not on PATH." >&2
+  echo "Expected binary: $BINARY" >&2
+  exit 3
 fi
 
-if command -v cargo >/dev/null 2>&1; then
+run_nanocamelid() {
+  if [[ "$launcher_mode" == "binary" ]]; then
+    "$BINARY" "$@"
+    return
+  fi
+
   cd "$REPO"
   export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
-  exec cargo run --release -- tui "$MODEL" "$TEMP" "$MAX_TOKENS"
+  cargo run --release -- "$@"
+}
+
+exec_nanocamelid() {
+  if [[ "$launcher_mode" == "binary" ]]; then
+    exec "$BINARY" "$@"
+  fi
+
+  cd "$REPO"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
+  exec cargo run --release -- "$@"
+}
+
+if [[ "$SMOKE_ENABLED" != "0" ]]; then
+  echo "Running $SMOKE_KIND smoke gate before launching 1B chat..."
+  run_nanocamelid smoke "$SMOKE_KIND" "$MODEL" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 fi
 
-echo "NanoCamelid release binary not found and cargo is not on PATH." >&2
-echo "Expected binary: $BINARY" >&2
-exit 3
+exec_nanocamelid tui "$MODEL" "$TEMP" "$MAX_TOKENS"
