@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -379,7 +379,7 @@ fn print_tui_usage() {
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, chat, and tui"
     );
     println!();
-    println!("Commands inside the TUI: /help, /clear, /exit, /quit");
+    println!("Commands inside the TUI: /help, /model <path>, /clear, /exit, /quit");
 }
 
 fn print_bench_usage() {
@@ -1442,42 +1442,34 @@ struct ChatGenerationEnv<'a> {
     runtime_options: inference::LlamaRuntimeOptions,
 }
 
-fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
-    println!("Loading GGUF file: {}...", model_path.display());
-    let gguf = match gguf::read_file(model_path) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("Failed to read GGUF: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+struct TuiLoadedModel {
+    model_path: PathBuf,
+    config: model::LlamaModelConfig,
+    weights: model::LlamaWeights,
+    tokenizer: tokenizer::Tokenizer,
+    runtime_options: inference::LlamaRuntimeOptions,
+    model_name: String,
+    renderer: String,
+    load_secs: f64,
+}
 
-    let config = match model::LlamaModelConfig::from_gguf(&gguf) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to parse config: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let tokenizer = match tokenizer::Tokenizer::from_gguf(&gguf) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to load tokenizer: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn load_tui_model(
+    model_path: &Path,
+    selector: q8::Q8DotKernelSelector,
+) -> Result<TuiLoadedModel, String> {
+    println!("Loading GGUF file: {}...", model_path.display());
+    let gguf = gguf::read_file(model_path).map_err(|e| format!("failed to read GGUF: {e}"))?;
+
+    let config = model::LlamaModelConfig::from_gguf(&gguf)
+        .map_err(|e| format!("failed to parse config: {e}"))?;
+    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
+        .map_err(|e| format!("failed to load tokenizer: {e}"))?;
 
     println!("Loading model weights into memory...");
     let started_load = std::time::Instant::now();
-    let weights = match model::LlamaWeights::load(model_path, &config, &gguf) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("Failed to load weights: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let weights = model::LlamaWeights::load(model_path, &config, &gguf)
+        .map_err(|e| format!("failed to load weights: {e}"))?;
 
-    let selector = q8::Q8DotKernelSelector::from_env();
     let runtime_options = runtime_options_from_gguf(&gguf, selector);
     let model_name = gguf
         .metadata_string("general.name")
@@ -1489,20 +1481,41 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         })
         .unwrap_or_else(|| model_path.display().to_string());
     let renderer = tokenizer.render_chat_prompt(&[]).renderer.to_owned();
+    Ok(TuiLoadedModel {
+        model_path: model_path.to_path_buf(),
+        config,
+        weights,
+        tokenizer,
+        runtime_options,
+        model_name,
+        renderer,
+        load_secs: started_load.elapsed().as_secs_f64(),
+    })
+}
+
+fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
+    let selector = q8::Q8DotKernelSelector::from_env();
+    let mut loaded = match load_tui_model(model_path, selector) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut history = Vec::<ChatTurn>::new();
-    let mut session = ChatSession::new(&config);
+    let mut session = ChatSession::new(&loaded.config);
     let mut total_in = 0usize;
     let mut total_out = 0usize;
 
     print_tui_banner(TuiBanner {
-        model_name: &model_name,
-        model_path,
-        config: &config,
+        model_name: &loaded.model_name,
+        model_path: &loaded.model_path,
+        config: &loaded.config,
         kernel: selector.selected.name(),
-        renderer: &renderer,
+        renderer: &loaded.renderer,
         temp,
         max_tokens,
-        load_secs: started_load.elapsed().as_secs_f64(),
+        load_secs: loaded.load_secs,
     });
 
     let stdin = io::stdin();
@@ -1526,6 +1539,52 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         if input.is_empty() {
             continue;
         }
+        if input == "/model" {
+            println!(
+                "{}current model{} {}",
+                ansi::LABEL,
+                ansi::RESET,
+                loaded.model_path.display()
+            );
+            continue;
+        }
+        if let Some(next_model) = input.strip_prefix("/model ") {
+            let next_model = next_model.trim();
+            let next_model_path = PathBuf::from(next_model);
+            match load_tui_model(&next_model_path, selector) {
+                Ok(next_loaded) => {
+                    loaded = next_loaded;
+                    history.clear();
+                    session = ChatSession::new(&loaded.config);
+                    total_in = 0;
+                    total_out = 0;
+                    print_tui_banner(TuiBanner {
+                        model_name: &loaded.model_name,
+                        model_path: &loaded.model_path,
+                        config: &loaded.config,
+                        kernel: selector.selected.name(),
+                        renderer: &loaded.renderer,
+                        temp,
+                        max_tokens,
+                        load_secs: loaded.load_secs,
+                    });
+                    println!(
+                        "{}model switched; conversation reset{}",
+                        ansi::DIM,
+                        ansi::RESET
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "{}model switch failed; keeping current model:{} {err}",
+                        ansi::ERROR,
+                        ansi::RESET
+                    );
+                }
+            }
+            continue;
+        }
+
         match input {
             "/exit" | "/quit" => break,
             "/help" => {
@@ -1534,12 +1593,12 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
             }
             "/clear" => {
                 history.clear();
-                session.reset(&config);
+                session.reset(&loaded.config);
                 total_in = 0;
                 total_out = 0;
                 println!("{}conversation cleared{}", ansi::DIM, ansi::RESET);
                 print_tui_status(TuiStatus {
-                    model_name: &model_name,
+                    model_name: &loaded.model_name,
                     kernel: selector.selected.name(),
                     input_tokens: 0,
                     output_tokens: 0,
@@ -1567,10 +1626,10 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
             &history,
             &mut session,
             ChatGenerationEnv {
-                config: &config,
-                weights: &weights,
-                tokenizer: &tokenizer,
-                runtime_options,
+                config: &loaded.config,
+                weights: &loaded.weights,
+                tokenizer: &loaded.tokenizer,
+                runtime_options: loaded.runtime_options,
             },
             temp,
             max_tokens,
@@ -1592,7 +1651,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         total_in += report.input_tokens;
         total_out += report.output_tokens;
         print_tui_status(TuiStatus {
-            model_name: &model_name,
+            model_name: &loaded.model_name,
             kernel: selector.selected.name(),
             input_tokens: report.input_tokens,
             output_tokens: report.output_tokens,
@@ -1981,12 +2040,18 @@ fn print_tui_banner(banner: TuiBanner<'_>) {
         banner.max_tokens,
         banner.load_secs
     );
-    println!("{}commands{} /help /clear /exit", ansi::LABEL, ansi::RESET);
+    println!(
+        "{}commands{} /help /model <path> /clear /exit",
+        ansi::LABEL,
+        ansi::RESET
+    );
     println!();
 }
 
 fn print_tui_commands() {
     println!("{}commands{}", ansi::LABEL, ansi::RESET);
+    println!("  /model <path>  load another GGUF and reset the conversation");
+    println!("  /model         show the current GGUF path");
     println!("  /clear  reset the conversation and token counters");
     println!("  /exit   leave the chat");
     println!("  /quit   leave the chat");

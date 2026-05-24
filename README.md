@@ -1,12 +1,12 @@
 # NanoCamelid
 
-NanoCamelid is a small Rust inference runtime for running GGUF Llama-style
+NanoCamelid is a small Rust inference runtime for running GGUF local chat
 models on Raspberry Pi-class ARM64 hardware.
 
-The current focus is simple: make local model inspection, Q8_0 validation, and
-small-model smoke tests easy to run on a Pi. Performance work is intentionally
-gated behind explicit commands and environment variables until it has repeatable
-Pi evidence.
+The current focus is simple: make local model inspection, Q8_0/Q4_0 validation,
+and small-model smoke tests easy to run on a Pi. Performance work is
+intentionally gated behind explicit commands and environment variables until it
+has repeatable Pi evidence.
 
 ## Requirements
 
@@ -48,6 +48,10 @@ connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
 session token-in/token-out counters, TTFT, and throughput.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
+
+Inside the TUI, use `/model <path>` to load a different GGUF without restarting
+the process. A successful switch resets the conversation and token counters. If
+the new model fails to load, the current model stays active.
 
 On a prepared Pi workspace with the Llama 3.2 1B Instruct Q4_0 or Q8_0 GGUF at
 the default model path, start the interactive 1B chat directly:
@@ -102,6 +106,32 @@ The benchmark prints repeated scalar/NEON timing and a JSON summary line. Treat
 benchmark output as specific to the exact Pi, model, build, and configuration
 where it was captured.
 
+## Tested Models
+
+These rows reflect models that have been loaded and smoke-tested on Raspberry Pi
+hardware with the current GGUF path. They are not broad family claims.
+
+| Model | GGUF quant | Status | Notes |
+| --- | --- | --- | --- |
+| Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat. |
+| Llama 3.2 1B Instruct | Q8_0 | Working | Baseline path for Q8 validation and Q4 comparison. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke working | Official Q4_0 GGUF loads, Qwen chat rendering works, and Pi smoke/chat generation runs. Throughput is currently limited by remaining scalar/dequant work in larger-model paths. |
+
+## Pi Performance Snapshot
+
+Latest clean Pi 2 serial chat timings at commit `e70e863`:
+
+| Model | Quant | Prompt path | Result |
+| --- | --- | --- | --- |
+| Llama 3.2 1B Instruct | Q4_0 | 8-token short chat | Model load ~0.95-0.97s, generation ~1.96-1.97s, ~4.07-4.09 tok/sec. |
+| Llama 3.2 1B Instruct | Q8_0 | Same 8-token short chat | Model load ~1.32s, generation ~2.21s, ~3.63 tok/sec. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | 32-token short chat | Coherent Rust-answer generation at ~1.21 tok/sec. |
+
+The Q4_0 1B path is faster than Q8_0 on the same prompt, but the measured
+end-to-end gain is currently about 1.12x, not the theoretical 1.8-2.0x memory
+traffic ceiling. The next performance work is broader hot-path reduction beyond
+the Q4/Q8 block dot kernel.
+
 ## Raspberry Pi Deployment
 
 Prepare a Pi workspace:
@@ -140,11 +170,13 @@ in the scripts for development workflows.
 - Host feature probing is available.
 - GGUF metadata and tensor layout inspection are available.
 - Q8_0 scalar, NEON, and default-off SDOT dot-product paths are available.
+- Q4_0 loading and Q4_0 weight x Q8_0 activation matmul paths are available.
 - Single-turn chat prompt rendering is available for recognized instruct templates.
 - Interactive terminal chat is available with model/kernel, token, TTFT, and throughput telemetry.
-- The Pi 1B chat launcher defaults to the NEON Q8 dot-product path and preserves scalar-vs-NEON parity through the smoke gate.
-- Q8_0 model smoke validation is available for supported Llama-style GGUFs.
-- Broader model support and performance claims require Pi-local artifacts.
+- The TUI can switch GGUFs at runtime with `/model <path>`.
+- The Pi 1B chat launcher defaults to the SDOT Q8 dot-product path when available and preserves scalar-vs-selected-kernel parity through the smoke gate.
+- Q8_0 and Q4_0 model smoke validation is available for the tested GGUF rows above.
+- Broader model support and performance claims require Pi-local artifacts and row-specific validation.
 
 ## More Details
 
