@@ -208,16 +208,18 @@ pub fn apply_rope(
 pub fn quantize_f32_to_q8_0(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            unsafe {
-                quantize_f32_to_q8_0_neon_max(x, x_i8, x_scales);
-            }
-            return;
+        // SAFETY: AArch64 guarantees NEON/ASIMD support.
+        unsafe {
+            quantize_f32_to_q8_0_neon_max(x, x_i8, x_scales);
         }
     }
-    quantize_f32_to_q8_0_scalar(x, x_i8, x_scales);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        quantize_f32_to_q8_0_scalar(x, x_i8, x_scales);
+    }
 }
 
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn quantize_f32_to_q8_0_scalar(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
     let num_blocks = x.len() / 32;
     for (b, scale_out) in x_scales.iter_mut().enumerate().take(num_blocks) {
@@ -227,6 +229,7 @@ fn quantize_f32_to_q8_0_scalar(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32])
     }
 }
 
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn max_abs_scalar(chunk: &[f32]) -> f32 {
     let mut max_abs = 0.0_f32;
     for &val in chunk {
@@ -449,8 +452,7 @@ fn compute_q4_0_sdot_1x4_chunk(
             let row1 = &w[w_base + blocks_per_row];
             let row2 = &w[w_base + 2 * blocks_per_row];
             let row3 = &w[w_base + 3 * blocks_per_row];
-            let dots =
-                crate::q8::dot_q4_0_q8_0_1x4_sdot_selected([row0, row1, row2, row3], x_block_vals);
+            let dots = dot_q4_0_q8_0_1x4_sdot([row0, row1, row2, row3], x_block_vals);
             sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
             sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
             sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
@@ -471,6 +473,24 @@ fn compute_q4_0_sdot_1x4_chunk(
             sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
         }
         *out_val = sum;
+    }
+}
+
+fn dot_q4_0_q8_0_1x4_sdot(weights: [&Q4_0Block; 4], activation: &[i8; 32]) -> [i32; 4] {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: the 1x4 path is entered only after SDOT selector validation.
+        unsafe { crate::q8::dot_q4_0_q8_0_1x4_sdot_aarch64(weights, activation) }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        [
+            crate::q8::dot_q4_0_q8_0_scalar(weights[0], activation),
+            crate::q8::dot_q4_0_q8_0_scalar(weights[1], activation),
+            crate::q8::dot_q4_0_q8_0_scalar(weights[2], activation),
+            crate::q8::dot_q4_0_q8_0_scalar(weights[3], activation),
+        ]
     }
 }
 
@@ -547,13 +567,16 @@ fn dot_f32(lhs: &[f32], rhs: &[f32]) -> f32 {
     debug_assert_eq!(lhs.len(), rhs.len());
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { dot_f32_neon(lhs, rhs) };
-        }
+        // SAFETY: AArch64 guarantees NEON/ASIMD support.
+        unsafe { dot_f32_neon(lhs, rhs) }
     }
-    dot_f32_scalar(lhs, rhs)
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_f32_scalar(lhs, rhs)
+    }
 }
 
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn dot_f32_scalar(lhs: &[f32], rhs: &[f32]) -> f32 {
     lhs.iter().zip(rhs).map(|(&a, &b)| a * b).sum()
 }
@@ -605,16 +628,18 @@ fn add_weighted_f32(out: &mut [f32], values: &[f32], weight: f32) {
     debug_assert_eq!(out.len(), values.len());
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            unsafe {
-                add_weighted_f32_neon(out, values, weight);
-            }
-            return;
+        // SAFETY: AArch64 guarantees NEON/ASIMD support.
+        unsafe {
+            add_weighted_f32_neon(out, values, weight);
         }
     }
-    add_weighted_f32_scalar(out, values, weight);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        add_weighted_f32_scalar(out, values, weight);
+    }
 }
 
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn add_weighted_f32_scalar(out: &mut [f32], values: &[f32], weight: f32) {
     for (dst, &value) in out.iter_mut().zip(values) {
         *dst += weight * value;

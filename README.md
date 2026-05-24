@@ -46,9 +46,11 @@ paths must prove logit parity before they are trusted.
 
 Recent Pi work also moved several inner loops away from repeated slice-to-array
 conversion and added a NEON max-abs scan for dynamic Q8 activation quantization
-while preserving scalar rounding and clamping semantics. More aggressive ideas,
-such as Q4_0 1x4 SDOT row blocking, stay behind opt-in flags when measured Pi
-results do not beat the normal path.
+while preserving scalar rounding and clamping semantics. On `aarch64`, NEON
+helpers dispatch through compile-time architecture gates instead of repeated
+runtime feature checks in decode and quantization hot loops. More aggressive
+ideas, such as Q4_0 1x4 SDOT row blocking, stay behind opt-in flags when
+measured Pi results do not beat the normal path.
 
 ### Rust-First Edge Deployment
 
@@ -184,22 +186,26 @@ platform exposes affinity controls.
 
 Decode-time attention now uses ARM NEON helpers for Q/K dot products and V
 weighted accumulation when running on `aarch64`, with scalar reference fallbacks
-for portability. The TUI reuses matching prompt-prefix KV cache across chat
-turns, so repeated conversation prefixes are not re-ingested. New prompt suffixes
-are still processed with sequential token-by-token prefill; large new prompts on
-Qwen2.5-Coder-7B Q4_0 are therefore prefill-bound today. Batched prefill with
-32-64 token chunks is the next required step before claiming 4096-token or
-8192-token Pi chat usability.
+for portability. These helpers now use compile-time `aarch64` dispatch rather
+than runtime NEON checks in the attention inner loop. The TUI reuses matching
+prompt-prefix KV cache across chat turns, so repeated conversation prefixes are
+not re-ingested. New prompt suffixes are still processed with sequential
+token-by-token prefill; large new prompts on Qwen2.5-Coder-7B Q4_0 are therefore
+prefill-bound today. Batched prefill with 32-64 token chunks is the next required
+step before claiming 4096-token or 8192-token Pi chat usability.
 
 The activation quantization path uses a NEON max-abs scan on `aarch64`, while
-preserving scalar rounding/clamping semantics for parity. Q4_0 and Q8_0 matmul
-hot loops read activation blocks through validated raw block pointers to avoid
-repeated slice-to-array conversion in the innermost loop.
+preserving scalar rounding/clamping semantics for parity. That path also uses
+compile-time `aarch64` dispatch instead of a runtime NEON feature check. Q4_0 and
+Q8_0 matmul hot loops read activation blocks through validated raw block
+pointers to avoid repeated slice-to-array conversion in the innermost loop.
 
 An experimental Q4_0 x Q8_0 1x4 SDOT row-blocking path is available with
-`NANOCAMELID_Q4_1X4_SDOT=1`. It is intentionally default-off: the first Pi 2
-Qwen2.5-Coder-7B Q4_0 short-chat comparison preserved parity but measured
-slower than the normal SDOT path, about `1.74 tok/sec` versus `1.99 tok/sec`.
+`NANOCAMELID_Q4_1X4_SDOT=1`. It now calls the low-level SDOT kernel directly
+inside the block loop when enabled, but it remains intentionally default-off:
+the Pi 2 Qwen2.5-Coder-7B Q4_0 short-chat comparison preserved parity and still
+measured slower than the normal SDOT path, about `1.76 tok/sec` versus
+`1.97 tok/sec`.
 
 ## Tested Models
 
@@ -210,7 +216,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | --- | --- | --- | --- |
 | Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat. |
 | Llama 3.2 1B Instruct | Q8_0 | Working | Baseline path for Q8 validation and Q4 comparison. |
-| Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes. Fused Q6_K output projection and later hot-loop cleanup improved the short Qwen prompt from 1.55 to about 1.99 tok/sec on Pi 2. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes. Fused Q6_K output projection and later hot-loop cleanup improved the short Qwen prompt from 1.55 to about 1.97-1.99 tok/sec on Pi 2. |
 
 ## Pi Performance Snapshot
 
@@ -220,7 +226,7 @@ Latest clean Pi 2 serial chat timings from the current validated runs:
 | --- | --- | --- | --- |
 | Llama 3.2 1B Instruct | Q4_0 | 8-token short chat | Model load ~0.95-0.97s, generation ~1.96-1.97s, ~4.07-4.09 tok/sec. |
 | Llama 3.2 1B Instruct | Q8_0 | Same 8-token short chat | Model load ~1.32s, generation ~2.21s, ~3.63 tok/sec. |
-| Qwen2.5-Coder-7B-Instruct | Q4_0 | 8-token short chat | Same prompt improved from 1.55 tok/sec at `c6e6d67` to 1.90-1.93 tok/sec after fused Q6_K output projection, then 1.99 tok/sec after pointer hot-loop cleanup with the normal SDOT path. Experimental 1x4 Q4 SDOT measured 1.74 tok/sec and remains opt-in only. |
+| Qwen2.5-Coder-7B-Instruct | Q4_0 | 8-token short chat | Same prompt improved from 1.55 tok/sec at `c6e6d67` to 1.90-1.93 tok/sec after fused Q6_K output projection, then 1.97-1.99 tok/sec after pointer and dispatch cleanup with the normal SDOT path. Experimental 1x4 Q4 SDOT measured 1.76 tok/sec after direct dispatch and remains opt-in only. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Repeated ~170-token prompt | Model load ~3.60s, generation 8 tokens in ~4.33s, ~1.85 tok/sec after prefill. Larger ~650-token and ~2500-token stress prompts hit timeout before decode, confirming sequential prefill as the blocker. |
 
 The Q4_0 1B path is faster than Q8_0 on the same prompt, but the measured

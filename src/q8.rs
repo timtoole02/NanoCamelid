@@ -506,6 +506,7 @@ pub fn dot_q4_0_q8_0_with_selector(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn dot_q4_0_q8_0_1x4_sdot_selected(
     weights: [&Q4_0Block; 4],
     activation: &[i8; Q8_BLOCK_SIZE],
@@ -798,7 +799,7 @@ pub fn dotprod_available() -> bool {
 pub fn neon_available() -> bool {
     #[cfg(target_arch = "aarch64")]
     {
-        std::arch::is_aarch64_feature_detected!("neon")
+        true
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -822,12 +823,13 @@ pub fn dot_i8_neon(lhs: &[i8], rhs: &[i8]) -> i32 {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return dot_i8_neon_selected(lhs, rhs);
-        }
+        dot_i8_neon_selected(lhs, rhs)
     }
 
-    dot_i8_scalar(lhs, rhs)
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_i8_scalar(lhs, rhs)
+    }
 }
 
 pub fn dot_i8_sdot(lhs: &[i8], rhs: &[i8]) -> i32 {
@@ -1217,7 +1219,7 @@ unsafe fn dot_q4_0_q8_0_sdot_32_aarch64(
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn dot_q4_0_q8_0_1x4_sdot_aarch64(
+pub(crate) unsafe fn dot_q4_0_q8_0_1x4_sdot_aarch64(
     weights: [&Q4_0Block; 4],
     activation: &[i8; Q8_BLOCK_SIZE],
 ) -> [i32; 4] {
