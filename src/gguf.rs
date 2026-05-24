@@ -329,6 +329,10 @@ const IMPORTANT_KEYS: &[&str] = &[
 
 pub fn inspect(path: &Path) -> Result<GgufSummary, GgufError> {
     let file = read_file(path)?;
+    Ok(summarize(&file))
+}
+
+pub fn summarize(file: &GgufFile) -> GgufSummary {
     let mut important_metadata = Vec::new();
     for key in IMPORTANT_KEYS {
         if let Some(val) = file.metadata.get(*key) {
@@ -346,7 +350,7 @@ pub fn inspect(path: &Path) -> Result<GgufSummary, GgufError> {
             .or_insert(0) += 1;
     }
 
-    Ok(GgufSummary {
+    GgufSummary {
         version: file.version,
         tensor_count: file.tensor_count,
         metadata_count: file.metadata_count,
@@ -358,7 +362,7 @@ pub fn inspect(path: &Path) -> Result<GgufSummary, GgufError> {
             .map(|(name, count)| TensorTypeSummary { name, count })
             .collect(),
         tensors: file.tensors.clone(),
-    })
+    }
 }
 
 #[cfg(test)]

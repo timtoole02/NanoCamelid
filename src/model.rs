@@ -3,7 +3,7 @@ use std::{fs::File, os::unix::fs::FileExt, path::Path};
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{Q8_0Block, decode_q8_0_blocks};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LlamaModelConfig {
     pub context_length: usize,
     pub embedding_length: usize,
@@ -197,7 +197,7 @@ impl LlamaWeights {
     }
 }
 
-fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Result<(), String> {
+pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Result<(), String> {
     let token_embedding = load_tensor_desc(gguf, "token_embd.weight")?;
     require_descriptor_matrix_shape(
         token_embedding,

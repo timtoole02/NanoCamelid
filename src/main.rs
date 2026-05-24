@@ -237,7 +237,9 @@ fn print_inspect_usage() {
     println!("Usage:");
     println!("  nanocamelid inspect <model.gguf>");
     println!();
-    println!("Inspect GGUF metadata, tensor types, and the first tensor layouts.");
+    println!(
+        "Inspect GGUF metadata, runtime-ready LLaMA config, tokenizer support, and the first tensor layouts."
+    );
 }
 
 fn print_generate_usage() {
@@ -541,8 +543,10 @@ fn duration_ms_json(durations: &[std::time::Duration]) -> String {
 }
 
 fn inspect_gguf(path: &Path) -> ExitCode {
-    match gguf::inspect(path) {
-        Ok(summary) => {
+    match gguf::read_file(path) {
+        Ok(file) => {
+            let summary = gguf::summarize(&file);
+            let runtime = inspect_runtime_summary(&file);
             println!("NanoCamelid GGUF inspect");
             println!("path: {}", path.display());
             println!("version: {}", summary.version);
@@ -550,6 +554,82 @@ fn inspect_gguf(path: &Path) -> ExitCode {
             println!("metadata_count: {}", summary.metadata_count);
             println!("alignment: {}", summary.alignment);
             println!("data_start_offset: {}", summary.data_start_offset);
+
+            println!();
+            println!("runtime:");
+            println!(
+                "  readiness: {}",
+                if runtime.ready {
+                    "ready"
+                } else {
+                    "unsupported"
+                }
+            );
+            println!("  tied_output: {}", runtime.tied_output);
+
+            match &runtime.model_config {
+                Ok(config) => {
+                    println!("  architecture: llama");
+                    println!("  vocab_size: {}", config.vocab_size);
+                    println!("  context_length: {}", config.context_length);
+                    println!("  embedding_length: {}", config.embedding_length);
+                    println!("  block_count: {}", config.block_count);
+                    println!("  attention_heads: {}", config.attention_head_count);
+                    println!("  attention_kv_heads: {}", config.attention_head_count_kv);
+                    println!("  head_dim: {}", config.head_dim);
+                    println!("  kv_width: {}", config.kv_width);
+                    println!("  rope_dimension_count: {}", config.rope_dimension_count);
+                    println!("  rope_freq_base: {}", config.rope_freq_base);
+                    println!("  rms_norm_epsilon: {}", config.rms_norm_epsilon);
+                }
+                Err(err) => println!("  config_error: {err}"),
+            }
+
+            match &runtime.tensor_layouts {
+                Ok(()) => println!("  tensor_layouts: ok"),
+                Err(err) => println!("  tensor_layout_error: {err}"),
+            }
+
+            match &runtime.tokenizer {
+                Ok(tokenizer) => {
+                    println!("  tokenizer_model: {}", tokenizer.model.as_summary_model());
+                    println!(
+                        "  tokenizer_chat_template: {}",
+                        tokenizer.chat_template_present
+                    );
+                    println!("  tokenizer_add_bos: {}", tokenizer.add_bos);
+                    println!("  tokenizer_add_eos: {}", tokenizer.add_eos);
+                    println!(
+                        "  tokenizer_add_space_prefix: {}",
+                        tokenizer.add_space_prefix
+                    );
+                    println!(
+                        "  tokenizer_remove_extra_whitespaces: {}",
+                        tokenizer.remove_extra_whitespaces
+                    );
+                    println!("  tokenizer_bos: {:?}", tokenizer.bos);
+                    println!("  tokenizer_eos: {:?}", tokenizer.eos);
+                    println!("  tokenizer_eot: {:?}", tokenizer.eot);
+                    println!("  tokenizer_eom: {:?}", tokenizer.eom);
+                }
+                Err(err) => println!("  tokenizer_error: {err}"),
+            }
+
+            if let Some(factor) = file.metadata_f32("llama.rope.scaling.factor") {
+                println!("  rope_scaling_factor: {factor}");
+            }
+            if let Some(original_context_length) =
+                file.metadata_u32("llama.rope.scaling.original_context_length")
+            {
+                println!("  rope_scaling_original_context_length: {original_context_length}");
+            }
+            if let Some(low_freq_factor) = file.metadata_f32("llama.rope.scaling.low_freq_factor") {
+                println!("  rope_scaling_low_freq_factor: {low_freq_factor}");
+            }
+            if let Some(high_freq_factor) = file.metadata_f32("llama.rope.scaling.high_freq_factor")
+            {
+                println!("  rope_scaling_high_freq_factor: {high_freq_factor}");
+            }
 
             if !summary.important_metadata.is_empty() {
                 println!();
@@ -592,6 +672,63 @@ fn inspect_gguf(path: &Path) -> ExitCode {
             eprintln!("inspect failed: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct InspectRuntimeSummary {
+    ready: bool,
+    tied_output: bool,
+    model_config: Result<model::LlamaModelConfig, String>,
+    tensor_layouts: Result<(), String>,
+    tokenizer: Result<InspectTokenizerSummary, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectTokenizerSummary {
+    model: tokenizer::TokenizerModel,
+    add_bos: bool,
+    add_eos: bool,
+    add_space_prefix: bool,
+    remove_extra_whitespaces: bool,
+    chat_template_present: bool,
+    bos: Option<u32>,
+    eos: Option<u32>,
+    eot: Option<u32>,
+    eom: Option<u32>,
+}
+
+fn inspect_runtime_summary(gguf: &gguf::GgufFile) -> InspectRuntimeSummary {
+    let model_config = model::LlamaModelConfig::from_gguf(gguf);
+    let tensor_layouts = model_config
+        .as_ref()
+        .map_err(std::clone::Clone::clone)
+        .and_then(|config| model::validate_model_tensors(gguf, config));
+    let tokenizer =
+        tokenizer::Tokenizer::from_gguf(gguf).map(|tokenizer| InspectTokenizerSummary {
+            model: tokenizer.model,
+            add_bos: tokenizer.config.add_bos,
+            add_eos: tokenizer.config.add_eos,
+            add_space_prefix: tokenizer.config.add_space_prefix,
+            remove_extra_whitespaces: tokenizer.config.remove_extra_whitespaces,
+            chat_template_present: tokenizer.chat_template.is_some(),
+            bos: tokenizer.special.bos,
+            eos: tokenizer.special.eos,
+            eot: tokenizer.special.eot,
+            eom: tokenizer.special.eom,
+        });
+    let tied_output = !gguf
+        .tensors
+        .iter()
+        .any(|tensor| tensor.name == "output.weight");
+    let ready = model_config.is_ok() && tensor_layouts.is_ok() && tokenizer.is_ok();
+
+    InspectRuntimeSummary {
+        ready,
+        tied_output,
+        model_config,
+        tensor_layouts,
+        tokenizer,
     }
 }
 
@@ -990,9 +1127,14 @@ fn runtime_dotprod() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use nanocamelid::gguf::{GgufFile, GgufMetadataValue, GgufTensorDescriptor, GgufTensorType};
+    use nanocamelid::tokenizer::TokenizerModel;
+
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
-        is_help_flag, validate_prompt_fits_context,
+        inspect_runtime_summary, is_help_flag, validate_prompt_fits_context,
     };
 
     #[test]
@@ -1092,5 +1234,221 @@ flags\t\t: sse4_2 avx2
         assert!(is_help_flag("-h"));
         assert!(is_help_flag("--help"));
         assert!(!is_help_flag("help"));
+    }
+
+    #[test]
+    fn inspect_runtime_summary_reports_ready_q8_llama_fixture() {
+        let summary = inspect_runtime_summary(&inspect_fixture(false));
+        assert!(summary.ready);
+        assert!(summary.tensor_layouts.is_ok());
+        assert!(summary.tied_output);
+        assert_eq!(
+            summary
+                .model_config
+                .expect("config should parse for ready fixture")
+                .vocab_size,
+            64
+        );
+        assert_eq!(
+            summary
+                .tokenizer
+                .expect("tokenizer should parse for ready fixture")
+                .model,
+            TokenizerModel::LlamaSpm
+        );
+    }
+
+    #[test]
+    fn inspect_runtime_summary_surfaces_tensor_layout_errors() {
+        let summary = inspect_runtime_summary(&inspect_fixture(true));
+        assert!(!summary.ready);
+        let err = summary
+            .tensor_layouts
+            .expect_err("broken fixture should fail tensor layout validation");
+        assert!(err.contains("blk.0.ffn_down.weight"));
+    }
+
+    fn inspect_fixture(break_ffn_down: bool) -> GgufFile {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "general.architecture".to_owned(),
+            GgufMetadataValue::String("llama".to_owned()),
+        );
+        metadata.insert(
+            "llama.context_length".to_owned(),
+            GgufMetadataValue::U32(128),
+        );
+        metadata.insert(
+            "llama.embedding_length".to_owned(),
+            GgufMetadataValue::U32(32),
+        );
+        metadata.insert("llama.block_count".to_owned(), GgufMetadataValue::U32(1));
+        metadata.insert(
+            "llama.feed_forward_length".to_owned(),
+            GgufMetadataValue::U32(64),
+        );
+        metadata.insert(
+            "llama.attention.head_count".to_owned(),
+            GgufMetadataValue::U32(4),
+        );
+        metadata.insert(
+            "llama.attention.head_count_kv".to_owned(),
+            GgufMetadataValue::U32(4),
+        );
+        metadata.insert("llama.vocab_size".to_owned(), GgufMetadataValue::U32(64));
+        metadata.insert(
+            "tokenizer.ggml.model".to_owned(),
+            GgufMetadataValue::String("llama".to_owned()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.tokens".to_owned(),
+            GgufMetadataValue::Array(vec![
+                GgufMetadataValue::String("<unk>".to_owned()),
+                GgufMetadataValue::String("<s>".to_owned()),
+                GgufMetadataValue::String("</s>".to_owned()),
+                GgufMetadataValue::String("▁hello".to_owned()),
+                GgufMetadataValue::String("hello".to_owned()),
+                GgufMetadataValue::String("▁".to_owned()),
+            ]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.scores".to_owned(),
+            GgufMetadataValue::Array(vec![
+                GgufMetadataValue::F32(0.0),
+                GgufMetadataValue::F32(0.0),
+                GgufMetadataValue::F32(0.0),
+                GgufMetadataValue::F32(10.0),
+                GgufMetadataValue::F32(2.0),
+                GgufMetadataValue::F32(1.0),
+            ]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.token_type".to_owned(),
+            GgufMetadataValue::Array(vec![
+                GgufMetadataValue::I32(2),
+                GgufMetadataValue::I32(3),
+                GgufMetadataValue::I32(3),
+                GgufMetadataValue::I32(1),
+                GgufMetadataValue::I32(1),
+                GgufMetadataValue::I32(1),
+            ]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.bos_token_id".to_owned(),
+            GgufMetadataValue::U32(1),
+        );
+        metadata.insert(
+            "tokenizer.ggml.eos_token_id".to_owned(),
+            GgufMetadataValue::U32(2),
+        );
+        metadata.insert(
+            "tokenizer.chat_template".to_owned(),
+            GgufMetadataValue::String("{{ bos_token }}{{ messages }}".to_owned()),
+        );
+
+        let ffn_down_dims = if break_ffn_down {
+            vec![64, 64]
+        } else {
+            vec![64, 32]
+        };
+
+        let tensors = vec![
+            tensor_desc(
+                "token_embd.weight",
+                vec![32, 64],
+                GgufTensorType::F16,
+                f16_bytes(32, 64),
+            ),
+            tensor_desc("output_norm.weight", vec![32], GgufTensorType::F32, 32 * 4),
+            tensor_desc(
+                "blk.0.attn_norm.weight",
+                vec![32],
+                GgufTensorType::F32,
+                32 * 4,
+            ),
+            tensor_desc(
+                "blk.0.attn_q.weight",
+                vec![32, 32],
+                GgufTensorType::Q8_0,
+                q8_bytes(32, 32),
+            ),
+            tensor_desc(
+                "blk.0.attn_k.weight",
+                vec![32, 32],
+                GgufTensorType::Q8_0,
+                q8_bytes(32, 32),
+            ),
+            tensor_desc(
+                "blk.0.attn_v.weight",
+                vec![32, 32],
+                GgufTensorType::Q8_0,
+                q8_bytes(32, 32),
+            ),
+            tensor_desc(
+                "blk.0.attn_output.weight",
+                vec![32, 32],
+                GgufTensorType::Q8_0,
+                q8_bytes(32, 32),
+            ),
+            tensor_desc(
+                "blk.0.ffn_norm.weight",
+                vec![32],
+                GgufTensorType::F32,
+                32 * 4,
+            ),
+            tensor_desc(
+                "blk.0.ffn_gate.weight",
+                vec![32, 64],
+                GgufTensorType::Q8_0,
+                q8_bytes(32, 64),
+            ),
+            tensor_desc(
+                "blk.0.ffn_up.weight",
+                vec![32, 64],
+                GgufTensorType::Q8_0,
+                q8_bytes(32, 64),
+            ),
+            tensor_desc(
+                "blk.0.ffn_down.weight",
+                ffn_down_dims,
+                GgufTensorType::Q8_0,
+                q8_bytes(64, 32),
+            ),
+        ];
+
+        GgufFile {
+            path: PathBuf::from("inspect-fixture.gguf"),
+            version: 3,
+            tensor_count: tensors.len() as u64,
+            metadata_count: metadata.len() as u64,
+            alignment: 32,
+            data_start_offset: 0,
+            metadata,
+            tensors,
+        }
+    }
+
+    fn tensor_desc(
+        name: &str,
+        dimensions: Vec<u64>,
+        tensor_type: GgufTensorType,
+        n_bytes: u64,
+    ) -> GgufTensorDescriptor {
+        GgufTensorDescriptor {
+            name: name.to_owned(),
+            dimensions,
+            tensor_type,
+            relative_offset: 0,
+            absolute_offset: 0,
+            n_bytes,
+        }
+    }
+
+    fn q8_bytes(row_values: u64, row_count: u64) -> u64 {
+        row_values / 32 * 34 * row_count
+    }
+
+    fn f16_bytes(row_values: u64, row_count: u64) -> u64 {
+        row_values * row_count * 2
     }
 }
