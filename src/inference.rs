@@ -1,6 +1,7 @@
 use crate::model::{LlamaModelConfig, LlamaWeights, QuantizedMatrix};
 use crate::q8::{
-    Q4_0Block, Q6KBlock, Q8_0Block, Q8DotKernel, Q8DotKernelSelector, QK_K_BLOCK_SIZE,
+    Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
+    QK_K_BLOCK_SIZE,
 };
 use rayon::prelude::*;
 use std::{env, sync::OnceLock};
@@ -65,6 +66,13 @@ pub struct LlamaRuntimeOptions {
     pub compute_logits: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct BatchMatmulShape {
+    pub batch_size: usize,
+    pub rows: usize,
+    pub cols: usize,
+}
+
 pub struct LlamaKvCache {
     pub k_cache: Vec<f32>, // block_count * context_length * kv_width
     pub v_cache: Vec<f32>, // block_count * context_length * kv_width
@@ -120,6 +128,23 @@ pub struct LlamaWorkspace {
     pub logits: Vec<f32>,
 }
 
+pub struct LlamaBatchWorkspace {
+    pub max_batch: usize,
+    pub hidden: Vec<f32>,
+    pub residual: Vec<f32>,
+    pub norm_x: Vec<f32>,
+    pub q: Vec<f32>,
+    pub k: Vec<f32>,
+    pub v: Vec<f32>,
+    pub attn_output: Vec<f32>,
+    pub attn_scores: Vec<f32>,
+    pub ffn_gate: Vec<f32>,
+    pub ffn_up: Vec<f32>,
+    pub ffn_gate_up: Vec<f32>,
+    pub x_i8: Vec<i8>,
+    pub x_scales: Vec<f32>,
+}
+
 impl LlamaWorkspace {
     pub fn new(config: &LlamaModelConfig) -> Self {
         let max_size = config
@@ -141,6 +166,31 @@ impl LlamaWorkspace {
             x_i8: vec![0; max_size],
             x_scales: vec![0.0; max_size / 32 + 1],
             logits: vec![0.0; config.vocab_size],
+        }
+    }
+}
+
+impl LlamaBatchWorkspace {
+    pub fn new(config: &LlamaModelConfig, max_batch: usize) -> Self {
+        let max_size = config
+            .vocab_size
+            .max(config.feed_forward_length)
+            .max(config.embedding_length);
+        Self {
+            max_batch,
+            hidden: vec![0.0; max_batch * config.embedding_length],
+            residual: vec![0.0; max_batch * config.embedding_length],
+            norm_x: vec![0.0; max_batch * config.embedding_length],
+            q: vec![0.0; max_batch * config.embedding_length],
+            k: vec![0.0; max_batch * config.kv_width],
+            v: vec![0.0; max_batch * config.kv_width],
+            attn_output: vec![0.0; max_batch * config.embedding_length],
+            attn_scores: vec![0.0; max_batch * config.context_length],
+            ffn_gate: vec![0.0; max_batch * config.feed_forward_length],
+            ffn_up: vec![0.0; max_batch * config.feed_forward_length],
+            ffn_gate_up: vec![0.0; max_batch * config.feed_forward_length],
+            x_i8: vec![0; max_batch * max_size],
+            x_scales: vec![0.0; max_batch * (max_size / Q8_BLOCK_SIZE + 1)],
         }
     }
 }
@@ -217,6 +267,47 @@ pub fn quantize_f32_to_q8_0(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
     {
         quantize_f32_to_q8_0_scalar(x, x_i8, x_scales);
     }
+}
+
+pub fn rms_norm_batch(
+    out: &mut [f32],
+    x: &[f32],
+    weight: &[f32],
+    epsilon: f32,
+    batch_size: usize,
+    dim: usize,
+) {
+    debug_assert_eq!(out.len(), batch_size * dim);
+    debug_assert_eq!(x.len(), batch_size * dim);
+    debug_assert_eq!(weight.len(), dim);
+
+    out.par_chunks_mut(dim)
+        .zip(x.par_chunks(dim))
+        .take(batch_size)
+        .for_each(|(out_token, x_token)| {
+            rms_norm(out_token, x_token, weight, epsilon);
+        });
+}
+
+pub fn quantize_f32_to_q8_0_batch(
+    x: &[f32],
+    x_i8: &mut [i8],
+    x_scales: &mut [f32],
+    batch_size: usize,
+    dim: usize,
+) {
+    let blocks_per_token = dim / 32;
+    debug_assert_eq!(x.len(), batch_size * dim);
+    debug_assert_eq!(x_i8.len(), batch_size * dim);
+    debug_assert!(x_scales.len() >= batch_size * blocks_per_token);
+
+    x_i8.par_chunks_mut(dim)
+        .zip(x_scales.par_chunks_mut(blocks_per_token))
+        .zip(x.par_chunks(dim))
+        .take(batch_size)
+        .for_each(|((out_i8, out_scales), x_token)| {
+            quantize_f32_to_q8_0(x_token, out_i8, out_scales);
+        });
 }
 
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
@@ -369,6 +460,305 @@ pub fn matmul_quantized(
         }
         QuantizedMatrix::Q6K(blocks) => matmul_q6_k(out, x_i8, x_scales, blocks, rows, cols),
     }
+}
+
+pub fn matmul_quantized_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &QuantizedMatrix,
+    shape: BatchMatmulShape,
+    selector: Q8DotKernelSelector,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    debug_assert_eq!(out.len(), batch_size * rows);
+    debug_assert_eq!(x_i8.len(), batch_size * cols);
+    debug_assert!(x_scales.len() >= batch_size * (cols / Q8_BLOCK_SIZE));
+
+    match w {
+        QuantizedMatrix::Q8_0(blocks) => {
+            matmul_q8_0_batch(out, x_i8, x_scales, blocks, shape, selector)
+        }
+        QuantizedMatrix::Q4_0(blocks) => {
+            matmul_q4_0_batch(out, x_i8, x_scales, blocks, shape, selector)
+        }
+        QuantizedMatrix::Q4_0Swizzled1x4(matrix) => {
+            debug_assert_eq!(matrix.rows, rows);
+            debug_assert_eq!(matrix.cols, cols);
+            matmul_q4_0_swizzled_1x4_batch(
+                out,
+                x_i8,
+                x_scales,
+                &matrix.swizzled_1x4,
+                shape,
+                selector,
+            );
+        }
+        QuantizedMatrix::Q6K(blocks) => matmul_q6_k_batch(out, x_i8, x_scales, blocks, shape),
+    }
+}
+
+fn for_each_batch_matmul_row<F>(rows: usize, compute_row: F)
+where
+    F: Fn(usize) + Send + Sync,
+{
+    if should_parallelize_matmul(rows) {
+        (0..rows)
+            .into_par_iter()
+            .with_min_len(matmul_min_rows())
+            .for_each(compute_row);
+    } else {
+        (0..rows).for_each(compute_row);
+    }
+}
+
+#[inline]
+unsafe fn write_batch_out(out_addr: usize, token_idx: usize, rows: usize, row: usize, value: f32) {
+    // SAFETY: batch matmul workers are partitioned by output row. For a fixed
+    // row, each token writes token_idx * rows + row, so no two row workers write
+    // the same element.
+    unsafe {
+        let out = out_addr as *mut f32;
+        *out.add(token_idx * rows + row) = value;
+    }
+}
+
+pub fn matmul_q8_0_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q8_0Block],
+    shape: BatchMatmulShape,
+    selector: Q8DotKernelSelector,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for token_idx in 0..batch_size {
+            let x_offset = token_idx * cols;
+            let scale_offset = token_idx * blocks_per_row;
+            let x_token = &x_i8[x_offset..x_offset + cols];
+            let x_token_scales = &x_scales[scale_offset..scale_offset + blocks_per_row];
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let w_block = &w_row[b];
+                let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+                let dot_val = match selector.selected {
+                    Q8DotKernel::Scalar => crate::q8::dot_i8_scalar(w_block.values(), x_block_vals),
+                    Q8DotKernel::Neon => {
+                        crate::q8::dot_i8_neon_32_selected(w_block.values(), x_block_vals)
+                    }
+                    Q8DotKernel::Sdot => {
+                        crate::q8::dot_i8_sdot_32_selected(w_block.values(), x_block_vals)
+                    }
+                };
+                sum += w_block.scale_f32() * x_token_scales[b] * dot_val as f32;
+            }
+            unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+        }
+    });
+}
+
+pub fn matmul_q4_0_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    shape: BatchMatmulShape,
+    selector: Q8DotKernelSelector,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for token_idx in 0..batch_size {
+            let x_offset = token_idx * cols;
+            let scale_offset = token_idx * blocks_per_row;
+            let x_token = &x_i8[x_offset..x_offset + cols];
+            let x_token_scales = &x_scales[scale_offset..scale_offset + blocks_per_row];
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let w_block = &w_row[b];
+                let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+                let dot_val =
+                    crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
+                sum += w_block.scale_f32() * x_token_scales[b] * dot_val as f32;
+            }
+            unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+        }
+    });
+}
+
+fn matmul_q4_0_swizzled_1x4_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    shape: BatchMatmulShape,
+    selector: Q8DotKernelSelector,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    debug_assert_eq!(w.len(), rows * blocks_per_row);
+    debug_assert!(rows.is_multiple_of(4));
+
+    if selector.selected == Q8DotKernel::Sdot && q4_1x4_sdot_enabled() {
+        matmul_q4_0_swizzled_1x4_sdot_batch(out, x_i8, x_scales, w, shape, blocks_per_row);
+        return;
+    }
+
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let chunk_idx = r / 4;
+        let lane = r % 4;
+        let chunk_base = chunk_idx * blocks_per_row * 4;
+        for token_idx in 0..batch_size {
+            let x_offset = token_idx * cols;
+            let scale_offset = token_idx * blocks_per_row;
+            let x_token = &x_i8[x_offset..x_offset + cols];
+            let x_token_scales = &x_scales[scale_offset..scale_offset + blocks_per_row];
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let w_block = &w[chunk_base + b * 4 + lane];
+                let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+                let dot_val =
+                    crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
+                sum += w_block.scale_f32() * x_token_scales[b] * dot_val as f32;
+            }
+            unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+        }
+    });
+}
+
+fn matmul_q4_0_swizzled_1x4_sdot_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_0Block],
+    shape: BatchMatmulShape,
+    blocks_per_row: usize,
+) {
+    let rows = shape.rows;
+    let chunks = rows / 4;
+    let out_addr = out.as_mut_ptr() as usize;
+    let ctx = SwizzledBatchChunkContext {
+        out_addr,
+        x_i8,
+        x_scales,
+        w,
+        shape,
+        blocks_per_row,
+    };
+    if should_parallelize_matmul(rows) {
+        (0..chunks).into_par_iter().for_each(|chunk_idx| {
+            compute_q4_0_swizzled_1x4_sdot_batch_chunk(chunk_idx, ctx);
+        });
+    } else {
+        (0..chunks).for_each(|chunk_idx| {
+            compute_q4_0_swizzled_1x4_sdot_batch_chunk(chunk_idx, ctx);
+        });
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SwizzledBatchChunkContext<'a> {
+    out_addr: usize,
+    x_i8: &'a [i8],
+    x_scales: &'a [f32],
+    w: &'a [Q4_0Block],
+    shape: BatchMatmulShape,
+    blocks_per_row: usize,
+}
+
+fn compute_q4_0_swizzled_1x4_sdot_batch_chunk(
+    chunk_idx: usize,
+    ctx: SwizzledBatchChunkContext<'_>,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = ctx.shape;
+    let chunk_base = chunk_idx * ctx.blocks_per_row * 4;
+    let row_base = chunk_idx * 4;
+    for token_idx in 0..batch_size {
+        let x_offset = token_idx * cols;
+        let scale_offset = token_idx * ctx.blocks_per_row;
+        let x_token = &ctx.x_i8[x_offset..x_offset + cols];
+        let x_token_scales = &ctx.x_scales[scale_offset..scale_offset + ctx.blocks_per_row];
+        let mut sums = [0.0_f32; 4];
+        for (b, x_scale) in x_token_scales.iter().copied().enumerate() {
+            let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+            let w_base = chunk_base + b * 4;
+            let row0 = &ctx.w[w_base];
+            let row1 = &ctx.w[w_base + 1];
+            let row2 = &ctx.w[w_base + 2];
+            let row3 = &ctx.w[w_base + 3];
+            let dots = dot_q4_0_q8_0_1x4_sdot([row0, row1, row2, row3], x_block_vals);
+            sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
+            sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
+            sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
+            sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+        }
+        for (lane, sum) in sums.into_iter().enumerate() {
+            unsafe { write_batch_out(ctx.out_addr, token_idx, rows, row_base + lane, sum) };
+        }
+    }
+}
+
+pub fn matmul_q6_k_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q6KBlock],
+    shape: BatchMatmulShape,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+    let q8_blocks_per_token = cols / Q8_BLOCK_SIZE;
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for token_idx in 0..batch_size {
+            let x_offset = token_idx * cols;
+            let scale_offset = token_idx * q8_blocks_per_token;
+            let x_token = &x_i8[x_offset..x_offset + cols];
+            let x_token_scales = &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+            let mut sum = 0.0_f32;
+            for (block_idx, w_block) in w_row.iter().enumerate() {
+                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                sum += w_block.dot_q8_scaled(
+                    &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                    &x_token_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / 32)],
+                );
+            }
+            unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+        }
+    });
 }
 
 pub fn matmul_q4_0(
@@ -802,6 +1192,274 @@ pub fn prefill_pass(
     );
 }
 
+pub fn prefill_pass_batch(
+    token_ids: &[u32],
+    start_pos: usize,
+    config: &LlamaModelConfig,
+    weights: &LlamaWeights,
+    cache: &mut LlamaKvCache,
+    ws: &mut LlamaBatchWorkspace,
+    options: LlamaRuntimeOptions,
+) {
+    let batch_size = token_ids.len();
+    if batch_size == 0 {
+        return;
+    }
+    debug_assert!(batch_size <= ws.max_batch);
+    debug_assert!(start_pos + batch_size <= config.context_length);
+
+    for (token_idx, &token_id) in token_ids.iter().enumerate() {
+        let emb_start = token_id as usize * config.embedding_length;
+        let hidden_start = token_idx * config.embedding_length;
+        ws.hidden[hidden_start..hidden_start + config.embedding_length].copy_from_slice(
+            &weights.token_embeddings[emb_start..emb_start + config.embedding_length],
+        );
+    }
+
+    for layer_idx in 0..config.block_count {
+        let layer = &weights.layers[layer_idx];
+        let hidden_len = batch_size * config.embedding_length;
+        let kv_len = batch_size * config.kv_width;
+        let ffn_len = batch_size * config.feed_forward_length;
+
+        ws.residual[..hidden_len].copy_from_slice(&ws.hidden[..hidden_len]);
+        rms_norm_batch(
+            &mut ws.norm_x[..hidden_len],
+            &ws.hidden[..hidden_len],
+            &layer.attention_norm,
+            config.rms_norm_epsilon,
+            batch_size,
+            config.embedding_length,
+        );
+        quantize_f32_to_q8_0_batch(
+            &ws.norm_x[..hidden_len],
+            &mut ws.x_i8[..batch_size * config.embedding_length],
+            &mut ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            batch_size,
+            config.embedding_length,
+        );
+
+        let attention_shape = BatchMatmulShape {
+            batch_size,
+            rows: config.embedding_length,
+            cols: config.embedding_length,
+        };
+        matmul_quantized_batch(
+            &mut ws.q[..hidden_len],
+            &ws.x_i8[..batch_size * config.embedding_length],
+            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &layer.wq,
+            attention_shape,
+            options.q8_selector,
+        );
+        add_bias_batch(
+            &mut ws.q[..hidden_len],
+            &layer.wq_bias,
+            batch_size,
+            config.embedding_length,
+        );
+
+        let kv_shape = BatchMatmulShape {
+            batch_size,
+            rows: config.kv_width,
+            cols: config.embedding_length,
+        };
+        matmul_quantized_batch(
+            &mut ws.k[..kv_len],
+            &ws.x_i8[..batch_size * config.embedding_length],
+            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &layer.wk,
+            kv_shape,
+            options.q8_selector,
+        );
+        add_bias_batch(
+            &mut ws.k[..kv_len],
+            &layer.wk_bias,
+            batch_size,
+            config.kv_width,
+        );
+        matmul_quantized_batch(
+            &mut ws.v[..kv_len],
+            &ws.x_i8[..batch_size * config.embedding_length],
+            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &layer.wav,
+            kv_shape,
+            options.q8_selector,
+        );
+        add_bias_batch(
+            &mut ws.v[..kv_len],
+            &layer.wav_bias,
+            batch_size,
+            config.kv_width,
+        );
+
+        for token_idx in 0..batch_size {
+            let pos = start_pos + token_idx;
+            let q_start = token_idx * config.embedding_length;
+            let kv_start = token_idx * config.kv_width;
+            apply_rope(
+                &mut ws.q[q_start..q_start + config.embedding_length],
+                pos,
+                config.attention_head_count,
+                config.head_dim,
+                config.rope_dimension_count,
+                config.rope_freq_base,
+                options.rope_scaling,
+            );
+            apply_rope(
+                &mut ws.k[kv_start..kv_start + config.kv_width],
+                pos,
+                config.attention_head_count_kv,
+                config.head_dim,
+                config.rope_dimension_count,
+                config.rope_freq_base,
+                options.rope_scaling,
+            );
+            cache.store_kv(
+                layer_idx,
+                pos,
+                &ws.k[kv_start..kv_start + config.kv_width],
+                &ws.v[kv_start..kv_start + config.kv_width],
+            );
+        }
+
+        let k_cache = cache.get_k_cache(layer_idx);
+        let v_cache = cache.get_v_cache(layer_idx);
+        let scale = 1.0 / (config.head_dim as f32).sqrt();
+        let kv_mul = config.attention_head_count / config.attention_head_count_kv;
+        ws.attn_output[..hidden_len].fill(0.0);
+
+        for token_idx in 0..batch_size {
+            let pos = start_pos + token_idx;
+            let scores_start = token_idx * config.context_length;
+            let q_token_start = token_idx * config.embedding_length;
+            let out_token_start = token_idx * config.embedding_length;
+            for h in 0..config.attention_head_count {
+                let kv_h = h / kv_mul;
+                let q_head = &ws.q[q_token_start + h * config.head_dim
+                    ..q_token_start + (h + 1) * config.head_dim];
+                let scores =
+                    &mut ws.attn_scores[scores_start..scores_start + config.context_length];
+                for p in 0..=pos {
+                    let k_head = &k_cache[p * cache.kv_width + kv_h * config.head_dim
+                        ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
+                    scores[p] = dot_f32(q_head, k_head) * scale;
+                }
+                softmax(&mut scores[0..=pos]);
+
+                let out_head = &mut ws.attn_output[out_token_start + h * config.head_dim
+                    ..out_token_start + (h + 1) * config.head_dim];
+                for p in 0..=pos {
+                    let v_head = &v_cache[p * cache.kv_width + kv_h * config.head_dim
+                        ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
+                    add_weighted_f32(out_head, v_head, scores[p]);
+                }
+            }
+        }
+
+        quantize_f32_to_q8_0_batch(
+            &ws.attn_output[..hidden_len],
+            &mut ws.x_i8[..batch_size * config.embedding_length],
+            &mut ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            batch_size,
+            config.embedding_length,
+        );
+        matmul_quantized_batch(
+            &mut ws.hidden[..hidden_len],
+            &ws.x_i8[..batch_size * config.embedding_length],
+            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &layer.wo,
+            attention_shape,
+            options.q8_selector,
+        );
+        add_residual_batch(&mut ws.hidden[..hidden_len], &ws.residual[..hidden_len]);
+
+        ws.residual[..hidden_len].copy_from_slice(&ws.hidden[..hidden_len]);
+        rms_norm_batch(
+            &mut ws.norm_x[..hidden_len],
+            &ws.hidden[..hidden_len],
+            &layer.ffn_norm,
+            config.rms_norm_epsilon,
+            batch_size,
+            config.embedding_length,
+        );
+        quantize_f32_to_q8_0_batch(
+            &ws.norm_x[..hidden_len],
+            &mut ws.x_i8[..batch_size * config.embedding_length],
+            &mut ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            batch_size,
+            config.embedding_length,
+        );
+
+        let ffn_shape = BatchMatmulShape {
+            batch_size,
+            rows: config.feed_forward_length,
+            cols: config.embedding_length,
+        };
+        matmul_quantized_batch(
+            &mut ws.ffn_gate[..ffn_len],
+            &ws.x_i8[..batch_size * config.embedding_length],
+            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &layer.w1,
+            ffn_shape,
+            options.q8_selector,
+        );
+        matmul_quantized_batch(
+            &mut ws.ffn_up[..ffn_len],
+            &ws.x_i8[..batch_size * config.embedding_length],
+            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &layer.w3,
+            ffn_shape,
+            options.q8_selector,
+        );
+        for token_idx in 0..batch_size {
+            let start = token_idx * config.feed_forward_length;
+            silu(&mut ws.ffn_gate[start..start + config.feed_forward_length]);
+        }
+        for i in 0..ffn_len {
+            ws.ffn_gate_up[i] = ws.ffn_gate[i] * ws.ffn_up[i];
+        }
+
+        quantize_f32_to_q8_0_batch(
+            &ws.ffn_gate_up[..ffn_len],
+            &mut ws.x_i8[..batch_size * config.feed_forward_length],
+            &mut ws.x_scales[..batch_size * (config.feed_forward_length / Q8_BLOCK_SIZE)],
+            batch_size,
+            config.feed_forward_length,
+        );
+        let down_shape = BatchMatmulShape {
+            batch_size,
+            rows: config.embedding_length,
+            cols: config.feed_forward_length,
+        };
+        matmul_quantized_batch(
+            &mut ws.hidden[..hidden_len],
+            &ws.x_i8[..batch_size * config.feed_forward_length],
+            &ws.x_scales[..batch_size * (config.feed_forward_length / Q8_BLOCK_SIZE)],
+            &layer.w2,
+            down_shape,
+            options.q8_selector,
+        );
+        add_residual_batch(&mut ws.hidden[..hidden_len], &ws.residual[..hidden_len]);
+    }
+}
+
+fn add_bias_batch(values: &mut [f32], bias: &Option<Vec<f32>>, batch_size: usize, dim: usize) {
+    if let Some(bias) = bias {
+        for token_idx in 0..batch_size {
+            let start = token_idx * dim;
+            add_bias(&mut values[start..start + dim], bias);
+        }
+    }
+}
+
+fn add_residual_batch(values: &mut [f32], residual: &[f32]) {
+    debug_assert_eq!(values.len(), residual.len());
+    for (value, residual) in values.iter_mut().zip(residual) {
+        *value += residual;
+    }
+}
+
 fn forward_pass_inner<'a>(
     token_id: usize,
     pos: usize,
@@ -1102,8 +1760,10 @@ fn rand_simple() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        RopeScaling, add_weighted_f32, add_weighted_f32_scalar, apply_rope, dot_f32,
-        dot_f32_scalar, matmul_q4_0, matmul_q4_0_swizzled_1x4, matmul_q6_k, matmul_q8_0,
+        BatchMatmulShape, RopeScaling, add_weighted_f32, add_weighted_f32_scalar, apply_rope,
+        dot_f32, dot_f32_scalar, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4,
+        matmul_q6_k, matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, quantize_f32_to_q8_0,
+        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch,
     };
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
@@ -1385,6 +2045,214 @@ mod tests {
         );
 
         assert_eq!(candidate, expected);
+    }
+
+    #[test]
+    fn rms_norm_batch_matches_single_token_reference() {
+        let batch_size = 3;
+        let dim = 64;
+        let input: Vec<f32> = (0..batch_size * dim)
+            .map(|idx| idx as f32 * 0.013 - 1.75)
+            .collect();
+        let weight: Vec<f32> = (0..dim).map(|idx| 0.5 + idx as f32 * 0.007).collect();
+        let mut candidate = vec![0.0; batch_size * dim];
+        let mut expected = vec![0.0; batch_size * dim];
+
+        rms_norm_batch(&mut candidate, &input, &weight, 1e-5, batch_size, dim);
+        for token_idx in 0..batch_size {
+            let start = token_idx * dim;
+            rms_norm(
+                &mut expected[start..start + dim],
+                &input[start..start + dim],
+                &weight,
+                1e-5,
+            );
+        }
+
+        for (idx, (&candidate, &expected)) in candidate.iter().zip(&expected).enumerate() {
+            assert!(
+                (candidate - expected).abs() < 1e-6,
+                "idx {idx} candidate {candidate} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn quantize_batch_matches_single_token_reference() {
+        let batch_size = 3;
+        let dim = 64;
+        let input: Vec<f32> = (0..batch_size * dim)
+            .map(|idx| (idx as f32 * 0.03125).sin() * 3.0)
+            .collect();
+        let mut candidate_i8 = vec![0; batch_size * dim];
+        let mut expected_i8 = vec![0; batch_size * dim];
+        let mut candidate_scales = vec![0.0; batch_size * (dim / Q8_BLOCK_SIZE)];
+        let mut expected_scales = vec![0.0; batch_size * (dim / Q8_BLOCK_SIZE)];
+
+        quantize_f32_to_q8_0_batch(
+            &input,
+            &mut candidate_i8,
+            &mut candidate_scales,
+            batch_size,
+            dim,
+        );
+        for token_idx in 0..batch_size {
+            let value_start = token_idx * dim;
+            let scale_start = token_idx * (dim / Q8_BLOCK_SIZE);
+            quantize_f32_to_q8_0(
+                &input[value_start..value_start + dim],
+                &mut expected_i8[value_start..value_start + dim],
+                &mut expected_scales[scale_start..scale_start + (dim / Q8_BLOCK_SIZE)],
+            );
+        }
+
+        assert_eq!(candidate_i8, expected_i8);
+        assert_eq!(candidate_scales, expected_scales);
+    }
+
+    #[test]
+    fn matmul_q8_batch_matches_single_token_reference() {
+        let batch_size = 3;
+        let rows = 3;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..batch_size * cols)
+            .map(|idx| ((idx * 5) % 61) as i8 - 30)
+            .collect();
+        let x_scales: Vec<f32> = (0..batch_size * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| 0.125 + idx as f32 * 0.03125)
+            .collect();
+        let weights: Vec<Q8_0Block> = (0..rows * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| q8_block(0x3800 + idx as u16, idx as i16 + 1))
+            .collect();
+
+        let mut candidate = vec![0.0; batch_size * rows];
+        matmul_q8_0_batch(
+            &mut candidate,
+            &x_i8,
+            &x_scales,
+            &weights,
+            BatchMatmulShape {
+                batch_size,
+                rows,
+                cols,
+            },
+            selector(Q8DotKernel::Scalar),
+        );
+
+        for token_idx in 0..batch_size {
+            let mut expected = vec![0.0; rows];
+            let value_start = token_idx * cols;
+            let scale_start = token_idx * (cols / Q8_BLOCK_SIZE);
+            matmul_q8_0(
+                &mut expected,
+                &x_i8[value_start..value_start + cols],
+                &x_scales[scale_start..scale_start + (cols / Q8_BLOCK_SIZE)],
+                &weights,
+                rows,
+                cols,
+                selector(Q8DotKernel::Scalar),
+            );
+            assert_eq!(
+                &candidate[token_idx * rows..(token_idx + 1) * rows],
+                expected.as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_q4_batch_matches_single_token_reference() {
+        let batch_size = 3;
+        let rows = 4;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..batch_size * cols)
+            .map(|idx| ((idx as i16 * 11).rem_euclid(83) - 41) as i8)
+            .collect();
+        let x_scales: Vec<f32> = (0..batch_size * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| 0.125 + idx as f32 * 0.0625)
+            .collect();
+        let weights: Vec<Q4_0Block> = (0..rows * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| q4_block(0x3800 + idx as u16, idx as i16 + 1))
+            .collect();
+
+        let mut candidate = vec![0.0; batch_size * rows];
+        matmul_q4_0_batch(
+            &mut candidate,
+            &x_i8,
+            &x_scales,
+            &weights,
+            BatchMatmulShape {
+                batch_size,
+                rows,
+                cols,
+            },
+            selector(Q8DotKernel::Scalar),
+        );
+
+        for token_idx in 0..batch_size {
+            let mut expected = vec![0.0; rows];
+            let value_start = token_idx * cols;
+            let scale_start = token_idx * (cols / Q8_BLOCK_SIZE);
+            matmul_q4_0(
+                &mut expected,
+                &x_i8[value_start..value_start + cols],
+                &x_scales[scale_start..scale_start + (cols / Q8_BLOCK_SIZE)],
+                &weights,
+                rows,
+                cols,
+                selector(Q8DotKernel::Scalar),
+            );
+            assert_eq!(
+                &candidate[token_idx * rows..(token_idx + 1) * rows],
+                expected.as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_q6_k_batch_matches_single_token_reference() {
+        let batch_size = 3;
+        let rows = 2;
+        let cols = QK_K_BLOCK_SIZE * 2;
+        let x_i8: Vec<i8> = (0..batch_size * cols)
+            .map(|idx| ((idx * 5) % 61) as i8 - 30)
+            .collect();
+        let x_scales: Vec<f32> = (0..batch_size * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| 0.125 + idx as f32 * 0.03125)
+            .collect();
+        let weights: Vec<Q6KBlock> = (0..rows * (cols / QK_K_BLOCK_SIZE))
+            .map(|idx| q6_k_block(0x3800 + idx as u16, idx as i16 + 1))
+            .collect();
+
+        let mut candidate = vec![0.0; batch_size * rows];
+        matmul_q6_k_batch(
+            &mut candidate,
+            &x_i8,
+            &x_scales,
+            &weights,
+            BatchMatmulShape {
+                batch_size,
+                rows,
+                cols,
+            },
+        );
+
+        for token_idx in 0..batch_size {
+            let mut expected = vec![0.0; rows];
+            let value_start = token_idx * cols;
+            let scale_start = token_idx * (cols / Q8_BLOCK_SIZE);
+            matmul_q6_k(
+                &mut expected,
+                &x_i8[value_start..value_start + cols],
+                &x_scales[scale_start..scale_start + (cols / Q8_BLOCK_SIZE)],
+                &weights,
+                rows,
+                cols,
+            );
+            assert_eq!(
+                &candidate[token_idx * rows..(token_idx + 1) * rows],
+                expected.as_slice()
+            );
+        }
     }
 
     #[test]

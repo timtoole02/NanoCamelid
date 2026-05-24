@@ -10,6 +10,7 @@ use nanocamelid::{gguf, inference, model, q8, tokenizer};
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
 const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
 const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
+const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const DEFAULT_RAYON_THREADS: usize = 4;
 
 fn main() -> ExitCode {
@@ -233,6 +234,14 @@ fn setup_thread_pool() {
         .build_global();
 }
 
+fn prefill_batch_size() -> usize {
+    env::var(PREFILL_BATCH_ENV)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(1)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpTopic {
     TopLevel,
@@ -367,6 +376,9 @@ fn print_generate_usage() {
     println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect and generate"
     );
+    println!(
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
+    );
     println!();
     println!(
         "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
@@ -391,6 +403,9 @@ fn print_chat_usage() {
     println!("Env:");
     println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, and chat"
+    );
+    println!(
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
     );
     println!();
     println!(
@@ -418,6 +433,9 @@ fn print_tui_usage() {
     );
     println!(
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
+    );
+    println!(
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
     );
     println!();
     println!("Commands inside the TUI: /help, /model <path>, /clear, /exit, /quit");
@@ -481,6 +499,9 @@ fn print_smoke_usage() {
     );
     println!(
         "  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot kernel selection"
+    );
+    println!(
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
     );
     println!();
     println!(
@@ -1270,6 +1291,7 @@ where
         inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
     let mut scalar_ws = inference::LlamaWorkspace::new(&config);
     let mut selected_ws = inference::LlamaWorkspace::new(&config);
+    let mut selected_batch_ws = inference::LlamaBatchWorkspace::new(&config, prefill_batch_size());
     let mut max_logit_delta = 0.0_f32;
     let mut pos = 0;
 
@@ -1283,19 +1305,39 @@ where
             &mut scalar_ws,
             scalar_options,
         );
+        pos += 1;
+    }
+
+    let mut selected_pos = 0;
+    let mut selected_context_tokens = Vec::with_capacity(prompt_tokens.len());
+    if let Some((&last_token, prefix_tokens)) = prompt_tokens.split_last() {
+        prefill_tokens(
+            prefix_tokens,
+            &config,
+            &weights,
+            PrefillTokenState {
+                cache: &mut selected_cache,
+                ws: &mut selected_ws,
+                batch_ws: Some(&mut selected_batch_ws),
+                context_tokens: &mut selected_context_tokens,
+                pos: &mut selected_pos,
+            },
+            selected_options,
+        );
         inference::forward_pass(
-            token as usize,
-            pos,
+            last_token as usize,
+            selected_pos,
             &config,
             &weights,
             &mut selected_cache,
             &mut selected_ws,
             selected_options,
         );
-        max_logit_delta =
-            max_logit_delta.max(max_abs_delta(&scalar_ws.logits, &selected_ws.logits));
-        pos += 1;
+        selected_context_tokens.push(last_token);
+        selected_pos += 1;
     }
+    max_logit_delta = max_logit_delta.max(max_abs_delta(&scalar_ws.logits, &selected_ws.logits));
+    debug_assert_eq!(pos, selected_pos);
 
     let mut generated_tokens = Vec::new();
     for _ in 0..max_tokens {
@@ -1510,6 +1552,7 @@ struct ChatTurnReport {
 struct ChatSession {
     cache: inference::LlamaKvCache,
     ws: inference::LlamaWorkspace,
+    batch_ws: inference::LlamaBatchWorkspace,
     context_tokens: Vec<u32>,
     pos: usize,
 }
@@ -1523,6 +1566,7 @@ impl ChatSession {
                 config.kv_width,
             ),
             ws: inference::LlamaWorkspace::new(config),
+            batch_ws: inference::LlamaBatchWorkspace::new(config, prefill_batch_size()),
             context_tokens: Vec::new(),
             pos: 0,
         }
@@ -1795,29 +1839,30 @@ fn generate_chat_turn(
     let input_tokens = prompt_tokens.len().saturating_sub(shared_prefix);
     let new_prompt_tokens = &prompt_tokens[shared_prefix..];
     let started_turn = std::time::Instant::now();
-    for (idx, &token) in new_prompt_tokens.iter().enumerate() {
-        if idx + 1 == new_prompt_tokens.len() {
-            inference::forward_pass(
-                token as usize,
-                session.pos,
-                env.config,
-                env.weights,
-                &mut session.cache,
-                &mut session.ws,
-                env.runtime_options,
-            );
-        } else {
-            inference::prefill_pass(
-                token as usize,
-                session.pos,
-                env.config,
-                env.weights,
-                &mut session.cache,
-                &mut session.ws,
-                env.runtime_options,
-            );
-        }
-        session.context_tokens.push(token);
+    if let Some((&last_token, prefix_tokens)) = new_prompt_tokens.split_last() {
+        prefill_tokens(
+            prefix_tokens,
+            env.config,
+            env.weights,
+            PrefillTokenState {
+                cache: &mut session.cache,
+                ws: &mut session.ws,
+                batch_ws: Some(&mut session.batch_ws),
+                context_tokens: &mut session.context_tokens,
+                pos: &mut session.pos,
+            },
+            env.runtime_options,
+        );
+        inference::forward_pass(
+            last_token as usize,
+            session.pos,
+            env.config,
+            env.weights,
+            &mut session.cache,
+            &mut session.ws,
+            env.runtime_options,
+        );
+        session.context_tokens.push(last_token);
         session.pos += 1;
     }
 
@@ -1885,6 +1930,86 @@ fn generate_chat_turn(
             elapsed_secs: started_turn.elapsed().as_secs_f64(),
         },
     ))
+}
+
+struct PrefillTokenState<'a> {
+    cache: &'a mut inference::LlamaKvCache,
+    ws: &'a mut inference::LlamaWorkspace,
+    batch_ws: Option<&'a mut inference::LlamaBatchWorkspace>,
+    context_tokens: &'a mut Vec<u32>,
+    pos: &'a mut usize,
+}
+
+fn prefill_tokens(
+    tokens: &[u32],
+    config: &model::LlamaModelConfig,
+    weights: &model::LlamaWeights,
+    mut state: PrefillTokenState<'_>,
+    runtime_options: inference::LlamaRuntimeOptions,
+) {
+    let batch_size = state
+        .batch_ws
+        .as_ref()
+        .map(|ws| ws.max_batch)
+        .unwrap_or_else(prefill_batch_size);
+    if batch_size <= 1 {
+        for &token in tokens {
+            inference::prefill_pass(
+                token as usize,
+                *state.pos,
+                config,
+                weights,
+                state.cache,
+                state.ws,
+                runtime_options,
+            );
+            state.context_tokens.push(token);
+            *state.pos += 1;
+        }
+        return;
+    }
+
+    for chunk in tokens.chunks(batch_size) {
+        if chunk.len() == 1 {
+            let token = chunk[0];
+            inference::prefill_pass(
+                token as usize,
+                *state.pos,
+                config,
+                weights,
+                state.cache,
+                state.ws,
+                runtime_options,
+            );
+        } else if let Some(batch_ws) = state.batch_ws.as_deref_mut() {
+            inference::prefill_pass_batch(
+                chunk,
+                *state.pos,
+                config,
+                weights,
+                state.cache,
+                batch_ws,
+                runtime_options,
+            );
+        } else {
+            for &token in chunk {
+                inference::prefill_pass(
+                    token as usize,
+                    *state.pos,
+                    config,
+                    weights,
+                    state.cache,
+                    state.ws,
+                    runtime_options,
+                );
+                state.context_tokens.push(token);
+                *state.pos += 1;
+            }
+            continue;
+        }
+        state.context_tokens.extend_from_slice(chunk);
+        *state.pos += chunk.len();
+    }
 }
 
 fn shared_token_prefix_len(lhs: &[u32], rhs: &[u32]) -> usize {
@@ -1988,6 +2113,7 @@ where
     let mut cache =
         inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
     let mut ws = inference::LlamaWorkspace::new(&config);
+    let mut batch_ws = inference::LlamaBatchWorkspace::new(&config, prefill_batch_size());
     let selector = q8::Q8DotKernelSelector::from_env();
     let runtime_options = runtime_options_from_gguf(&gguf, selector);
 
@@ -1995,32 +2121,40 @@ where
     println!("\nGenerating response:\n");
 
     let mut pos = 0;
+    let started_prefill = std::time::Instant::now();
 
     // Decode prompt tokens (prefill path)
-    for (idx, &token) in prompt_tokens.iter().enumerate() {
-        if idx + 1 == prompt_tokens.len() {
-            inference::forward_pass(
-                token as usize,
-                pos,
-                &config,
-                &weights,
-                &mut cache,
-                &mut ws,
-                runtime_options,
-            );
-        } else {
-            inference::prefill_pass(
-                token as usize,
-                pos,
-                &config,
-                &weights,
-                &mut cache,
-                &mut ws,
-                runtime_options,
-            );
-        }
+    if let Some((&last_token, prefix_tokens)) = prompt_tokens.split_last() {
+        let mut context_tokens = Vec::with_capacity(prompt_tokens.len());
+        prefill_tokens(
+            prefix_tokens,
+            &config,
+            &weights,
+            PrefillTokenState {
+                cache: &mut cache,
+                ws: &mut ws,
+                batch_ws: Some(&mut batch_ws),
+                context_tokens: &mut context_tokens,
+                pos: &mut pos,
+            },
+            runtime_options,
+        );
+        inference::forward_pass(
+            last_token as usize,
+            pos,
+            &config,
+            &weights,
+            &mut cache,
+            &mut ws,
+            runtime_options,
+        );
         pos += 1;
     }
+    println!(
+        "Prompt ingested in {:.2}s with prefill batch {}",
+        started_prefill.elapsed().as_secs_f64(),
+        batch_ws.max_batch
+    );
 
     // Now generate the next tokens
     let mut generated_tokens = Vec::new();
