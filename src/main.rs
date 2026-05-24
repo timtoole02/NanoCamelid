@@ -1,8 +1,10 @@
 use std::{
     env, fs,
+    hint::black_box,
     io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    time::Duration,
 };
 
 use nanocamelid::{gguf, inference, model, q8, tokenizer};
@@ -12,6 +14,11 @@ const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
 const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const DEFAULT_RAYON_THREADS: usize = 4;
+const DEFAULT_Q4_PREFILL_PROMPT_LEN: usize = 128;
+const DEFAULT_Q4_PREFILL_BATCH: usize = 16;
+const DEFAULT_Q4_PREFILL_RUNS: usize = 5;
+const Q4_PREFILL_ROWS: usize = 3_584;
+const Q4_PREFILL_COLS: usize = 3_584;
 
 fn main() -> ExitCode {
     setup_thread_pool();
@@ -144,6 +151,17 @@ fn main() -> ExitCode {
                         .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
                     bench_q4_layout(rows, cols, runs)
                 }
+                Some("q4-prefill") => {
+                    let prompt_len = args
+                        .get(2)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(DEFAULT_Q4_PREFILL_PROMPT_LEN);
+                    let batch_size = args
+                        .get(3)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(DEFAULT_Q4_PREFILL_BATCH);
+                    bench_q4_prefill(prompt_len, batch_size, DEFAULT_Q4_PREFILL_RUNS)
+                }
                 Some(other) => {
                     eprintln!("unknown benchmark: {other}");
                     print_help(HelpTopic::Bench);
@@ -239,7 +257,7 @@ fn prefill_batch_size() -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|&value| value > 0)
-        .unwrap_or(1)
+        .unwrap_or(DEFAULT_Q4_PREFILL_BATCH)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,7 +395,7 @@ fn print_generate_usage() {
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect and generate"
     );
     println!(
-        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
     );
     println!();
     println!(
@@ -405,7 +423,7 @@ fn print_chat_usage() {
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, and chat"
     );
     println!(
-        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
     );
     println!();
     println!(
@@ -435,7 +453,7 @@ fn print_tui_usage() {
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
     );
     println!(
-        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
     );
     println!();
     println!("Commands inside the TUI: /help, /model <path>, /clear, /exit, /quit");
@@ -447,6 +465,7 @@ fn print_bench_usage() {
     println!("Usage:");
     println!("  nanocamelid bench q8-dot [iterations] [runs]");
     println!("  nanocamelid bench q4-layout [rows] [cols] [runs]");
+    println!("  nanocamelid bench q4-prefill [prompt_len] [batch_size]");
     println!();
     println!("Args:");
     println!(
@@ -464,6 +483,14 @@ fn print_bench_usage() {
     println!(
         "  [runs]                                    Repeated timing samples, default {}",
         q8::DEFAULT_DOT_BENCH_RUNS
+    );
+    println!(
+        "  q4-prefill [prompt_len]                  Synthetic prompt length, default {}",
+        DEFAULT_Q4_PREFILL_PROMPT_LEN
+    );
+    println!(
+        "  q4-prefill [batch_size]                  Synthetic prefill batch size, default {}",
+        DEFAULT_Q4_PREFILL_BATCH
     );
     println!();
     println!("Env:");
@@ -501,7 +528,7 @@ fn print_smoke_usage() {
         "  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot kernel selection"
     );
     println!(
-        "  {PREFILL_BATCH_ENV}                         Prefill prompt tokens in batches; default 1 disables batching"
+        "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
     );
     println!();
     println!(
@@ -879,6 +906,176 @@ fn bench_q4_layout(rows: usize, cols: usize, runs: usize) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn bench_q4_prefill(prompt_len: usize, batch_size: usize, runs: usize) -> ExitCode {
+    if prompt_len == 0 {
+        eprintln!("prompt_len must be greater than zero");
+        return ExitCode::from(2);
+    }
+    if batch_size == 0 {
+        eprintln!("batch_size must be greater than zero");
+        return ExitCode::from(2);
+    }
+
+    let rows = Q4_PREFILL_ROWS;
+    let cols = Q4_PREFILL_COLS;
+    let blocks_per_row = cols / q8::Q8_BLOCK_SIZE;
+    let q8_blocks_per_token = cols / q8::Q8_BLOCK_SIZE;
+    let selector = q8::Q8DotKernelSelector::from_env();
+    let row_major = synthetic_q4_blocks(rows, blocks_per_row);
+    let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, blocks_per_row);
+    let matrix = model::QuantizedMatrix::Q4_0Swizzled1x4(model::Q4_0Swizzled1x4Matrix {
+        swizzled_1x4,
+        rows,
+        cols,
+    });
+    let mut x_i8 = vec![0_i8; batch_size * cols];
+    let mut x_scales = vec![0.0_f32; batch_size * q8_blocks_per_token];
+    let mut out = vec![0.0_f32; batch_size * rows];
+
+    let elapsed_runs = (0..runs)
+        .map(|run_idx| {
+            fill_synthetic_q8_activations(
+                &mut x_i8,
+                &mut x_scales,
+                batch_size,
+                cols,
+                run_idx as u32,
+            );
+            out.fill(0.0);
+
+            let started = std::time::Instant::now();
+            for start in (0..prompt_len).step_by(batch_size) {
+                let current_batch = (prompt_len - start).min(batch_size);
+                inference::matmul_quantized_batch(
+                    &mut out[..current_batch * rows],
+                    &x_i8[..current_batch * cols],
+                    &x_scales[..current_batch * q8_blocks_per_token],
+                    &matrix,
+                    inference::BatchMatmulShape {
+                        batch_size: current_batch,
+                        rows,
+                        cols,
+                    },
+                    selector,
+                );
+            }
+            let elapsed = started.elapsed();
+            black_box(q4_prefill_checksum(&out));
+            elapsed
+        })
+        .collect::<Vec<_>>();
+
+    let median = median_duration(elapsed_runs.clone());
+    let median_ms = median.as_secs_f64() * 1000.0;
+    let median_ms_per_token = median_ms / prompt_len as f64;
+    let min_ms = elapsed_runs
+        .iter()
+        .min()
+        .map(|duration| duration.as_secs_f64() * 1000.0)
+        .unwrap_or_default();
+
+    println!("NanoCamelid Q4 prefill benchmark");
+    println!("prompt_len: {prompt_len}");
+    println!("batch_size: {batch_size}");
+    println!("runs: {runs}");
+    println!("rows: {rows}");
+    println!("cols: {cols}");
+    println!("kernel_selector_selected: {}", selector.selected.name());
+    if let Some(reason) = selector.fallback_reason {
+        println!("kernel_selector_fallback: {reason}");
+    }
+    println!("median_ms: {median_ms:.3}");
+    println!("median_ms_per_token: {median_ms_per_token:.3}");
+    println!("min_ms: {min_ms:.3}");
+    println!(
+        "json: {{\"benchmark\":\"q4-prefill\",\"prompt_len\":{},\"batch_size\":{},\"runs\":{},\"rows\":{},\"cols\":{},\"kernel\":\"{}\",\"run_ms\":{},\"median_ms\":{:.6},\"median_ms_per_token\":{:.6},\"min_ms\":{:.6}}}",
+        prompt_len,
+        batch_size,
+        runs,
+        rows,
+        cols,
+        selector.selected.name(),
+        duration_ms_json(&elapsed_runs),
+        median_ms,
+        median_ms_per_token,
+        min_ms
+    );
+
+    ExitCode::SUCCESS
+}
+
+fn synthetic_q4_blocks(rows: usize, blocks_per_row: usize) -> Vec<q8::Q4_0Block> {
+    let mut weights = Vec::with_capacity(rows * blocks_per_row);
+    for row in 0..rows {
+        for block in 0..blocks_per_row {
+            let scale_bits = 0x3800 + ((row + block) % 8) as u16;
+            let values = core::array::from_fn(|idx| {
+                let low = ((row + block + idx) % 16) as u8;
+                let high = ((row.wrapping_mul(3) + block + idx * 5) % 16) as u8;
+                low | (high << 4)
+            });
+            weights.push(q8::Q4_0Block::from_parts(scale_bits, values));
+        }
+    }
+    weights
+}
+
+fn swizzle_q4_0_1x4(
+    row_major: &[q8::Q4_0Block],
+    rows: usize,
+    blocks_per_row: usize,
+) -> Vec<q8::Q4_0Block> {
+    debug_assert_eq!(row_major.len(), rows * blocks_per_row);
+    debug_assert!(rows.is_multiple_of(4));
+
+    let mut swizzled = Vec::with_capacity(row_major.len());
+    for row_base in (0..rows).step_by(4) {
+        for block in 0..blocks_per_row {
+            swizzled.push(row_major[row_base * blocks_per_row + block]);
+            swizzled.push(row_major[(row_base + 1) * blocks_per_row + block]);
+            swizzled.push(row_major[(row_base + 2) * blocks_per_row + block]);
+            swizzled.push(row_major[(row_base + 3) * blocks_per_row + block]);
+        }
+    }
+    swizzled
+}
+
+fn fill_synthetic_q8_activations(
+    x_i8: &mut [i8],
+    x_scales: &mut [f32],
+    batch_size: usize,
+    cols: usize,
+    salt: u32,
+) {
+    let blocks_per_token = cols / q8::Q8_BLOCK_SIZE;
+    for token_idx in 0..batch_size {
+        let token_salt = salt.wrapping_add(token_idx as u32 * 31);
+        let x_start = token_idx * cols;
+        for (idx, value) in x_i8[x_start..x_start + cols].iter_mut().enumerate() {
+            *value = ((idx as u32 * 17 + token_salt) % 127) as i8 - 63;
+        }
+        let scale_start = token_idx * blocks_per_token;
+        for (idx, scale) in x_scales[scale_start..scale_start + blocks_per_token]
+            .iter_mut()
+            .enumerate()
+        {
+            *scale = 0.015625 * (1 + ((idx + token_idx + salt as usize) % 7)) as f32;
+        }
+    }
+}
+
+fn q4_prefill_checksum(out: &[f32]) -> f64 {
+    out.iter()
+        .enumerate()
+        .map(|(idx, value)| *value as f64 * (1 + idx % 17) as f64)
+        .sum()
+}
+
+fn median_duration(mut durations: Vec<Duration>) -> Duration {
+    durations.sort_unstable();
+    durations[durations.len() / 2]
 }
 
 fn q8_dot_json(report: &q8::DotBenchmarkReport) -> String {

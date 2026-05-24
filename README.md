@@ -25,9 +25,10 @@ suffix. If the model changes or the prompt prefix no longer matches, the session
 is reset cleanly instead of reusing invalid state.
 
 This is still narrower than full automatic prompt ingestion tuning. The runtime
-can now ingest prompt tokens in explicit batches, but the feature stays opt-in
-through `NANOCAMELID_PREFILL_BATCH` until broader Pi parity and latency runs
-confirm the right default for Llama 3.2 1B-class rows.
+now ingests prompt tokens in batches by default. The current default batch size
+is `16`, selected from Pi-side Q4_0 prefill timing where it beat larger batches
+on the real Qwen2.5-Coder-7B chat path. Set `NANOCAMELID_PREFILL_BATCH=1` to
+force the old single-token prefill behavior for reference checks.
 
 ### Pi-Aware CPU Scheduling
 
@@ -82,7 +83,7 @@ NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- chat "Say hell
 NANOCAMELID_MODEL_GGUF=/path/to/model.gguf cargo run --release -- tui 0.0 64
 NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-model "Hello" 1
 NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf cargo run --release -- smoke q8-chat "Say hello in one sentence." 8
-NANOCAMELID_MODEL_GGUF=/path/to/model.gguf NANOCAMELID_PREFILL_BATCH=32 cargo run --release -- chat "Summarize grouped-query attention in one paragraph." 0.0 64
+NANOCAMELID_MODEL_GGUF=/path/to/model.gguf NANOCAMELID_PREFILL_BATCH=1 cargo run --release -- chat "Summarize grouped-query attention in one paragraph." 0.0 64
 ```
 
 `probe` prints CPU and SIMD feature information. `inspect` reads GGUF metadata
@@ -101,10 +102,11 @@ connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
 session token-in/token-out counters, TTFT, and throughput.
 
 `NANOCAMELID_PREFILL_BATCH` controls how many prompt tokens are ingested at once
-before decode begins. The default is `1`, which keeps the old scalar/reference
-prefill behavior. Values like `32` or `64` enable the current batched-prefill
-path for longer prompts and chat turns without changing decode-time kernel
-selection.
+before decode begins. The default is `16`, which is the fastest currently
+validated production setting on the Pi Qwen2.5-Coder-7B Q4_0 chat prompt used
+for tuning. Set it to `1` for the old single-token reference behavior, or use
+`bench q4-prefill` to compare candidate batch sizes on the current host without
+loading a GGUF model.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
 
@@ -203,10 +205,9 @@ weighted accumulation when running on `aarch64`, with scalar reference fallbacks
 for portability. These helpers now use compile-time `aarch64` dispatch rather
 than runtime NEON checks in the attention inner loop. The TUI reuses matching
 prompt-prefix KV cache across chat turns, so repeated conversation prefixes are
-not re-ingested. New prompt suffixes can now use the opt-in
-`NANOCAMELID_PREFILL_BATCH` path, but large new prompts on Qwen2.5-Coder-7B
-Q4_0 are still the main place where Pi-side latency needs broader measurement
-before the batching default should move above `1`.
+not re-ingested. New prompt suffixes use batched prefill by default, with
+`NANOCAMELID_PREFILL_BATCH` available for tuning or for forcing single-token
+reference prefill.
 
 The activation quantization path uses a NEON max-abs scan on `aarch64`, while
 preserving scalar rounding/clamping semantics for parity. That path also uses
