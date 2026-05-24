@@ -52,8 +52,10 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
   # If bootstrap has not been run, run it to prepare workspace directories
   if [ ! -d "$PI_WORKSPACE/benchmarks" ] || [ ! -d "$CARGO_TARGET_DIR" ]; then
     chmod +x ./scripts/pi/bootstrap.sh
-    ./scripts/pi/bootstrap.sh
-    source "$PI_WORKSPACE/env.sh"
+    NANOCAMELID_WORKSPACE="$PI_WORKSPACE" ./scripts/pi/bootstrap.sh
+    if [ -f "$PI_WORKSPACE/env.sh" ]; then
+      source "$PI_WORKSPACE/env.sh"
+    fi
     export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/nanocamelid/target}"
   fi
 
