@@ -71,6 +71,23 @@ NanoCamelid keeps the runtime small and explicit:
 
 ## Quick Start
 
+Install the latest release build from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | bash
+```
+
+The installer clones NanoCamelid, builds the release binary with Cargo, and
+links `nanocamelid` into `~/.local/bin`. Override paths when needed:
+
+```bash
+NANOCAMELID_INSTALL_DIR=/mnt/nanocamelid/src/NanoCamelid \
+CARGO_TARGET_DIR=/mnt/nanocamelid/target \
+curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | bash
+```
+
+Manual checkout still works:
+
 ```bash
 git clone https://github.com/timtoole02/NanoCamelid.git
 cd NanoCamelid
