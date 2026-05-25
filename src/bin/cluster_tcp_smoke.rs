@@ -151,6 +151,8 @@ fn run_worker(
         loaded.config.kv_width,
     );
     let mut ws = inference::LlamaWorkspace::new(&loaded.config);
+    let mut batch_ws =
+        inference::LlamaBatchWorkspace::new(&loaded.config, loaded.config.context_length);
     let mut activations = Vec::new();
     let mut decoded_tokens = Vec::new();
     let mut worker_compute_total = Duration::ZERO;
@@ -160,30 +162,48 @@ fn run_worker(
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(err) => return Err(format!("failed to receive activation packet: {err}")),
         };
-        if activations.len() != loaded.config.embedding_length {
+        let seq_len = header.seq_len as usize;
+        let pos = header.pos as usize;
+        let expected_floats = seq_len * loaded.config.embedding_length;
+        if activations.len() != expected_floats {
             return Err(format!(
                 "received {} activations, expected {}",
                 activations.len(),
-                loaded.config.embedding_length
+                expected_floats
             ));
         }
-        if header.pos as usize >= loaded.config.context_length {
+        if seq_len == 0 {
+            return Err("received empty activation sequence".to_owned());
+        }
+        if pos + seq_len > loaded.config.context_length {
             return Err(format!(
-                "received pos {} outside context length {}",
-                header.pos, loaded.config.context_length
+                "received pos {} seq_len {} outside context length {}",
+                header.pos, header.seq_len, loaded.config.context_length
             ));
         }
 
-        ws.hidden.copy_from_slice(&activations);
         let compute_start = Instant::now();
-        run_distributed_range(
-            &node1,
-            header.pos as usize,
-            &loaded.config,
-            &mut cache,
-            &mut ws,
-            options,
-        )?;
+        if seq_len > 1 {
+            batch_ws.hidden[..expected_floats].copy_from_slice(&activations);
+            inference::run_layer_range_batch(
+                node1.layer_start,
+                &node1.layers,
+                seq_len,
+                pos,
+                &loaded.config,
+                &mut cache,
+                &mut batch_ws,
+                options,
+            );
+            let last_hidden_start = (seq_len - 1) * loaded.config.embedding_length;
+            ws.hidden.copy_from_slice(
+                &batch_ws.hidden
+                    [last_hidden_start..last_hidden_start + loaded.config.embedding_length],
+            );
+        } else {
+            ws.hidden.copy_from_slice(&activations);
+            run_distributed_range(&node1, pos, &loaded.config, &mut cache, &mut ws, options)?;
+        }
         inference::compute_logits_from_hidden(
             &loaded.config,
             output_token_embeddings,
@@ -315,32 +335,35 @@ fn run_master_generate(
         .map_err(|err| format!("failed to set TCP_NODELAY: {err}"))?;
 
     let started_prefill = Instant::now();
-    let mut last_feedback = None;
-    for (pos, &token) in prompt_tokens.iter().enumerate() {
-        run_master_half_token(
-            token as usize,
-            pos,
-            MasterHalfState {
-                config: &loaded.config,
-                node0: &node0,
-                token_embeddings,
-                cache: &mut node0_cache,
-                ws: &mut node0_ws,
-                options,
-            },
-        )?;
-        cluster::send_activation_packet(
-            &mut stream,
-            pos as u32,
-            (pos + 1) as u32,
-            &node0_ws.hidden,
-        )
-        .map_err(|err| format!("failed to send prompt activation packet: {err}"))?;
-        last_feedback = Some(
-            cluster::recv_token_feedback(&mut stream)
-                .map_err(|err| format!("failed to receive prompt token feedback: {err}"))?,
-        );
+    let prompt_len = prompt_tokens.len();
+    let mut batch_ws = inference::LlamaBatchWorkspace::new(&loaded.config, prompt_len);
+    for (token_idx, &token) in prompt_tokens.iter().enumerate() {
+        let emb_start = token as usize * loaded.config.embedding_length;
+        let hidden_start = token_idx * loaded.config.embedding_length;
+        batch_ws.hidden[hidden_start..hidden_start + loaded.config.embedding_length]
+            .copy_from_slice(
+                &token_embeddings[emb_start..emb_start + loaded.config.embedding_length],
+            );
     }
+    inference::run_layer_range_batch(
+        0,
+        &node0.layers,
+        prompt_len,
+        0,
+        &loaded.config,
+        &mut node0_cache,
+        &mut batch_ws,
+        options,
+    );
+    cluster::send_activation_packet(
+        &mut stream,
+        0,
+        prompt_len as u32,
+        &batch_ws.hidden[..prompt_len * loaded.config.embedding_length],
+    )
+    .map_err(|err| format!("failed to send batched prefill activations: {err}"))?;
+    let last_feedback = cluster::recv_token_feedback(&mut stream)
+        .map_err(|err| format!("failed to receive batched prefill token feedback: {err}"))?;
 
     println!(
         "prompt_ingest_seconds: {:.3}",
@@ -350,9 +373,7 @@ fn run_master_generate(
 
     let mut generated_tokens = Vec::new();
     let mut last_printed_len = 0;
-    let mut next_token = last_feedback
-        .ok_or_else(|| "worker did not return logits for prompt".to_owned())?
-        .token_id as usize;
+    let mut next_token = last_feedback.token_id as usize;
     let mut pos = prompt_tokens.len();
     let started_generation = Instant::now();
     let mut master_stage_total = Duration::ZERO;

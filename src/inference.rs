@@ -1733,8 +1733,38 @@ pub fn prefill_pass_batch(
         );
     }
 
-    for layer_idx in 0..config.block_count {
-        let layer = &weights.layers[layer_idx];
+    run_layer_range_batch(
+        0,
+        &weights.layers,
+        batch_size,
+        start_pos,
+        config,
+        cache,
+        ws,
+        options,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_layer_range_batch(
+    layer_start: usize,
+    layers: &[LlamaLayerWeights],
+    batch_size: usize,
+    start_pos: usize,
+    config: &LlamaModelConfig,
+    cache: &mut LlamaKvCache,
+    ws: &mut LlamaBatchWorkspace,
+    options: LlamaRuntimeOptions,
+) {
+    if batch_size == 0 {
+        return;
+    }
+    debug_assert!(batch_size <= ws.max_batch);
+    debug_assert!(start_pos + batch_size <= config.context_length);
+    debug_assert!(layer_start + layers.len() <= config.block_count);
+
+    for (local_layer_idx, layer) in layers.iter().enumerate() {
+        let layer_idx = layer_start + local_layer_idx;
         let hidden_len = batch_size * config.embedding_length;
         let kv_len = batch_size * config.kv_width;
         let ffn_len = batch_size * config.feed_forward_length;
