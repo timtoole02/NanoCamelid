@@ -307,6 +307,9 @@ session token-in/token-out counters, TTFT, and throughput.
 before decode begins. The default is `16`. Set it to `1` for the old
 single-token reference behavior, or use `bench q4-prefill` to compare candidate
 batch sizes on the current host without loading a GGUF model.
+On a prepared Pi workspace, `./scripts/pi/bench-1b-prefill.sh` sweeps the real
+Llama 3.2 1B chat path across prefill batch sizes and prints the model-backed
+prompt ingestion timing for each run.
 
 For very long-context GGUFs, `NANOCAMELID_CONTEXT_LIMIT` can cap the runtime KV
 cache during local smoke tests:
@@ -449,10 +452,13 @@ Run benchmarks on the target Pi in release mode.
 cargo run --release -- bench q8-dot 1000 3
 cargo run --release -- bench q4-layout 32768 3584 3
 cargo run --release -- bench q4-prefill 128 16
+./scripts/pi/bench-1b-prefill.sh --dry-run
 ```
 
-Each benchmark prints human-readable timing plus a JSON summary line. Treat
-results as specific to the exact Pi, model, build, and environment used.
+Each cargo benchmark prints human-readable timing plus a JSON summary line.
+Treat results as specific to the exact Pi, model, build, and environment used.
+The 1B prefill sweep is model-backed and reports NanoCamelid's normal prompt
+ingestion and generation timing for each selected batch size.
 
 Useful environment controls:
 
