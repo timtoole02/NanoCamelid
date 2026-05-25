@@ -35,8 +35,8 @@ Quick 1B readiness check on a Pi workspace:
 
 ```bash
 ./scripts/pi/ready-1b.sh
-CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 3b
-CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 3b chat "Say hello in one sentence." 4
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
 ```
 
 `inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
