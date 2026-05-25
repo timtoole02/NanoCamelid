@@ -3,7 +3,7 @@ use crate::model::{
     PageAlignedQ4_0Swizzled1x4, QuantizedMatrix,
 };
 use crate::q8::{
-    Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
+    Q4_0Block, Q4_1Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
     QK_K_BLOCK_SIZE,
 };
 use rayon::prelude::*;
@@ -629,6 +629,7 @@ pub fn matmul_quantized(
         QuantizedMatrix::Q4_0(blocks) => {
             matmul_q4_0(out, x_i8, x_scales, blocks, rows, cols, selector)
         }
+        QuantizedMatrix::Q4_1(blocks) => matmul_q4_1(out, x_i8, x_scales, blocks, rows, cols),
         QuantizedMatrix::Q4_0Swizzled1x4(matrix) => {
             debug_assert_eq!(matrix.rows, rows);
             debug_assert_eq!(matrix.cols, cols);
@@ -662,6 +663,7 @@ pub fn matmul_quantized_batch(
         QuantizedMatrix::Q4_0(blocks) => {
             matmul_q4_0_batch(out, x_i8, x_scales, blocks, shape, selector)
         }
+        QuantizedMatrix::Q4_1(blocks) => matmul_q4_1_batch(out, x_i8, x_scales, blocks, shape),
         QuantizedMatrix::Q4_0Swizzled1x4(matrix) => {
             debug_assert_eq!(matrix.rows, rows);
             debug_assert_eq!(matrix.cols, cols);
@@ -767,6 +769,42 @@ pub fn matmul_q4_0_batch(
                 let dot_val =
                     crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
                 sum += w_block.scale_f32() * x_token_scales[b] * dot_val as f32;
+            }
+            unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+        }
+    });
+}
+
+pub fn matmul_q4_1_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_1Block],
+    shape: BatchMatmulShape,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for token_idx in 0..batch_size {
+            let x_offset = token_idx * cols;
+            let scale_offset = token_idx * blocks_per_row;
+            let x_token = &x_i8[x_offset..x_offset + cols];
+            let x_token_scales = &x_scales[scale_offset..scale_offset + blocks_per_row];
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let w_block = &w_row[b];
+                let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+                let (weighted_sum, activation_sum) =
+                    crate::q8::dot_q4_1_q8_0_scalar(w_block, x_block_vals);
+                sum += x_token_scales[b]
+                    * (w_block.scale_f32() * weighted_sum as f32
+                        + w_block.min_f32() * activation_sum as f32);
             }
             unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
         }
@@ -1178,6 +1216,31 @@ pub fn matmul_q4_0(
             let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
             let dot_val = crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
             sum += w_block.scale_f32() * x_scales[b] * dot_val as f32;
+        }
+        *out_val = sum;
+    });
+}
+
+fn matmul_q4_1(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q4_1Block],
+    _rows: usize,
+    cols: usize,
+) {
+    let blocks_per_row = cols / 32;
+    for_each_matmul_row(out, |r, out_val| {
+        let mut sum = 0.0_f32;
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for b in 0..blocks_per_row {
+            let w_block = &w_row[b];
+            let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
+            let (weighted_sum, activation_sum) =
+                crate::q8::dot_q4_1_q8_0_scalar(w_block, x_block_vals);
+            sum += x_scales[b]
+                * (w_block.scale_f32() * weighted_sum as f32
+                    + w_block.min_f32() * activation_sum as f32);
         }
         *out_val = sum;
     });
@@ -2693,15 +2756,15 @@ mod tests {
         AttentionInput, BatchMatmulShape, KvCacheSlice, RopeScaling, add_weighted_f32,
         add_weighted_f32_scalar, apply_attention_heads, apply_rope, dot_f32, dot_f32_scalar,
         embed_token, fused_silu_mul, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4,
-        matmul_q6_k, matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, quantize_f32_to_q8_0,
-        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, route_token_to_experts,
-        run_layer_range, silu,
+        matmul_q4_1, matmul_q4_1_batch, matmul_q6_k, matmul_q6_k_batch, matmul_q8_0,
+        matmul_q8_0_batch, quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, rms_norm,
+        rms_norm_batch, route_token_to_experts, run_layer_range, silu,
     };
     use crate::model::{
         LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, QuantizedMatrix,
     };
     use crate::q8::{
-        Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
+        Q4_0Block, Q4_1Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
         QK_K_BLOCK_SIZE, swizzle_q4_0_1x4,
     };
 
@@ -2796,6 +2859,16 @@ mod tests {
             *value = low | (high << 4);
         }
         Q4_0Block::from_parts(scale_bits, values)
+    }
+
+    fn q4_1_block(scale_bits: u16, min_bits: u16, seed: i16) -> Q4_1Block {
+        let mut values = [0_u8; Q8_BLOCK_SIZE / 2];
+        for (idx, value) in values.iter_mut().enumerate() {
+            let low = ((seed + idx as i16 * 3).rem_euclid(16)) as u8;
+            let high = ((seed + (idx as i16 + 16) * 5).rem_euclid(16)) as u8;
+            *value = low | (high << 4);
+        }
+        Q4_1Block::from_parts(scale_bits, min_bits, values)
     }
 
     fn q6_k_block(scale_bits: u16, seed: i16) -> Q6KBlock {
@@ -3170,6 +3243,51 @@ mod tests {
     }
 
     #[test]
+    fn matmul_q4_1_matches_dequantized_reference() {
+        let rows = 3;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 5) % 61) as i8 - 30).collect();
+        let x_scales = [0.25, 0.5];
+        let weights = [
+            q4_1_block(0x3800, 0x3000, 1),
+            q4_1_block(0x3c00, 0x3400, 2),
+            q4_1_block(0x4000, 0x3800, 3),
+            q4_1_block(0x4200, 0x3a00, 4),
+            q4_1_block(0x4400, 0x3c00, 5),
+            q4_1_block(0x4600, 0x3e00, 6),
+        ];
+        let mut candidate = vec![0.0; rows];
+        matmul_q4_1(&mut candidate, &x_i8, &x_scales, &weights, rows, cols);
+
+        let blocks_per_row = cols / Q8_BLOCK_SIZE;
+        let mut expected = vec![0.0; rows];
+        for r in 0..rows {
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let block = &weights[r * blocks_per_row + b];
+                let scale = block.scale_f32();
+                let min = block.min_f32();
+                let unpacked = block.unpack_values();
+                for i in 0..Q8_BLOCK_SIZE {
+                    sum += (scale * unpacked[i] as f32 + min)
+                        * x_i8[b * Q8_BLOCK_SIZE + i] as f32
+                        * x_scales[b];
+                }
+            }
+            expected[r] = sum;
+        }
+
+        for r in 0..rows {
+            assert!(
+                (candidate[r] - expected[r]).abs() < 1e-5,
+                "row {r} candidate {} expected {}",
+                candidate[r],
+                expected[r]
+            );
+        }
+    }
+
+    #[test]
     fn matmul_q6_k_matches_dequantized_reference() {
         let rows = 2;
         let cols = QK_K_BLOCK_SIZE * 2;
@@ -3471,6 +3589,53 @@ mod tests {
                 rows,
                 cols,
                 selector(Q8DotKernel::Scalar),
+            );
+            assert_eq!(
+                &candidate[token_idx * rows..(token_idx + 1) * rows],
+                expected.as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_q4_1_batch_matches_single_token_reference() {
+        let batch_size = 3;
+        let rows = 4;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..batch_size * cols)
+            .map(|idx| ((idx as i16 * 11).rem_euclid(83) - 41) as i8)
+            .collect();
+        let x_scales: Vec<f32> = (0..batch_size * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| 0.125 + idx as f32 * 0.0625)
+            .collect();
+        let weights: Vec<Q4_1Block> = (0..rows * (cols / Q8_BLOCK_SIZE))
+            .map(|idx| q4_1_block(0x3800 + idx as u16, 0x3000 + idx as u16, idx as i16 + 1))
+            .collect();
+
+        let mut candidate = vec![0.0; batch_size * rows];
+        matmul_q4_1_batch(
+            &mut candidate,
+            &x_i8,
+            &x_scales,
+            &weights,
+            BatchMatmulShape {
+                batch_size,
+                rows,
+                cols,
+            },
+        );
+
+        for token_idx in 0..batch_size {
+            let mut expected = vec![0.0; rows];
+            let value_start = token_idx * cols;
+            let scale_start = token_idx * (cols / Q8_BLOCK_SIZE);
+            matmul_q4_1(
+                &mut expected,
+                &x_i8[value_start..value_start + cols],
+                &x_scales[scale_start..scale_start + (cols / Q8_BLOCK_SIZE)],
+                &weights,
+                rows,
+                cols,
             );
             assert_eq!(
                 &candidate[token_idx * rows..(token_idx + 1) * rows],

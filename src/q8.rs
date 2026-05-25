@@ -16,6 +16,7 @@ pub const SDOT_CANDIDATE_ENV: &str = "NANOCAMELID_Q8_DOT_SDOT";
 pub const Q8_BLOCK_SIZE: usize = 32;
 pub const Q8_0_BLOCK_BYTES: usize = 2 + Q8_BLOCK_SIZE;
 pub const Q4_0_BLOCK_BYTES: usize = 2 + (Q8_BLOCK_SIZE / 2);
+pub const Q4_1_BLOCK_BYTES: usize = 4 + (Q8_BLOCK_SIZE / 2);
 pub const QK_K_BLOCK_SIZE: usize = 256;
 pub const Q6_K_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
 
@@ -82,6 +83,13 @@ pub struct Q8_0Block {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Q4_0Block {
     scale_bits: u16,
+    values: [u8; Q8_BLOCK_SIZE / 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q4_1Block {
+    scale_bits: u16,
+    min_bits: u16,
     values: [u8; Q8_BLOCK_SIZE / 2],
 }
 
@@ -331,6 +339,58 @@ impl Q4_0Block {
         for (idx, &byte) in self.values.iter().enumerate() {
             out[idx] = ((byte & 0x0f) as i8) - 8;
             out[idx + 16] = ((byte >> 4) as i8) - 8;
+        }
+        out
+    }
+}
+
+impl Q4_1Block {
+    pub fn from_bytes(bytes: &[u8; Q4_1_BLOCK_BYTES]) -> Self {
+        let scale_bits = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let min_bits = u16::from_le_bytes([bytes[2], bytes[3]]);
+        let mut values = [0_u8; Q8_BLOCK_SIZE / 2];
+        values.copy_from_slice(&bytes[4..]);
+
+        Self {
+            scale_bits,
+            min_bits,
+            values,
+        }
+    }
+
+    pub fn from_parts(scale_bits: u16, min_bits: u16, values: [u8; Q8_BLOCK_SIZE / 2]) -> Self {
+        Self {
+            scale_bits,
+            min_bits,
+            values,
+        }
+    }
+
+    pub fn scale_bits(&self) -> u16 {
+        self.scale_bits
+    }
+
+    pub fn min_bits(&self) -> u16 {
+        self.min_bits
+    }
+
+    pub fn scale_f32(&self) -> f32 {
+        fast_f16_to_f32(self.scale_bits)
+    }
+
+    pub fn min_f32(&self) -> f32 {
+        fast_f16_to_f32(self.min_bits)
+    }
+
+    pub fn packed_values(&self) -> &[u8; Q8_BLOCK_SIZE / 2] {
+        &self.values
+    }
+
+    pub fn unpack_values(&self) -> [u8; Q8_BLOCK_SIZE] {
+        let mut out = [0_u8; Q8_BLOCK_SIZE];
+        for (idx, &byte) in self.values.iter().enumerate() {
+            out[idx] = byte & 0x0f;
+            out[idx + 16] = byte >> 4;
         }
         out
     }
@@ -663,6 +723,25 @@ pub fn decode_q4_0_blocks(bytes: &[u8]) -> Result<Vec<Q4_0Block>, Q8BlockError> 
         .collect())
 }
 
+pub fn decode_q4_1_blocks(bytes: &[u8]) -> Result<Vec<Q4_1Block>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(Q4_1_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: Q4_1_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(Q4_1_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; Q4_1_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees Q4_1 block length");
+            Q4_1Block::from_bytes(bytes)
+        })
+        .collect())
+}
+
 pub fn decode_q6_k_blocks(bytes: &[u8]) -> Result<Vec<Q6KBlock>, Q8BlockError> {
     if !bytes.len().is_multiple_of(Q6_K_BLOCK_BYTES) {
         return Err(Q8BlockError::MisalignedLength {
@@ -697,6 +776,18 @@ pub fn dot_q4_0_q8_0_with_selector(
         Q8DotKernel::Neon => dot_q4_0_q8_0_neon_32_selected(weight, activation),
         Q8DotKernel::Sdot => dot_q4_0_q8_0_sdot_32_selected(weight, activation),
     }
+}
+
+pub fn dot_q4_1_q8_0_scalar(weight: &Q4_1Block, activation: &[i8; Q8_BLOCK_SIZE]) -> (i32, i32) {
+    let weight_values = weight.unpack_values();
+    let mut weighted_sum = 0_i32;
+    let mut activation_sum = 0_i32;
+    for (&w, &x) in weight_values.iter().zip(activation) {
+        let x = i32::from(x);
+        weighted_sum += i32::from(w) * x;
+        activation_sum += x;
+    }
+    (weighted_sum, activation_sum)
 }
 
 #[allow(dead_code)]
@@ -1953,13 +2044,14 @@ mod tests {
     use crate::gguf::{GgufTensorDescriptor, GgufTensorType};
 
     use super::{
-        Q4_0_BLOCK_BYTES, Q4_0Block, Q6_K_BLOCK_BYTES, Q6KBlock, Q8_0_BLOCK_BYTES, Q8_0Block,
-        Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector,
-        QK_K_BLOCK_SIZE, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
-        dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
-        dot_i8_with_selector, dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar,
-        dot_q4_0_q8_0_with_selector, dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
-        fast_f16_to_f32, fast_f32_to_f16,
+        Q4_0_BLOCK_BYTES, Q4_0Block, Q4_1_BLOCK_BYTES, Q4_1Block, Q6_K_BLOCK_BYTES, Q6KBlock,
+        Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel,
+        Q8DotKernelSelector, QK_K_BLOCK_SIZE, RuntimeFeatures, bench_dot_runs, decode_q4_1_blocks,
+        decode_q8_0_blocks, dot_i8_neon, dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot,
+        dot_i8_sdot_32_selected, dot_i8_with_selector, dot_q4_0_q8_0_1x4_sdot_selected,
+        dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector, dot_q4_1_q8_0_scalar,
+        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32,
+        fast_f32_to_f16,
     };
 
     #[test]
@@ -2185,6 +2277,54 @@ mod tests {
                 "{kernel:?} Q4/Q8 dot diverged"
             );
         }
+    }
+
+    #[test]
+    fn q4_1_block_decodes_low_then_high_nibbles_with_scale_and_min() {
+        let mut bytes = [0_u8; Q4_1_BLOCK_BYTES];
+        bytes[..2].copy_from_slice(&0x3c00_u16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&0x3800_u16.to_le_bytes());
+        for (idx, byte) in bytes[4..].iter_mut().enumerate() {
+            *byte = idx as u8 | ((15 - idx as u8) << 4);
+        }
+
+        let blocks = decode_q4_1_blocks(&bytes).expect("Q4_1 block should decode");
+        let block = blocks[0];
+        let values = block.unpack_values();
+
+        assert_eq!(block.scale_bits(), 0x3c00);
+        assert_eq!(block.min_bits(), 0x3800);
+        assert_eq!(block.scale_f32(), 1.0);
+        assert_eq!(block.min_f32(), 0.5);
+        assert_eq!(values[0], 0);
+        assert_eq!(values[15], 15);
+        assert_eq!(values[16], 15);
+        assert_eq!(values[31], 0);
+    }
+
+    #[test]
+    fn q4_1_q8_0_scalar_dot_reports_weighted_and_activation_sums() {
+        let q4 = Q4_1Block::from_parts(
+            0x3c00,
+            0x3800,
+            [
+                0x80, 0x91, 0xa2, 0xb3, 0xc4, 0xd5, 0xe6, 0xf7, 0x08, 0x19, 0x2a, 0x3b, 0x4c, 0x5d,
+                0x6e, 0x7f,
+            ],
+        );
+        let q8: [i8; Q8_BLOCK_SIZE] = core::array::from_fn(|idx| idx as i8 - 16);
+        let unpacked = q4.unpack_values();
+        let expected_weighted: i32 = unpacked
+            .iter()
+            .zip(q8.iter())
+            .map(|(&left, &right)| i32::from(left) * i32::from(right))
+            .sum();
+        let expected_activation: i32 = q8.iter().map(|&value| i32::from(value)).sum();
+
+        assert_eq!(
+            dot_q4_1_q8_0_scalar(&q4, &q8),
+            (expected_weighted, expected_activation)
+        );
     }
 
     #[test]

@@ -9,8 +9,8 @@ use std::{
 
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{
-    Q4_0Block, Q6KBlock, Q8_0Block, QK_K_BLOCK_SIZE, decode_q4_0_blocks, decode_q6_k_blocks,
-    decode_q8_0_blocks, swizzle_q4_0_1x4,
+    Q4_0Block, Q4_1Block, Q6KBlock, Q8_0Block, QK_K_BLOCK_SIZE, decode_q4_0_blocks,
+    decode_q4_1_blocks, decode_q6_k_blocks, decode_q8_0_blocks, swizzle_q4_0_1x4,
 };
 use memmap2::Mmap;
 
@@ -260,6 +260,7 @@ impl DistributedLlamaWeights {
 pub enum QuantizedMatrix {
     Q8_0(Vec<Q8_0Block>),
     Q4_0(Vec<Q4_0Block>),
+    Q4_1(Vec<Q4_1Block>),
     Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix),
     Q6K(Vec<Q6KBlock>),
 }
@@ -786,6 +787,18 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             }
             Ok(data)
         }
+        GgufTensorType::Q4_1 => {
+            let blocks = decode_q4_1_blocks(bytes).map_err(|e| e.to_string())?;
+            let mut data = Vec::with_capacity(blocks.len() * 32);
+            for block in blocks {
+                let scale = block.scale_f32();
+                let min = block.min_f32();
+                for val in block.unpack_values() {
+                    data.push(val as f32 * scale + min);
+                }
+            }
+            Ok(data)
+        }
         GgufTensorType::Q6K => {
             let blocks = decode_q6_k_blocks(bytes).map_err(|e| e.to_string())?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
@@ -827,11 +840,14 @@ fn load_quantized_matrix(
             .map(QuantizedMatrix::Q8_0)
             .map_err(|e| e.to_string()),
         GgufTensorType::Q4_0 => load_q4_0_matrix(bytes, desc),
+        GgufTensorType::Q4_1 => decode_q4_1_blocks(bytes)
+            .map(QuantizedMatrix::Q4_1)
+            .map_err(|e| e.to_string()),
         GgufTensorType::Q6K => decode_q6_k_blocks(bytes)
             .map(QuantizedMatrix::Q6K)
             .map_err(|e| e.to_string()),
         other => Err(format!(
-            "expected Q8_0, Q4_0, or Q6_K tensor type for {name}, got {other:?}"
+            "expected Q8_0, Q4_0, Q4_1, or Q6_K tensor type for {name}, got {other:?}"
         )),
     }
 }

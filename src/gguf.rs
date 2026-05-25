@@ -128,7 +128,8 @@ impl GgufTensorType {
         match self {
             Self::F32 => Some((1, 4)),
             Self::F16 => Some((1, 2)),
-            Self::Q4_0 | Self::Q4_1 => Some((32, 18)),
+            Self::Q4_0 => Some((32, 18)),
+            Self::Q4_1 => Some((32, 20)),
             Self::Q5_0 | Self::Q5_1 => Some((32, 22)),
             Self::Q8_0 => Some((32, 34)),
             Self::Q8_1 => Some((32, 36)),
