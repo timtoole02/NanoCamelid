@@ -24,7 +24,7 @@ These rows have been loaded and generated on Raspberry Pi-class ARM64 hardware.
 | Mistral 7B Instruct v0.1 | `TheBloke/Mistral-7B-Instruct-v0.1-GGUF`, `mistral-7b-instruct-v0.1.Q4_0.gguf` | reports `llama` in tested GGUF | Supported for tested row | `ready`; 4-token smoke at about `3.68 tok/sec` |
 | Qwen2.5-Coder 7B Instruct | Q4_0 GGUF row | `qwen2` | Supported smoke row | README-documented scalar-vs-selected logit parity and `"Hello"` smoke output |
 | Strand Rust Coder 14B | `Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF`, `Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf` | `qwen2` | Supported but slow | README-documented capped-context smoke, about `0.17 tok/sec` |
-| Mixtral 8x7B Instruct v0.1 | `mixtral-8x7b-instruct-v0.1.Q4_0.gguf` | `llama` MoE | Experimental cluster smoke | `inspect` reports `ready`; three-Pi `master-generate` produced one token from `"Hello"` with Pi2/Pi3 worker stages completing. Single-Pi full generation OOMs on 16 GB Pi RAM. |
+| Mixtral 8x7B Instruct v0.1 | `mixtral-8x7b-instruct-v0.1.Q4_0.gguf` | `llama` MoE | Experimental cluster chat smoke | `inspect` reports `ready`; three-Pi `master-chat` rendered the `[INST]` prompt and generated 8 tokens at about `1.12 tok/sec`. Single-Pi full generation OOMs on 16 GB Pi RAM. |
 | Qwen2.5-Coder 32B Instruct | `qwen2.5-coder-32b-instruct-q4_0.gguf` | `qwen2` | Supported cluster/large-model smoke | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec` |
 | Llama 3 70B Instruct | `Meta-Llama-3-70B-Instruct.Q4_0.gguf` | `llama` | Token-level cluster smoke only | Three-Pi token-level smoke generated two tokens at about `0.17 tok/sec`; prompt tokenizer path still needs full support |
 
@@ -52,7 +52,7 @@ Do not present these as supported until the listed runtime gaps are closed.
 
 | Family | Current status | Required work |
 | --- | --- | --- |
-| Mixtral / MoE Mistral broader support | One exact Mixtral Q4_0 row has experimental three-Pi smoke coverage. Broader Mixtral support is not promoted yet. | Add parity checks against a reference runtime, optimize or lazy-load expert weights for single-node memory pressure, and broaden prompt-generation coverage beyond one-token cluster smoke |
+| Mixtral / MoE Mistral broader support | One exact Mixtral Q4_0 row has experimental three-Pi chat smoke coverage. Broader Mixtral support is not promoted yet. | Add parity checks against a reference runtime, optimize or lazy-load expert weights for single-node memory pressure, and broaden prompt coverage beyond the current short cluster smoke |
 | Gemma 2 / Gemma family | Not supported yet | Add Gemma metadata mapping, GeLU/GELU-ish activation path, Gemma RMSNorm behavior, and attention logit soft-capping where required |
 | Phi family | Not supported yet | Inspect GGUF architecture/tensor names, add architecture-specific config and tokenizer support |
 | Qwen3 | Not supported by claim yet | Inspect architecture key and tokenizer metadata; add/validate if it remains compatible with current Qwen2 math |

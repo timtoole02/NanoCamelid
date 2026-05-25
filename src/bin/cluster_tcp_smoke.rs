@@ -107,6 +107,28 @@ fn run() -> Result<(), String> {
                 &prompt,
                 requested_split_layer,
                 max_tokens,
+                false,
+            )
+        }
+        Some("master-chat") | Some("master-chat-generate") => {
+            let Some(model_path) = args.next() else {
+                print_usage();
+                return Err("missing master model path".to_owned());
+            };
+            let worker_addr = args.next().unwrap_or_else(|| "127.0.0.1:5005".to_owned());
+            let Some(prompt) = args.next() else {
+                print_usage();
+                return Err("missing prompt".to_owned());
+            };
+            let requested_split_layer = parse_optional_usize(args.next(), 0, "split_layer")?;
+            let max_tokens = parse_optional_usize(args.next(), 16, "max_tokens")?;
+            run_master_generate(
+                Path::new(&model_path),
+                &worker_addr,
+                &prompt,
+                requested_split_layer,
+                max_tokens,
+                true,
             )
         }
         _ => {
@@ -442,12 +464,33 @@ fn run_master_generate(
     prompt: &str,
     requested_split_layer: usize,
     max_tokens: usize,
+    chat_prompt: bool,
 ) -> Result<(), String> {
     let loaded = load_cluster_model(model_path, requested_split_layer)?;
     let tokenizer = tokenizer::Tokenizer::from_gguf(&loaded.gguf)
         .map_err(|err| format!("failed to load tokenizer: {err}"))?;
+    let rendered_chat = if chat_prompt {
+        Some(tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
+            role: "user",
+            content: prompt,
+        }]))
+    } else {
+        None
+    };
+    let prompt_text = rendered_chat
+        .as_ref()
+        .map(|rendered| rendered.text.as_str())
+        .unwrap_or(prompt);
+    let add_special = rendered_chat
+        .as_ref()
+        .map(|rendered| rendered.add_special)
+        .unwrap_or(true);
+    let parse_special = rendered_chat
+        .as_ref()
+        .map(|rendered| rendered.parse_special)
+        .unwrap_or(true);
     let prompt_tokens = tokenizer
-        .encode(prompt, true, true)
+        .encode(prompt_text, add_special, parse_special)
         .map_err(|err| format!("failed to tokenize prompt: {err}"))?;
     if prompt_tokens.is_empty() {
         return Err("prompt tokenized to an empty sequence".to_owned());
@@ -476,7 +519,16 @@ fn run_master_generate(
     println!("NanoCamelid cluster TCP master generate");
     println!("model: {}", model_path.display());
     println!("worker_addr: {worker_addr}");
+    println!("prompt_mode: {}", if chat_prompt { "chat" } else { "raw" });
     println!("prompt: {prompt:?}");
+    if let Some(rendered) = rendered_chat.as_ref() {
+        println!("chat_renderer: {}", rendered.renderer);
+        println!(
+            "chat_template_format: {}",
+            tokenizer.chat_template_format().unwrap_or("none")
+        );
+        println!("rendered_prompt: {:?}", rendered.text);
+    }
     println!("prompt_tokens: {prompt_tokens:?}");
     println!("max_tokens: {max_tokens}");
     println!("layers: {}", loaded.config.block_count);
@@ -959,6 +1011,9 @@ fn print_usage() {
     );
     println!(
         "  cargo run --release --bin cluster_tcp_smoke -- master-generate <model.gguf> [worker_addr] <prompt> [split_layer] [max_tokens]"
+    );
+    println!(
+        "  cargo run --release --bin cluster_tcp_smoke -- master-chat <model.gguf> [worker_addr] <prompt> [split_layer] [max_tokens]"
     );
     println!();
     println!("Environment:");

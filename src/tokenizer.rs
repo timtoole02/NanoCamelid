@@ -460,6 +460,14 @@ impl Tokenizer {
                     renderer: "qwen_im",
                 };
             }
+            if is_mistral_inst_template(template) {
+                return RenderedChatPrompt {
+                    text: render_mistral_inst_prompt(messages),
+                    add_special: false,
+                    parse_special: self.chat_prompt_parse_special(),
+                    renderer: "mistral_inst",
+                };
+            }
         }
 
         RenderedChatPrompt {
@@ -1095,6 +1103,8 @@ fn detect_chat_template_format(template: &str) -> &'static str {
         "llama3_instruct"
     } else if is_qwen_im_template(template) {
         "qwen_im"
+    } else if is_mistral_inst_template(template) {
+        "mistral_inst"
     } else if is_tinyllama_marker_template(template) {
         "tinyllama_marker"
     } else {
@@ -1116,6 +1126,10 @@ fn is_llama3_instruct_template(template: &str) -> bool {
 
 fn is_qwen_im_template(template: &str) -> bool {
     template.contains("<|im_start|>") && template.contains("<|im_end|>")
+}
+
+fn is_mistral_inst_template(template: &str) -> bool {
+    template.contains("[INST]") && template.contains("[/INST]")
 }
 
 fn render_tinyllama_marker_prompt(messages: &[ChatMessage<'_>], tokenizer: &Tokenizer) -> String {
@@ -1173,6 +1187,54 @@ fn render_qwen_im_prompt(messages: &[ChatMessage<'_>]) -> String {
     {
         prompt.push_str("<|im_start|>assistant\n");
     }
+    prompt
+}
+
+fn render_mistral_inst_prompt(messages: &[ChatMessage<'_>]) -> String {
+    let mut prompt = String::new();
+    let mut pending_system = String::new();
+
+    for message in messages {
+        let role = message.role.trim();
+        let content = message.content.trim();
+        match role {
+            "system" => {
+                if !pending_system.is_empty() {
+                    pending_system.push_str("\n\n");
+                }
+                pending_system.push_str(content);
+            }
+            "user" => {
+                let content = if pending_system.is_empty() {
+                    content.to_owned()
+                } else {
+                    let combined = format!("{pending_system}\n\n{content}");
+                    pending_system.clear();
+                    combined
+                };
+                prompt.push_str("<s>[INST] ");
+                prompt.push_str(content.trim());
+                prompt.push_str(" [/INST]");
+            }
+            "assistant" => {
+                prompt.push(' ');
+                prompt.push_str(content);
+                prompt.push_str("</s>");
+            }
+            _ => {
+                prompt.push_str("<s>[INST] ");
+                prompt.push_str(content);
+                prompt.push_str(" [/INST]");
+            }
+        }
+    }
+
+    if prompt.is_empty() && !pending_system.is_empty() {
+        prompt.push_str("<s>[INST] ");
+        prompt.push_str(pending_system.trim());
+        prompt.push_str(" [/INST]");
+    }
+
     prompt
 }
 
@@ -1382,6 +1444,60 @@ mod tests {
             }
         );
         assert_eq!(tokenizer.chat_template_format(), Some("metadata_unparsed"));
+    }
+
+    #[test]
+    fn tokenizer_renders_mistral_inst_prompt() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.chat_template =
+            Some("{{ bos_token }}[INST] {{ message['content'] }} [/INST]".to_owned());
+
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "hello",
+            }]),
+            RenderedChatPrompt {
+                text: "<s>[INST] hello [/INST]".to_owned(),
+                add_special: false,
+                parse_special: true,
+                renderer: "mistral_inst",
+            }
+        );
+        assert_eq!(tokenizer.chat_template_format(), Some("mistral_inst"));
+    }
+
+    #[test]
+    fn tokenizer_renders_mistral_inst_with_system_and_history() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.chat_template = Some("[INST] {{ messages }} [/INST]".to_owned());
+
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[
+                ChatMessage {
+                    role: "system",
+                    content: "be brief",
+                },
+                ChatMessage {
+                    role: "user",
+                    content: "hello",
+                },
+                ChatMessage {
+                    role: "assistant",
+                    content: "hi",
+                },
+                ChatMessage {
+                    role: "user",
+                    content: "next",
+                },
+            ]),
+            RenderedChatPrompt {
+                text: "<s>[INST] be brief\n\nhello [/INST] hi</s><s>[INST] next [/INST]".to_owned(),
+                add_special: false,
+                parse_special: true,
+                renderer: "mistral_inst",
+            }
+        );
     }
 
     fn llama3_test_tokenizer() -> Tokenizer {

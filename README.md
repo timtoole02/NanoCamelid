@@ -167,11 +167,11 @@ Additional small-model catalog rows now validate on the Pi smoke lane:
   `3.68 tok/sec`
 
 Mixtral Q4_0 now has an experimental three-Pi cluster smoke. NanoCamelid can
-parse the expert-indexed MoE tensors, route through the top experts, and produce
-a one-token `master-generate` result across the Pi pipeline. This is not a
-single-Pi support claim: full Mixtral single-node generation exceeds 16 GB Pi
-RAM during eager weight load and needs clustered execution or a future lazy
-expert loader.
+parse the expert-indexed MoE tensors, render the Mistral/Mixtral `[INST]` chat
+prompt, route through the top experts, and produce prompt-level chat output
+across the Pi pipeline. This is not a single-Pi support claim: full Mixtral
+single-node generation exceeds 16 GB Pi RAM during eager weight load and needs
+clustered execution or a future lazy expert loader.
 
 ## Runtime Design
 
@@ -400,7 +400,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
 | Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
-| Mixtral 8x7B Instruct v0.1 | Q4_0 | Experimental MoE cluster smoke | Expert-indexed MoE tensors inspect as `ready`; three-Pi `master-generate` produced one token from `"Hello"` with Pi2/Pi3 worker stages completing. Single-Pi full generation OOMs on 16 GB Pi RAM. |
+| Mixtral 8x7B Instruct v0.1 | Q4_0 | Experimental MoE cluster chat smoke | Expert-indexed MoE tensors inspect as `ready`; three-Pi `master-chat` rendered the `[INST]` prompt and generated 8 tokens at about `1.12 tok/sec`. Single-Pi full generation OOMs on 16 GB Pi RAM. |
 | Qwen2.5-Coder 32B Instruct | Q4_0 | Cluster smoke only | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec`; this is not a single-Pi claim. |
 | Llama 3 70B Instruct | Q4_0 | Token-level cluster smoke only | Three-Pi token-level smoke generated two tokens at about `0.17 tok/sec`; full prompt-level chat still needs tokenizer support for the tested GGUF. |
 
@@ -583,6 +583,16 @@ cargo run --release --bin cluster_tcp_smoke -- \
   master-generate /path/to/model.gguf <worker-ip>:5005 "fn hello_world" 0 8
 ```
 
+For chat-template prompt generation, use `master-chat`. This renders the GGUF
+chat template when NanoCamelid recognizes it, including the Mistral/Mixtral
+`[INST] ... [/INST]` format:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  master-chat /path/to/model.gguf <worker-ip>:5005 "Write one short sentence." 0 8
+```
+
 For a three-Pi pipeline, choose explicit layer ranges. For a 48-layer model,
 `0..16`, `16..32`, and `32..48` is the usual first split to try. Start the final
 worker first:
@@ -610,11 +620,14 @@ cargo run --release --bin cluster_tcp_smoke -- \
   master-generate /path/to/model.gguf <middle-worker-ip>:5006 "fn hello_world" 16 8
 ```
 
+Use `master-chat` instead of `master-generate` for chat-template rows such as
+Mixtral.
+
 Useful output to check:
 
 - `result: PASS` from `cluster_split_smoke`
 - `cluster_generated_tokens`, `cluster_generated_text`, and
-  `cluster_tokens_per_sec` from `master-generate`
+  `cluster_tokens_per_sec` from `master-generate` or `master-chat`
 - `worker_generated_tokens` from the final worker
 - `middle_feedback_tokens` from a middle worker
 - `cluster_tcp_round_trip_total_ms` when comparing network overhead
