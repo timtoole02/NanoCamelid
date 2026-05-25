@@ -579,8 +579,9 @@ NANOCAMELID_SMOKE_TOKENS=1 \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
-Deployment defaults to rsync snapshots. Advanced deployment modes are available
-in the scripts for development workflows.
+Remote builds default to clean git fast-forward deployment so Pi-local edits are
+not overwritten by validation runs. For explicit snapshot deployment, pass
+`rsync` as the fourth argument or set `NANOCAMELID_DEPLOY_MODE=rsync`.
 
 ## Raspberry Pi Clustering
 
