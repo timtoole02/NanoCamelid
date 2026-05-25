@@ -774,6 +774,7 @@ fn print_ready_usage() {
     println!("Options:");
     println!("  --no-chat, --smoke-only                  Stop after inspect and smoke");
     println!("  --chat                                   Force the direct chat turn");
+    println!("  [prompt] [max_tokens]                    Override the final direct chat turn");
     println!();
     println!("Env:");
     println!("  {SMOKE_MODEL_GGUF_ENV:<38} Override the 1B readiness GGUF path");
@@ -984,6 +985,8 @@ struct Smoke1BArgs {
 struct Ready1BArgs {
     smoke: Smoke1BArgs,
     chat_enabled_override: Option<bool>,
+    chat_prompt_override: Option<String>,
+    chat_tokens_override: Option<usize>,
 }
 
 fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
@@ -1191,16 +1194,41 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
         }
     }
 
-    let smoke = parse_smoke_1b_args_with_env_and_defaults(
-        &smoke_args,
-        env_model_path,
-        workspace,
-        q4_exists,
-        smoke_defaults,
-    )?;
+    let first_looks_like_model = smoke_args
+        .first()
+        .is_some_and(|value| looks_like_gguf_path(value));
+    let (model_path, mut option_idx) = match (smoke_args.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
+        (_, Some(path)) => (path, 0),
+        _ => (default_llama32_1b_model_path(workspace, q4_exists), 0),
+    };
+
+    let kind = match smoke_args.get(option_idx).map(String::as_str) {
+        Some(value) if SmokeKind::looks_like_arg(value) => {
+            option_idx += 1;
+            SmokeKind::from_arg(value)
+                .ok_or("unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model")?
+        }
+        _ => smoke_defaults.kind,
+    };
+
+    let chat_prompt_override = smoke_args.get(option_idx).cloned();
+    let chat_tokens_override = smoke_args
+        .get(option_idx + 1)
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0);
+
+    let smoke = Smoke1BArgs {
+        kind,
+        model_path,
+        prompt: smoke_defaults.prompt,
+        max_tokens: smoke_defaults.max_tokens,
+    };
     Ok(Ready1BArgs {
         smoke,
         chat_enabled_override,
+        chat_prompt_override,
+        chat_tokens_override,
     })
 }
 
@@ -2263,8 +2291,12 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let chat_prompt = ready_chat_prompt(&smoke.prompt);
-    let chat_tokens = ready_chat_tokens(smoke.max_tokens);
+    let chat_prompt = parsed
+        .chat_prompt_override
+        .unwrap_or_else(|| ready_chat_prompt(&smoke.prompt));
+    let chat_tokens = parsed
+        .chat_tokens_override
+        .unwrap_or_else(|| ready_chat_tokens(smoke.max_tokens));
     let chat_temp = ready_chat_temp();
 
     println!("==> Running direct 1B chat turn");
@@ -4209,7 +4241,7 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
-    fn ready_1b_args_accept_no_chat_flag_after_smoke_args() {
+    fn ready_1b_args_accept_no_chat_flag_after_chat_args() {
         let parsed = parse_ready_1b_args_with_env(
             &[
                 "/models/custom.gguf".to_owned(),
@@ -4226,9 +4258,11 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
         assert_eq!(parsed.smoke.model_path, "/models/custom.gguf");
-        assert_eq!(parsed.smoke.prompt, "Say hi");
-        assert_eq!(parsed.smoke.max_tokens, 4);
+        assert_eq!(parsed.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
+        assert_eq!(parsed.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
         assert_eq!(parsed.chat_enabled_override, Some(false));
+        assert_eq!(parsed.chat_prompt_override, Some("Say hi".to_owned()));
+        assert_eq!(parsed.chat_tokens_override, Some(4));
     }
 
     #[test]
@@ -4250,9 +4284,10 @@ flags\t\t: sse4_2 avx2
             parsed.smoke.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
         );
-        assert_eq!(parsed.smoke.prompt, "Hello");
+        assert_eq!(parsed.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
         assert_eq!(parsed.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
         assert_eq!(parsed.chat_enabled_override, Some(false));
+        assert_eq!(parsed.chat_prompt_override, Some("Hello".to_owned()));
     }
 
     #[test]
@@ -4270,8 +4305,9 @@ flags\t\t: sse4_2 avx2
             parsed.smoke.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
         );
-        assert_eq!(parsed.smoke.prompt, "Hello");
+        assert_eq!(parsed.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
         assert_eq!(parsed.chat_enabled_override, Some(true));
+        assert_eq!(parsed.chat_prompt_override, Some("Hello".to_owned()));
     }
 
     #[test]
@@ -4285,6 +4321,8 @@ flags\t\t: sse4_2 avx2
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
         );
         assert_eq!(parsed.chat_enabled_override, None);
+        assert_eq!(parsed.chat_prompt_override, None);
+        assert_eq!(parsed.chat_tokens_override, None);
     }
 
     #[test]
@@ -4306,10 +4344,12 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.smoke.prompt, "Hello");
         assert_eq!(parsed.smoke.max_tokens, 2);
         assert_eq!(parsed.chat_enabled_override, None);
+        assert_eq!(parsed.chat_prompt_override, None);
+        assert_eq!(parsed.chat_tokens_override, None);
     }
 
     #[test]
-    fn ready_1b_args_positionals_override_ready_smoke_defaults() {
+    fn ready_1b_args_positionals_override_direct_chat_defaults() {
         let parsed = parse_ready_1b_args_with_env_and_smoke_defaults(
             &["chat".to_owned(), "Say hi".to_owned(), "4".to_owned()],
             None,
@@ -4321,11 +4361,13 @@ flags\t\t: sse4_2 avx2
                 max_tokens: 2,
             },
         )
-        .expect("ready smoke positional overrides should parse");
+        .expect("ready chat positional overrides should parse");
 
         assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
-        assert_eq!(parsed.smoke.prompt, "Say hi");
-        assert_eq!(parsed.smoke.max_tokens, 4);
+        assert_eq!(parsed.smoke.prompt, "Hello");
+        assert_eq!(parsed.smoke.max_tokens, 2);
+        assert_eq!(parsed.chat_prompt_override, Some("Say hi".to_owned()));
+        assert_eq!(parsed.chat_tokens_override, Some(4));
     }
 
     #[test]
