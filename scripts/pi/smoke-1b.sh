@@ -16,6 +16,10 @@ elif [[ -f "$Q4_MODEL" ]]; then
 else
   MODEL="$Q8_MODEL"
 fi
+if [[ "${1:-}" == *.gguf ]]; then
+  MODEL="$1"
+  shift
+fi
 SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-chat}}"
 SMOKE_PROMPT="${2:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${3:-${NANOCAMELID_SMOKE_TOKENS:-8}}"

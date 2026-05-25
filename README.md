@@ -344,39 +344,46 @@ matching launchers:
 ./scripts/pi/chat-3b.sh
 ```
 
-The launcher prefers the Pi-local Q4_0 model when present, falls back to Q8_0,
-and defaults the block dot path to SDOT on Pi-class ARM64 hardware. It runs a
-`smoke 1b chat` preflight before opening the TUI, so the 1B instruct path keeps
-the scalar-vs-selected-kernel parity gate in front of interactive chat. It still
-honors `NANOCAMELID_MODEL_GGUF` and `NANOCAMELID_Q8_DOT_KERNEL` if you want to
-force a different model or kernel for comparison. When the helper needs to build
-through Cargo, it uses `/mnt/nanocamelid/target` by default, or an explicit
-`CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` override.
+The launcher prefers a leading `.gguf` argument, then `NANOCAMELID_MODEL_GGUF`,
+then the Pi-local Q4_0 model when present, and finally Q8_0. It defaults the
+block dot path to SDOT on Pi-class ARM64 hardware. It runs a `smoke 1b chat`
+preflight before opening the TUI, so the 1B instruct path keeps the
+scalar-vs-selected-kernel parity gate in front of interactive chat. It still
+honors `NANOCAMELID_Q8_DOT_KERNEL` if you want to force a different kernel for
+comparison. When the helper needs to build through Cargo, it uses
+`/mnt/nanocamelid/target` by default, or an explicit `CARGO_TARGET_DIR` or
+`NANOCAMELID_TARGET_DIR` override.
 
-Optional arguments set temperature and maximum assistant output tokens:
+Optional arguments set the model path, temperature, and maximum assistant output
+tokens:
 
 ```bash
+./scripts/pi/chat-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf 0.0 64
 ./scripts/pi/chat-1b.sh 0.0 64
 ```
 
 `smoke-1b.sh` uses the same kernel defaults, but runs only the smoke gate and
-exits. Its model-selection precedence is `NANOCAMELID_SMOKE_GGUF`,
-`NANOCAMELID_MODEL_GGUF`, Pi-local Q4_0, then Pi-local Q8_0. By default it
-runs the real instruct prompt path with `chat`, the prompt
-`Say hello in one sentence.`, and an 8-token response budget. Optional
-arguments let you override the smoke kind, prompt, and token budget directly:
+exits. Its model-selection precedence is a leading `.gguf` argument,
+`NANOCAMELID_SMOKE_GGUF`, `NANOCAMELID_MODEL_GGUF`, Pi-local Q4_0, then
+Pi-local Q8_0. By default it runs the real instruct prompt path with `chat`, the
+prompt `Say hello in one sentence.`, and an 8-token response budget. Optional
+arguments let you override the model path, smoke kind, prompt, and token budget
+directly:
 
 ```bash
+./scripts/pi/smoke-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ./scripts/pi/smoke-1b.sh chat "Say hello in one sentence." 8
 ./scripts/pi/smoke-1b.sh model "Hello" 1
 ./scripts/pi/smoke-3b.sh chat "Say hello in one sentence." 4
 ```
 
 `ready-1b.sh` uses the same Pi target directory and model defaults, then runs
-`inspect`, `smoke 1b`, and `chat` against the resolved GGUF. Optional arguments
-override the final direct-chat prompt and token budget:
+`inspect`, `smoke 1b`, and `chat` against the resolved GGUF. A leading `.gguf`
+argument overrides the model path. The remaining optional arguments override
+the final direct-chat prompt and token budget:
 
 ```bash
+./scripts/pi/ready-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf "Say hello in one sentence." 8
 ./scripts/pi/ready-1b.sh "Say hello in one sentence." 8
 ```
 

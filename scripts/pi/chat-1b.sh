@@ -14,6 +14,10 @@ elif [[ -f "$Q4_MODEL" ]]; then
 else
   MODEL="$Q8_MODEL"
 fi
+if [[ "${1:-}" == *.gguf ]]; then
+  MODEL="$1"
+  shift
+fi
 TEMP="${1:-${NANOCAMELID_TEMP:-0.0}}"
 MAX_TOKENS="${2:-${NANOCAMELID_MAX_TOKENS:-64}}"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
