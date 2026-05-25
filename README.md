@@ -330,7 +330,13 @@ isolated kernel wins alone.
 Use `nanocamelid probe` on Raspberry Pi hosts to inspect CPU max frequency,
 governor, isolated CPU state, selected worker-core policy, and SIMD support. The
 tool reports telemetry only; boot parameters and overclock settings remain an
-operator decision outside NanoCamelid.
+operator decision outside NanoCamelid. When Linux reports the `ondemand`
+governor, `probe` and the TUI banner recommend the safe non-overclock command
+for repeatable low-latency decode:
+
+```bash
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+```
 
 ## Raspberry Pi Deployment
 

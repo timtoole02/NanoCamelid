@@ -15,6 +15,8 @@ const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
 const WORKER_CORES_ENV: &str = "NANOCAMELID_WORKER_CORES";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
+const PERFORMANCE_GOVERNOR_COMMAND: &str =
+    "echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor";
 const DEFAULT_RAYON_THREADS: usize = 4;
 const DEFAULT_Q4_PREFILL_PROMPT_LEN: usize = 128;
 const DEFAULT_Q4_PREFILL_BATCH: usize = 16;
@@ -802,6 +804,9 @@ fn print_probe() {
         "scaling_governor: {}",
         governor.as_deref().unwrap_or("unknown")
     );
+    if let Some(recommendation) = cpu_governor_recommendation(governor.as_deref()) {
+        println!("governor_recommendation: {recommendation}");
+    }
     println!(
         "isolated_cpus: {}",
         isolated_cpus
@@ -825,6 +830,10 @@ fn read_trimmed(path: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn cpu_governor_recommendation(governor: Option<&str>) -> Option<&'static str> {
+    matches!(governor, Some("ondemand")).then_some(PERFORMANCE_GOVERNOR_COMMAND)
 }
 
 fn format_cpu_list(cpus: &[usize]) -> String {
@@ -1988,6 +1997,9 @@ fn load_tui_model(
 
 fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
     let selector = q8::Q8DotKernelSelector::from_env();
+    let governor_recommendation = cpu_governor_recommendation(
+        read_trimmed("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").as_deref(),
+    );
     let mut loaded = match load_tui_model(model_path, selector) {
         Ok(loaded) => loaded,
         Err(err) => {
@@ -2009,6 +2021,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         temp,
         max_tokens,
         load_secs: loaded.load_secs,
+        governor_recommendation,
     });
 
     let stdin = io::stdin();
@@ -2060,6 +2073,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
                         temp,
                         max_tokens,
                         load_secs: loaded.load_secs,
+                        governor_recommendation,
                     });
                     println!(
                         "{}model switched; conversation reset{}",
@@ -2584,6 +2598,7 @@ struct TuiBanner<'a> {
     temp: f32,
     max_tokens: usize,
     load_secs: f64,
+    governor_recommendation: Option<&'a str>,
 }
 
 struct TuiStatus<'a> {
@@ -2626,6 +2641,14 @@ fn print_tui_banner(banner: TuiBanner<'_>) {
         banner.max_tokens,
         banner.load_secs
     );
+    if let Some(recommendation) = banner.governor_recommendation {
+        println!(
+            "{}governor{} ondemand detected; for repeatable low-latency decode: {}",
+            ansi::LABEL,
+            ansi::RESET,
+            recommendation
+        );
+    }
     println!(
         "{}commands{} /help /model <path> /clear /exit",
         ansi::LABEL,
@@ -2708,10 +2731,11 @@ mod tests {
     use nanocamelid::tokenizer::TokenizerModel;
 
     use super::{
-        HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
-        inspect_runtime_summary, is_help_flag, parse_cpu_list, parse_generate_args_with_env,
-        parse_smoke_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
-        runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
+        HelpTopic, PERFORMANCE_GOVERNOR_COMMAND, cpu_features, cpu_governor_recommendation,
+        cpu_model, device_model, help_topic_for_args, help_topic_named, inspect_runtime_summary,
+        is_help_flag, parse_cpu_list, parse_generate_args_with_env, parse_smoke_args_with_env,
+        parse_tui_args_with_env, resolve_model_path_arg, runtime_options_from_gguf,
+        shared_token_prefix_len, validate_generation_budget,
     };
 
     #[test]
@@ -2722,6 +2746,16 @@ mod tests {
         assert_eq!(parse_cpu_list(""), None);
         assert_eq!(parse_cpu_list("3-1"), None);
         assert_eq!(parse_cpu_list("core1"), None);
+    }
+
+    #[test]
+    fn recommends_performance_governor_for_ondemand() {
+        assert_eq!(
+            cpu_governor_recommendation(Some("ondemand")),
+            Some(PERFORMANCE_GOVERNOR_COMMAND)
+        );
+        assert_eq!(cpu_governor_recommendation(Some("performance")), None);
+        assert_eq!(cpu_governor_recommendation(None), None);
     }
 
     #[test]
