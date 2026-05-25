@@ -279,6 +279,7 @@ fn main() -> ExitCode {
                             if parsed.dry_run {
                                 print_smoke_dry_run(
                                     "NanoCamelid Llama 3.2 1B smoke dry run",
+                                    "1b",
                                     model_path,
                                     &parsed,
                                 );
@@ -311,6 +312,7 @@ fn main() -> ExitCode {
                             if parsed.dry_run {
                                 print_smoke_dry_run(
                                     "NanoCamelid Llama 3.2 3B smoke dry run",
+                                    "3b",
                                     model_path,
                                     &parsed,
                                 );
@@ -2340,13 +2342,17 @@ fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode
     }
 }
 
-fn print_smoke_dry_run(title: &str, model_path: &Path, parsed: &Smoke1BArgs) {
+fn print_smoke_dry_run(title: &str, target: &str, model_path: &Path, parsed: &Smoke1BArgs) {
     println!("{title}");
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
     println!("smoke_kind: {}", parsed.kind.label());
     println!("smoke_prompt: {}", parsed.prompt);
     println!("smoke_tokens: {}", parsed.max_tokens);
+    println!(
+        "smoke_command: {}",
+        smoke_plan_command(target, model_path, parsed)
+    );
 }
 
 fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
@@ -2375,10 +2381,31 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             "direct_chat: {}",
             if chat_enabled { "enabled" } else { "disabled" }
         );
+        println!(
+            "inspect_command: {}",
+            shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
+        );
+        println!(
+            "smoke_command: {}",
+            smoke_plan_command("1b", model_path, &smoke)
+        );
         if chat_enabled {
             println!("chat_prompt: {chat_prompt}");
             println!("chat_temp: {chat_temp}");
             println!("chat_tokens: {chat_tokens}");
+            println!(
+                "chat_command: {}",
+                shell_command(&[
+                    "nanocamelid",
+                    "chat",
+                    &model_path.display().to_string(),
+                    &chat_prompt,
+                    &chat_temp.to_string(),
+                    &chat_tokens.to_string(),
+                ])
+            );
+        } else {
+            println!("chat_command: skipped");
         }
         return ExitCode::SUCCESS;
     }
@@ -2416,6 +2443,37 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
 
     println!("==> Running direct 1B chat turn");
     run_chat(model_path, &chat_prompt, chat_temp, chat_tokens)
+}
+
+fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
+    shell_command(&[
+        "nanocamelid",
+        "smoke",
+        target,
+        &model_path.display().to_string(),
+        parsed.kind.label(),
+        &parsed.prompt,
+        &parsed.max_tokens.to_string(),
+    ])
+}
+
+fn shell_command(args: &[&str]) -> String {
+    args.iter()
+        .map(|arg| shell_quote_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote_arg(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'))
+    {
+        return arg.to_owned();
+    }
+
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 #[derive(Debug)]
@@ -3624,8 +3682,8 @@ mod tests {
 
     use super::{
         DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
-        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, SmokeDefaults,
-        SmokeKind, cpu_features, cpu_governor_recommendation, cpu_model,
+        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, Smoke1BArgs,
+        SmokeDefaults, SmokeKind, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
         is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
@@ -3637,7 +3695,8 @@ mod tests {
         ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
         ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
         resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
-        runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
+        runtime_options_from_gguf, shared_token_prefix_len, shell_command, smoke_plan_command,
+        validate_generation_budget,
     };
 
     #[test]
@@ -4401,6 +4460,47 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.model_path, "/models/custom.GGUF");
         assert_eq!(parsed.prompt, "Hello");
         assert_eq!(parsed.max_tokens, 2);
+    }
+
+    #[test]
+    fn dry_run_commands_quote_prompts_for_shell_reuse() {
+        let command = shell_command(&[
+            "nanocamelid",
+            "smoke",
+            "1b",
+            "/models/Llama-3.2-1B-Instruct-Q4_0.gguf",
+            "chat",
+            "Say hello in one sentence.",
+            "8",
+        ]);
+
+        assert_eq!(
+            command,
+            "nanocamelid smoke 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf chat 'Say hello in one sentence.' 8"
+        );
+    }
+
+    #[test]
+    fn dry_run_commands_escape_single_quotes() {
+        let command = shell_command(&["nanocamelid", "chat", "/models/model.gguf", "can't", "0"]);
+
+        assert_eq!(command, "nanocamelid chat /models/model.gguf 'can'\\''t' 0");
+    }
+
+    #[test]
+    fn smoke_plan_command_uses_resolved_model_and_normalized_kind() {
+        let parsed = Smoke1BArgs {
+            kind: SmokeKind::Q8Model,
+            model_path: "/models/ignored.gguf".to_owned(),
+            prompt: "Hello Pi".to_owned(),
+            max_tokens: 2,
+            dry_run: true,
+        };
+
+        assert_eq!(
+            smoke_plan_command("1b", Path::new("/models/custom.gguf"), &parsed),
+            "nanocamelid smoke 1b /models/custom.gguf model 'Hello Pi' 2"
+        );
     }
 
     #[test]
