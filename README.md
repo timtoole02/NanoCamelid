@@ -127,6 +127,9 @@ Llama 3.2 3B Instruct Q4_0 is also supported as a Pi-local single-node row:
 - generated text: `I'd like to introduce you to`
 - direct generation throughput: `8` tokens in `3.60s` (`2.22 tok/sec`)
 - chat smoke throughput: `2` tokens in `1.02s` (`1.96 tok/sec`)
+- capped 8096-context smoke: `NANOCAMELID_CONTEXT_LIMIT=8096 ./scripts/pi/smoke-3b.sh chat ...`
+  passed with `max_logit_delta: 0.00000000` and generated `"Hello!"`
+- capped 8096-context TUI launch: `./scripts/pi/chat-3b.sh` loaded with `ctx 8096`
 
 On the Pi 2 benchmark lane, Qwen2.5-Coder-7B-Instruct Q4_0 currently validates
 through the smoke path with exact scalar-vs-selected logit parity:
@@ -449,7 +452,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | DeepSeek-R1-Distill-Qwen 1.5B | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `13.25 tok/sec`. |
 | Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat at about `4.18 tok/sec`. |
 | Llama 3.2 1B Instruct | Q8_0 | Working baseline | Baseline path for Q8 validation and Q4 comparison; short chat evidence is about `3.63 tok/sec`. |
-| Llama 3.2 3B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity; direct generation runs at about `2.22 tok/sec`. |
+| Llama 3.2 3B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity; direct generation runs at about `2.22 tok/sec`; capped `8096` context smoke and TUI launch pass. |
 | Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
 | Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
@@ -468,7 +471,8 @@ Current Pi 2 evidence, measured on local release builds:
   `4.18 tok/sec`.
 - Llama 3.2 1B Instruct Q8_0 short chat: about `3.63 tok/sec`.
 - Llama 3.2 3B Instruct Q4_0 direct generation: about `2.22 tok/sec`;
-  chat smoke generated `"Hello!"` with `max_logit_delta: 0.00000000`.
+  chat smoke generated `"Hello!"` with `max_logit_delta: 0.00000000`;
+  capped 8096-context chat smoke and TUI launch pass.
 - Q8 dot microbenchmark, default-selected SDOT: about `1.69 ns/block`.
 - Q4 layout microbenchmark: row-major `90.536ms`, swizzled 1x4 `70.648ms`,
   page-aligned swizzled `68.337ms`.
