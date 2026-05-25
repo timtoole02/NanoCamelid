@@ -26,6 +26,7 @@ Useful env:
   NANOCAMELID_READY_SMOKE_TOKENS   Smoke generated token count
   NANOCAMELID_READY_PROMPT         Direct chat prompt
   NANOCAMELID_READY_TOKENS         Direct chat generated token count
+  NANOCAMELID_READY_CHAT=0         Stop after inspect and smoke
 USAGE
 }
 
@@ -58,6 +59,8 @@ SMOKE_TOKENS="${NANOCAMELID_READY_SMOKE_TOKENS:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
 CHAT_PROMPT="${1:-${NANOCAMELID_READY_PROMPT:-Say hello in one sentence.}}"
 CHAT_TOKENS="${2:-${NANOCAMELID_READY_TOKENS:-8}}"
 CHAT_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
+CHAT_ENABLED="${NANOCAMELID_READY_CHAT:-1}"
+CHAT_ENABLED_LOWER="$(printf '%s' "$CHAT_ENABLED" | tr '[:upper:]' '[:lower:]')"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
@@ -100,6 +103,13 @@ run_nanocamelid inspect "$MODEL"
 
 echo "==> Running 1B $SMOKE_KIND smoke gate"
 run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+
+case "$CHAT_ENABLED_LOWER" in
+0 | false | no)
+  echo "==> Skipping direct 1B chat turn; NANOCAMELID_READY_CHAT=$CHAT_ENABLED"
+  exit 0
+  ;;
+esac
 
 echo "==> Running direct 1B chat turn"
 run_nanocamelid chat "$MODEL" "$CHAT_PROMPT" "$CHAT_TEMP" "$CHAT_TOKENS"

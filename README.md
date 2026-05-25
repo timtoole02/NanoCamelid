@@ -338,6 +338,7 @@ turn:
 
 ```bash
 ./scripts/pi/ready-1b.sh
+NANOCAMELID_READY_CHAT=0 ./scripts/pi/ready-1b.sh
 ```
 
 The same gate is available through the CLI when you are already using the
@@ -345,6 +346,7 @@ release binary or Cargo directly:
 
 ```bash
 nanocamelid ready 1b
+NANOCAMELID_READY_CHAT=0 nanocamelid ready 1b
 nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ```
 
@@ -393,11 +395,13 @@ directly:
 `ready-1b.sh` uses the same Pi target directory and model defaults, then runs
 `inspect`, `smoke 1b`, and `chat` against the resolved GGUF. A leading `.gguf`
 argument overrides the model path. The remaining optional arguments override
-the final direct-chat prompt and token budget:
+the final direct-chat prompt and token budget. Set `NANOCAMELID_READY_CHAT=0`
+to stop after inspect and smoke when you only need the readiness gate:
 
 ```bash
 ./scripts/pi/ready-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf "Say hello in one sentence." 8
 ./scripts/pi/ready-1b.sh "Say hello in one sentence." 8
+NANOCAMELID_READY_CHAT=0 ./scripts/pi/ready-1b.sh
 ```
 
 For faster local iteration, disable the preflight smoke gate explicitly:

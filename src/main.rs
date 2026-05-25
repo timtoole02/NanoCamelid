@@ -16,6 +16,7 @@ const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
 const WORKER_CORES_ENV: &str = "NANOCAMELID_WORKER_CORES";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
+const READY_CHAT_ENV: &str = "NANOCAMELID_READY_CHAT";
 const DEFAULT_PI_WORKSPACE: &str = "/mnt/nanocamelid";
 const LLAMA32_1B_Q4_MODEL: &str = "Llama-3.2-1B-Instruct-Q4_0.gguf";
 const LLAMA32_1B_Q8_MODEL: &str = "Llama-3.2-1B-Instruct-Q8_0.gguf";
@@ -408,6 +409,19 @@ fn prefill_batch_size() -> usize {
         .unwrap_or(DEFAULT_Q4_PREFILL_BATCH)
 }
 
+fn ready_chat_enabled() -> bool {
+    env::var(READY_CHAT_ENV)
+        .map(|value| ready_chat_enabled_from_env_value(&value))
+        .unwrap_or(true)
+}
+
+fn ready_chat_enabled_from_env_value(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no"
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpTopic {
     TopLevel,
@@ -719,6 +733,9 @@ fn print_ready_usage() {
     );
     println!(
         "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
+    );
+    println!(
+        "  {READY_CHAT_ENV}                           Set to 0 to stop after inspect and smoke"
     );
 }
 
@@ -2038,6 +2055,11 @@ fn run_ready_1b(parsed: Smoke1BArgs) -> ExitCode {
         return smoke_code;
     }
 
+    if !ready_chat_enabled() {
+        println!("==> Skipping direct 1B chat turn; {READY_CHAT_ENV}=0");
+        return ExitCode::SUCCESS;
+    }
+
     println!("==> Running direct 1B chat turn");
     run_chat(model_path, &parsed.prompt, 0.0, parsed.max_tokens)
 }
@@ -3254,9 +3276,10 @@ mod tests {
         llama32_3b_model_not_found_message, parse_cpu_list, parse_generate_args_with_env,
         parse_generate_args_with_env_and_workspace, parse_smoke_1b_args_with_env,
         parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
-        parse_tui_args_with_env_and_workspace, resolve_llama32_1b_model_path_with_workspace,
-        resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
-        runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
+        parse_tui_args_with_env_and_workspace, ready_chat_enabled_from_env_value,
+        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
+        resolve_model_path_arg, runtime_options_from_gguf, shared_token_prefix_len,
+        validate_generation_budget,
     };
 
     #[test]
@@ -3277,6 +3300,16 @@ mod tests {
         );
         assert_eq!(cpu_governor_recommendation(Some("performance")), None);
         assert_eq!(cpu_governor_recommendation(None), None);
+    }
+
+    #[test]
+    fn ready_chat_env_value_disables_direct_chat_for_falsey_values() {
+        assert!(!ready_chat_enabled_from_env_value("0"));
+        assert!(!ready_chat_enabled_from_env_value("false"));
+        assert!(!ready_chat_enabled_from_env_value(" no "));
+        assert!(ready_chat_enabled_from_env_value("1"));
+        assert!(ready_chat_enabled_from_env_value("true"));
+        assert!(ready_chat_enabled_from_env_value(""));
     }
 
     #[test]
