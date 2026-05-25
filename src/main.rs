@@ -594,7 +594,7 @@ fn print_usage() {
     println!("  tui 3b [temp] [max_tokens]");
     println!("                                            Open an interactive terminal chat");
     println!(
-        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat]"
+        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]"
     );
     println!(
         "                                            Run inspect, smoke, and direct chat gates for 1B"
@@ -769,10 +769,10 @@ fn print_ready_usage() {
     println!();
     println!("Usage:");
     println!(
-        "  nanocamelid ready 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat]"
+        "  nanocamelid ready 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]"
     );
     println!(
-        "  nanocamelid ready 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat]"
+        "  nanocamelid ready 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]"
     );
     println!();
     println!(
@@ -782,6 +782,9 @@ fn print_ready_usage() {
     println!("Options:");
     println!("  --no-chat, --smoke-only                  Stop after inspect and smoke");
     println!("  --chat                                   Force the direct chat turn");
+    println!(
+        "  --dry-run                                Print the resolved readiness plan without loading the model"
+    );
     println!("  [prompt] [max_tokens]                    Override the final direct chat turn");
     println!();
     println!("Env:");
@@ -995,6 +998,7 @@ struct Ready1BArgs {
     chat_enabled_override: Option<bool>,
     chat_prompt_override: Option<String>,
     chat_tokens_override: Option<usize>,
+    dry_run: bool,
 }
 
 fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
@@ -1192,12 +1196,14 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
     smoke_defaults: SmokeDefaults,
 ) -> Result<Ready1BArgs, &'static str> {
     let mut chat_enabled_override = None;
+    let mut dry_run = false;
     let mut smoke_args = Vec::with_capacity(args.len());
 
     for arg in args {
         match arg.as_str() {
             "--no-chat" | "--smoke-only" => chat_enabled_override = Some(false),
             "--chat" => chat_enabled_override = Some(true),
+            "--dry-run" => dry_run = true,
             _ => smoke_args.push(arg.clone()),
         }
     }
@@ -1237,6 +1243,7 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
         chat_enabled_override,
         chat_prompt_override,
         chat_tokens_override,
+        dry_run,
     })
 }
 
@@ -2268,6 +2275,37 @@ fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode
 fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     let smoke = parsed.smoke;
     let model_path = Path::new(&smoke.model_path);
+    let chat_enabled = parsed
+        .chat_enabled_override
+        .unwrap_or_else(ready_chat_enabled);
+    let chat_prompt = parsed
+        .chat_prompt_override
+        .clone()
+        .unwrap_or_else(|| ready_chat_prompt(&smoke.prompt));
+    let chat_tokens = parsed
+        .chat_tokens_override
+        .unwrap_or_else(|| ready_chat_tokens(smoke.max_tokens));
+    let chat_temp = ready_chat_temp();
+
+    if parsed.dry_run {
+        println!("NanoCamelid Llama 3.2 1B readiness dry run");
+        println!("model: {}", model_path.display());
+        println!("model_exists: {}", model_path.is_file());
+        println!("smoke_kind: {}", smoke.kind.label());
+        println!("smoke_prompt: {}", smoke.prompt);
+        println!("smoke_tokens: {}", smoke.max_tokens);
+        println!(
+            "direct_chat: {}",
+            if chat_enabled { "enabled" } else { "disabled" }
+        );
+        if chat_enabled {
+            println!("chat_prompt: {chat_prompt}");
+            println!("chat_temp: {chat_temp}");
+            println!("chat_tokens: {chat_tokens}");
+        }
+        return ExitCode::SUCCESS;
+    }
+
     if !model_path.is_file() {
         eprintln!("{}", llama32_1b_model_not_found_message(model_path));
         return ExitCode::from(2);
@@ -2289,10 +2327,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         return smoke_code;
     }
 
-    if !parsed
-        .chat_enabled_override
-        .unwrap_or_else(ready_chat_enabled)
-    {
+    if !chat_enabled {
         let reason = if parsed.chat_enabled_override == Some(false) {
             "--no-chat"
         } else {
@@ -2301,14 +2336,6 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         println!("==> Skipping direct 1B chat turn; {reason}");
         return ExitCode::SUCCESS;
     }
-
-    let chat_prompt = parsed
-        .chat_prompt_override
-        .unwrap_or_else(|| ready_chat_prompt(&smoke.prompt));
-    let chat_tokens = parsed
-        .chat_tokens_override
-        .unwrap_or_else(|| ready_chat_tokens(smoke.max_tokens));
-    let chat_temp = ready_chat_temp();
 
     println!("==> Running direct 1B chat turn");
     run_chat(model_path, &chat_prompt, chat_temp, chat_tokens)
@@ -4344,6 +4371,32 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
         assert_eq!(parsed.chat_enabled_override, Some(true));
         assert_eq!(parsed.chat_prompt_override, Some("Hello".to_owned()));
+        assert!(!parsed.dry_run);
+    }
+
+    #[test]
+    fn ready_1b_args_accept_dry_run_with_other_flags() {
+        let parsed = parse_ready_1b_args_with_env(
+            &[
+                "--dry-run".to_owned(),
+                "/models/custom.GGUF".to_owned(),
+                "q8-chat".to_owned(),
+                "Say hi".to_owned(),
+                "4".to_owned(),
+                "--smoke-only".to_owned(),
+            ],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("dry-run ready args should parse");
+
+        assert!(parsed.dry_run);
+        assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
+        assert_eq!(parsed.smoke.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.chat_enabled_override, Some(false));
+        assert_eq!(parsed.chat_prompt_override, Some("Say hi".to_owned()));
+        assert_eq!(parsed.chat_tokens_override, Some(4));
     }
 
     #[test]
@@ -4359,6 +4412,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.chat_enabled_override, None);
         assert_eq!(parsed.chat_prompt_override, None);
         assert_eq!(parsed.chat_tokens_override, None);
+        assert!(!parsed.dry_run);
     }
 
     #[test]

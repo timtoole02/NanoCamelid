@@ -353,12 +353,15 @@ release binary or Cargo directly:
 ```bash
 nanocamelid ready 1b
 nanocamelid ready 1b --no-chat
+nanocamelid ready 1b --dry-run
 nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ```
 
 Use `--no-chat` or `--smoke-only` for the inspect plus smoke-only form when you
 want the CLI gate to validate the model path without launching the final direct
-chat turn. For non-interactive automation, the CLI also honors
+chat turn. Use `--dry-run` to print the resolved 1B model path, smoke settings,
+and direct-chat gate without loading the GGUF. For non-interactive automation,
+the CLI also honors
 `NANOCAMELID_READY_SMOKE_KIND`, `NANOCAMELID_READY_SMOKE_PROMPT`, and
 `NANOCAMELID_READY_SMOKE_TOKENS` as smoke defaults before the final direct chat
 turn.
