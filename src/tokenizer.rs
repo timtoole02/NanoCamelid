@@ -202,7 +202,10 @@ impl Tokenizer {
         };
         if model == TokenizerModel::Gpt2Bpe {
             let pre_tokenizer = file.metadata_string("tokenizer.ggml.pre");
-            if !matches!(pre_tokenizer, Some("llama-bpe" | "qwen2")) {
+            if !matches!(
+                pre_tokenizer,
+                Some("llama-bpe" | "qwen2" | "deepseek-r1-qwen")
+            ) {
                 return Err(format!(
                     "unsupported GPT-2/BPE pre-tokenizer: {pre_tokenizer:?}"
                 ));
@@ -1263,6 +1266,28 @@ mod tests {
             ),
         ]))
         .expect("qwen2 BPE tokenizer should load");
+
+        assert_eq!(tokenizer.model, TokenizerModel::Gpt2Bpe);
+        assert!(!tokenizer.config.add_bos);
+    }
+
+    #[test]
+    fn tokenizer_accepts_deepseek_r1_qwen_bpe_pre_tokenizer() {
+        let tokenizer = Tokenizer::from_gguf(&tokenizer_fixture([
+            (
+                "tokenizer.ggml.model",
+                GgufMetadataValue::String("gpt2".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.pre",
+                GgufMetadataValue::String("deepseek-r1-qwen".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.add_bos_token",
+                GgufMetadataValue::Bool(false),
+            ),
+        ]))
+        .expect("DeepSeek R1 Qwen BPE tokenizer should load");
 
         assert_eq!(tokenizer.model, TokenizerModel::Gpt2Bpe);
         assert!(!tokenizer.config.add_bos);

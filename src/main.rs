@@ -1913,7 +1913,7 @@ fn print_q8_smoke_report(title: &str, model_path: &Path, report: &Q8ModelSmokeRe
 fn rope_scaling_from_gguf(gguf: &gguf::GgufFile) -> inference::RopeScaling {
     let prefix = gguf
         .metadata_string("general.architecture")
-        .filter(|arch| matches!(*arch, "llama" | "qwen2"))
+        .and_then(model::metadata_prefix_for_arch)
         .unwrap_or("llama");
     inference::RopeScaling {
         factor: gguf.metadata_f32(&format!("{prefix}.rope.scaling.factor")),
@@ -3399,6 +3399,34 @@ flags\t\t: sse4_2 avx2
         assert_eq!(runtime.rope_scaling.original_context_length, Some(4096.0));
         assert_eq!(runtime.rope_scaling.low_freq_factor, Some(1.0));
         assert_eq!(runtime.rope_scaling.high_freq_factor, Some(4.0));
+    }
+
+    #[test]
+    fn runtime_options_read_mistral_rope_scaling_metadata() {
+        let mut fixture = inspect_fixture(false);
+        fixture.metadata.insert(
+            "general.architecture".to_owned(),
+            GgufMetadataValue::String("mistral".to_owned()),
+        );
+        fixture.metadata.insert(
+            "mistral.rope.scaling.factor".to_owned(),
+            GgufMetadataValue::F32(1.5),
+        );
+        fixture.metadata.insert(
+            "mistral.rope.scaling.original_context_length".to_owned(),
+            GgufMetadataValue::U32(8192),
+        );
+
+        let runtime = runtime_options_from_gguf(
+            &fixture,
+            q8::Q8DotKernelSelector {
+                requested: None,
+                selected: q8::Q8DotKernel::Scalar,
+                fallback_reason: None,
+            },
+        );
+        assert_eq!(runtime.rope_scaling.factor, Some(1.5));
+        assert_eq!(runtime.rope_scaling.original_context_length, Some(8192.0));
     }
 
     fn inspect_fixture(break_ffn_down: bool) -> GgufFile {

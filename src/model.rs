@@ -40,13 +40,8 @@ impl LlamaModelConfig {
         let arch = gguf
             .metadata_string("general.architecture")
             .ok_or_else(|| "missing general.architecture".to_owned())?;
-        let metadata_prefix = match arch {
-            "llama" => "llama",
-            "qwen2" => "qwen2",
-            _ => {
-                return Err(format!("unsupported architecture: {arch}"));
-            }
-        };
+        let metadata_prefix = metadata_prefix_for_arch(arch)
+            .ok_or_else(|| format!("unsupported architecture: {arch}"))?;
 
         let context_length = metadata_u32(gguf, metadata_prefix, "context_length")?;
         let embedding_length = metadata_u32(gguf, metadata_prefix, "embedding_length")?;
@@ -160,6 +155,15 @@ impl LlamaModelConfig {
 
 fn metadata_key(prefix: &str, suffix: &str) -> String {
     format!("{prefix}.{suffix}")
+}
+
+pub fn metadata_prefix_for_arch(arch: &str) -> Option<&'static str> {
+    match arch {
+        "llama" => Some("llama"),
+        "qwen2" => Some("qwen2"),
+        "mistral" => Some("mistral"),
+        _ => None,
+    }
 }
 
 fn metadata_u32(gguf: &GgufFile, prefix: &str, suffix: &str) -> Result<usize, String> {
@@ -927,6 +931,43 @@ mod tests {
         assert_eq!(config.vocab_size, 152064);
         assert_eq!(config.head_dim, 128);
         assert_eq!(config.kv_width, 512);
+        assert_eq!(config.rope_freq_base, 1_000_000.0);
+    }
+
+    #[test]
+    fn parses_mistral_metadata_namespace() {
+        let gguf = gguf_fixture(
+            [
+                (
+                    "general.architecture",
+                    GgufMetadataValue::String("mistral".to_owned()),
+                ),
+                ("mistral.context_length", GgufMetadataValue::U32(32768)),
+                ("mistral.embedding_length", GgufMetadataValue::U32(4096)),
+                ("mistral.block_count", GgufMetadataValue::U32(32)),
+                ("mistral.feed_forward_length", GgufMetadataValue::U32(14336)),
+                ("mistral.attention.head_count", GgufMetadataValue::U32(32)),
+                ("mistral.attention.head_count_kv", GgufMetadataValue::U32(8)),
+                (
+                    "mistral.rope.freq_base",
+                    GgufMetadataValue::F32(1_000_000.0),
+                ),
+                ("mistral.vocab_size", GgufMetadataValue::U32(32000)),
+            ],
+            vec![tensor_desc(
+                "token_embd.weight",
+                vec![4096, 32000],
+                GgufTensorType::Q4_0,
+                q8_bytes(4096, 32000),
+            )],
+        );
+
+        let config = LlamaModelConfig::from_gguf(&gguf).expect("mistral config should parse");
+        assert_eq!(config.architecture, "mistral");
+        assert_eq!(config.metadata_prefix, "mistral");
+        assert_eq!(config.vocab_size, 32000);
+        assert_eq!(config.head_dim, 128);
+        assert_eq!(config.kv_width, 1024);
         assert_eq!(config.rope_freq_base, 1_000_000.0);
     }
 
