@@ -166,9 +166,12 @@ Additional small-model catalog rows now validate on the Pi smoke lane:
 - Mistral 7B Instruct v0.1 Q4_0: `ready`, 4-token generation at about
   `3.68 tok/sec`
 
-Mixtral is intentionally not listed as supported yet. It is a routed MoE model
-family and needs expert tensor loading, router logits, and expert FFN execution
-before NanoCamelid can claim it honestly.
+Mixtral Q4_0 now has an experimental three-Pi cluster smoke. NanoCamelid can
+parse the expert-indexed MoE tensors, route through the top experts, and produce
+a one-token `master-generate` result across the Pi pipeline. This is not a
+single-Pi support claim: full Mixtral single-node generation exceeds 16 GB Pi
+RAM during eager weight load and needs clustered execution or a future lazy
+expert loader.
 
 ## Runtime Design
 
@@ -397,6 +400,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
 | Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
+| Mixtral 8x7B Instruct v0.1 | Q4_0 | Experimental MoE cluster smoke | Expert-indexed MoE tensors inspect as `ready`; three-Pi `master-generate` produced one token from `"Hello"` with Pi2/Pi3 worker stages completing. Single-Pi full generation OOMs on 16 GB Pi RAM. |
 | Qwen2.5-Coder 32B Instruct | Q4_0 | Cluster smoke only | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec`; this is not a single-Pi claim. |
 | Llama 3 70B Instruct | Q4_0 | Token-level cluster smoke only | Three-Pi token-level smoke generated two tokens at about `0.17 tok/sec`; full prompt-level chat still needs tokenizer support for the tested GGUF. |
 
