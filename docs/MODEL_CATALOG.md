@@ -51,7 +51,7 @@ Do not present these as supported until the listed runtime gaps are closed.
 
 | Family | Current status | Required work |
 | --- | --- | --- |
-| Mixtral / MoE Mistral | Not supported yet | Add routed expert loading, router logits, top-k expert selection, expert FFN execution, and parity/smoke tests |
+| Mixtral / MoE Mistral | Not supported yet. `mixtral-8x7b-instruct-v0.1.Q4_0.gguf` parses metadata/tokenizer, but `inspect` reports `tensor blk.0.ffn_gate.weight not found in GGUF`; the real tensors are expert-indexed, e.g. `blk.0.ffn_gate.0.weight`, `blk.0.ffn_down.0.weight`, and `blk.0.ffn_up.0.weight`. | Add routed expert loading, router logits, top-k expert selection, expert FFN execution, and parity/smoke tests |
 | Gemma 2 / Gemma family | Not supported yet | Add Gemma metadata mapping, GeLU/GELU-ish activation path, Gemma RMSNorm behavior, and attention logit soft-capping where required |
 | Phi family | Not supported yet | Inspect GGUF architecture/tensor names, add architecture-specific config and tokenizer support |
 | Qwen3 | Not supported by claim yet | Inspect architecture key and tokenizer metadata; add/validate if it remains compatible with current Qwen2 math |
@@ -68,4 +68,3 @@ Promote a row from candidate to supported only after:
 5. Throughput is recorded for the same hardware class and context cap.
 6. Any large-model result clearly states whether it is single-node, clustered,
    prompt-level, or token-level only.
-
