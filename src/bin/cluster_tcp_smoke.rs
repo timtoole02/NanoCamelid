@@ -54,6 +54,23 @@ fn run() -> Result<(), String> {
                 max_tokens,
             )
         }
+        Some("master-unchecked") => {
+            let Some(model_path) = args.next() else {
+                print_usage();
+                return Err("missing master model path".to_owned());
+            };
+            let worker_addr = args.next().unwrap_or_else(|| "127.0.0.1:5005".to_owned());
+            let token_id = parse_optional_usize(args.next(), 1, "token_id")?;
+            let requested_split_layer = parse_optional_usize(args.next(), 0, "split_layer")?;
+            let max_tokens = parse_optional_usize(args.next(), 1, "max_tokens")?;
+            run_master_unchecked(
+                Path::new(&model_path),
+                &worker_addr,
+                token_id,
+                requested_split_layer,
+                max_tokens,
+            )
+        }
         _ => {
             print_usage();
             Err("missing mode".to_owned())
@@ -189,6 +206,41 @@ fn run_master(
     requested_split_layer: usize,
     max_tokens: usize,
 ) -> Result<(), String> {
+    run_master_session(
+        model_path,
+        worker_addr,
+        token_id,
+        requested_split_layer,
+        max_tokens,
+        true,
+    )
+}
+
+fn run_master_unchecked(
+    model_path: &Path,
+    worker_addr: &str,
+    token_id: usize,
+    requested_split_layer: usize,
+    max_tokens: usize,
+) -> Result<(), String> {
+    run_master_session(
+        model_path,
+        worker_addr,
+        token_id,
+        requested_split_layer,
+        max_tokens,
+        false,
+    )
+}
+
+fn run_master_session(
+    model_path: &Path,
+    worker_addr: &str,
+    token_id: usize,
+    requested_split_layer: usize,
+    max_tokens: usize,
+    check_full_forward: bool,
+) -> Result<(), String> {
     let loaded = load_cluster_model(model_path, requested_split_layer)?;
     if token_id >= loaded.config.vocab_size {
         return Err(format!(
@@ -196,8 +248,14 @@ fn run_master(
             loaded.config.vocab_size
         ));
     }
-    let full_weights = model::LlamaWeights::load(model_path, &loaded.config, &loaded.gguf)
-        .map_err(|err| format!("failed to load full weights: {err}"))?;
+    let full_weights = if check_full_forward {
+        Some(
+            model::LlamaWeights::load(model_path, &loaded.config, &loaded.gguf)
+                .map_err(|err| format!("failed to load full weights: {err}"))?,
+        )
+    } else {
+        None
+    };
     let node0 = model::LlamaWeights::load_distributed(
         model_path,
         &loaded.config,
@@ -218,6 +276,7 @@ fn run_master(
     println!("max_tokens: {max_tokens}");
     println!("layers: {}", loaded.config.block_count);
     println!("split_layer: {}", loaded.split_layer);
+    println!("full_forward_check: {check_full_forward}");
 
     let options = runtime_options();
     let mut full_cache = inference::LlamaKvCache::new(
@@ -245,18 +304,22 @@ fn run_master(
     let decode_limit = max_tokens.min(loaded.config.context_length);
 
     for pos in 0..decode_limit {
-        let full_start = Instant::now();
-        inference::forward_pass(
-            current_token,
-            pos,
-            &loaded.config,
-            &full_weights,
-            &mut full_cache,
-            &mut full_ws,
-            options,
-        );
-        full_forward_total += full_start.elapsed();
-        let full_next = inference::sample_logits(&full_ws.logits, 0.0);
+        let full_next = if let Some(full_weights) = &full_weights {
+            let full_start = Instant::now();
+            inference::forward_pass(
+                current_token,
+                pos,
+                &loaded.config,
+                full_weights,
+                &mut full_cache,
+                &mut full_ws,
+                options,
+            );
+            full_forward_total += full_start.elapsed();
+            Some(inference::sample_logits(&full_ws.logits, 0.0))
+        } else {
+            None
+        };
 
         let master_start = Instant::now();
         inference::embed_token(
@@ -288,17 +351,25 @@ fn run_master(
         let round_trip = round_trip_start.elapsed();
         tcp_round_trip_total += round_trip;
 
-        println!(
-            "token[{pos}]: input={current_token} full_next={full_next} worker_next={} round_trip_ms={:.3}",
-            feedback.token_id,
-            round_trip.as_secs_f64() * 1000.0
-        );
+        if let Some(full_next) = full_next {
+            println!(
+                "token[{pos}]: input={current_token} full_next={full_next} worker_next={} round_trip_ms={:.3}",
+                feedback.token_id,
+                round_trip.as_secs_f64() * 1000.0
+            );
 
-        if full_next != feedback.token_id as usize {
-            return Err(format!(
-                "worker token {} did not match full forward token {full_next} at generated index {pos}",
-                feedback.token_id
-            ));
+            if full_next != feedback.token_id as usize {
+                return Err(format!(
+                    "worker token {} did not match full forward token {full_next} at generated index {pos}",
+                    feedback.token_id
+                ));
+            }
+        } else {
+            println!(
+                "token[{pos}]: input={current_token} worker_next={} round_trip_ms={:.3}",
+                feedback.token_id,
+                round_trip.as_secs_f64() * 1000.0
+            );
         }
 
         generated_tokens.push(feedback.token_id);
@@ -316,10 +387,12 @@ fn run_master(
         "activation_payload_kb_each_token: {:.2}",
         std::mem::size_of_val(node0_ws.hidden.as_slice()) as f64 / 1024.0
     );
-    println!(
-        "full_forward_total_ms: {:.3}",
-        full_forward_total.as_secs_f64() * 1000.0
-    );
+    if check_full_forward {
+        println!(
+            "full_forward_total_ms: {:.3}",
+            full_forward_total.as_secs_f64() * 1000.0
+        );
+    }
     println!(
         "cluster_master_stage_total_ms: {:.3}",
         master_stage_total.as_secs_f64() * 1000.0
@@ -334,10 +407,12 @@ fn run_master(
     );
     if !generated_tokens.is_empty() {
         let token_count = generated_tokens.len() as f64;
-        println!(
-            "full_forward_avg_ms: {:.3}",
-            full_forward_total.as_secs_f64() * 1000.0 / token_count
-        );
+        if check_full_forward {
+            println!(
+                "full_forward_avg_ms: {:.3}",
+                full_forward_total.as_secs_f64() * 1000.0 / token_count
+            );
+        }
         println!(
             "cluster_total_measured_avg_ms: {:.3}",
             (master_stage_total + tcp_round_trip_total).as_secs_f64() * 1000.0 / token_count
@@ -345,7 +420,11 @@ fn run_master(
     }
     println!("generated_tokens: {generated_tokens:?}");
 
-    println!("result: PASS");
+    if check_full_forward {
+        println!("result: PASS");
+    } else {
+        println!("result: PASS_UNCHECKED");
+    }
     Ok(())
 }
 
@@ -457,6 +536,9 @@ fn print_usage() {
     );
     println!(
         "  cargo run --release --bin cluster_tcp_smoke -- master <model.gguf> [worker_addr] [token_id] [split_layer] [max_tokens]"
+    );
+    println!(
+        "  cargo run --release --bin cluster_tcp_smoke -- master-unchecked <model.gguf> [worker_addr] [token_id] [split_layer] [max_tokens]"
     );
     println!();
     println!("Environment:");
