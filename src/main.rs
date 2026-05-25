@@ -421,6 +421,45 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
     match args.first().map(String::as_str) {
         Some("-h" | "--help") | Some("help") if args.len() == 1 => Some(HelpTopic::TopLevel),
         Some("help") => help_topic_named(args.get(1).map(String::as_str).unwrap_or_default()),
+        Some("generate")
+            if args
+                .get(1)
+                .is_some_and(|value| is_llama32_1b_alias(value) || is_llama32_3b_alias(value))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Generate)
+        }
+        Some("chat")
+            if args
+                .get(1)
+                .is_some_and(|value| is_llama32_1b_alias(value) || is_llama32_3b_alias(value))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Chat)
+        }
+        Some("tui")
+            if args
+                .get(1)
+                .is_some_and(|value| is_llama32_1b_alias(value) || is_llama32_3b_alias(value))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Tui)
+        }
+        Some("ready")
+            if args.get(1).is_some_and(|value| is_llama32_1b_alias(value))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Ready)
+        }
+        Some("smoke")
+            if args.get(1).is_some_and(|value| {
+                is_llama32_1b_alias(value)
+                    || is_llama32_3b_alias(value)
+                    || matches!(value.as_str(), "q8-model" | "q8-chat")
+            }) && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Smoke)
+        }
         _ => None,
     }
 }
@@ -3339,6 +3378,46 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "tui".to_owned()]),
             Some(HelpTopic::Tui)
+        );
+    }
+
+    #[test]
+    fn help_topic_for_args_detects_nested_model_alias_help() {
+        assert_eq!(
+            help_topic_for_args(&["generate".to_owned(), "1b".to_owned(), "--help".to_owned()]),
+            Some(HelpTopic::Generate)
+        );
+        assert_eq!(
+            help_topic_for_args(&["chat".to_owned(), "llama32-3b".to_owned(), "-h".to_owned()]),
+            Some(HelpTopic::Chat)
+        );
+        assert_eq!(
+            help_topic_for_args(&[
+                "tui".to_owned(),
+                "llama-3.2-1b".to_owned(),
+                "--help".to_owned()
+            ]),
+            Some(HelpTopic::Tui)
+        );
+        assert_eq!(
+            help_topic_for_args(&["ready".to_owned(), "1b".to_owned(), "--help".to_owned()]),
+            Some(HelpTopic::Ready)
+        );
+        assert_eq!(
+            help_topic_for_args(&[
+                "smoke".to_owned(),
+                "llama-3.2-1b".to_owned(),
+                "-h".to_owned()
+            ]),
+            Some(HelpTopic::Smoke)
+        );
+        assert_eq!(
+            help_topic_for_args(&[
+                "smoke".to_owned(),
+                "q8-chat".to_owned(),
+                "--help".to_owned()
+            ]),
+            Some(HelpTopic::Smoke)
         );
     }
 
