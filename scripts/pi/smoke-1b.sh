@@ -4,6 +4,7 @@ set -euo pipefail
 
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
+TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
 if [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
@@ -16,7 +17,7 @@ fi
 SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-q8-chat}}"
 SMOKE_PROMPT="${2:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${3:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
-BINARY="${NANOCAMELID_BIN:-$WORKSPACE/target/release/nanocamelid}"
+BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
 
@@ -49,7 +50,7 @@ run_nanocamelid() {
   fi
 
   cd "$REPO"
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
+  export CARGO_TARGET_DIR="$TARGET_DIR"
   cargo run --release -- "$@"
 }
 

@@ -182,7 +182,9 @@ and defaults the block dot path to SDOT on Pi-class ARM64 hardware. It runs a
 `smoke q8-chat` preflight before opening the TUI, so the 1B instruct path keeps
 the scalar-vs-selected-kernel parity gate in front of interactive chat. It still
 honors `NANOCAMELID_MODEL_GGUF` and `NANOCAMELID_Q8_DOT_KERNEL` if you want to
-force a different model or kernel for comparison.
+force a different model or kernel for comparison. When the helper needs to build
+through Cargo, it uses `/mnt/nanocamelid/target` by default, or an explicit
+`CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` override.
 
 Optional arguments set temperature and maximum assistant output tokens:
 
