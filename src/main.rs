@@ -12,6 +12,7 @@ use nanocamelid::{gguf, inference, model, q8, tokenizer};
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
 const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
 const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
+const WORKER_CORES_ENV: &str = "NANOCAMELID_WORKER_CORES";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
 const DEFAULT_RAYON_THREADS: usize = 4;
@@ -236,7 +237,19 @@ fn main() -> ExitCode {
 
 fn setup_thread_pool() {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let default_threads = core_ids.len().clamp(1, DEFAULT_RAYON_THREADS);
+    let worker_core_indices =
+        worker_core_indices_from_env().or_else(isolated_cpu_indices_from_sysfs);
+    let worker_core_ids = worker_core_indices
+        .as_ref()
+        .map(|indices| {
+            indices
+                .iter()
+                .filter_map(|&idx| core_ids.get(idx).copied())
+                .collect::<Vec<_>>()
+        })
+        .filter(|ids| !ids.is_empty())
+        .unwrap_or_else(|| core_ids.clone());
+    let default_threads = worker_core_ids.len().clamp(1, DEFAULT_RAYON_THREADS);
     let thread_count = env::var(RAYON_THREADS_ENV)
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -246,11 +259,42 @@ fn setup_thread_pool() {
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(thread_count)
         .start_handler(move |thread_idx| {
-            if let Some(core_id) = core_ids.get(thread_idx % core_ids.len().max(1)) {
+            if let Some(core_id) = worker_core_ids.get(thread_idx % worker_core_ids.len().max(1)) {
                 core_affinity::set_for_current(*core_id);
             }
         })
         .build_global();
+}
+
+fn worker_core_indices_from_env() -> Option<Vec<usize>> {
+    env::var(WORKER_CORES_ENV)
+        .ok()
+        .and_then(|value| parse_cpu_list(&value))
+}
+
+fn isolated_cpu_indices_from_sysfs() -> Option<Vec<usize>> {
+    fs::read_to_string("/sys/devices/system/cpu/isolated")
+        .ok()
+        .and_then(|value| parse_cpu_list(&value))
+}
+
+fn parse_cpu_list(value: &str) -> Option<Vec<usize>> {
+    let mut cpus = Vec::new();
+    for part in value.trim().split(',').filter(|part| !part.is_empty()) {
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start.trim().parse::<usize>().ok()?;
+            let end = end.trim().parse::<usize>().ok()?;
+            if start > end {
+                return None;
+            }
+            cpus.extend(start..=end);
+        } else {
+            cpus.push(part.trim().parse::<usize>().ok()?);
+        }
+    }
+    cpus.sort_unstable();
+    cpus.dedup();
+    (!cpus.is_empty()).then_some(cpus)
 }
 
 fn prefill_batch_size() -> usize {
@@ -354,7 +398,9 @@ fn print_probe_usage() {
     println!("Usage:");
     println!("  nanocamelid probe");
     println!();
-    println!("Print host CPU model, feature flags, and runtime SIMD detection.");
+    println!(
+        "Print host CPU model, feature flags, cpufreq telemetry, isolated CPUs, and runtime SIMD detection."
+    );
 }
 
 fn print_inspect_usage() {
@@ -460,6 +506,9 @@ fn print_tui_usage() {
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
     );
     println!(
+        "  {WORKER_CORES_ENV}                          Comma/range CPU list for pinned Rayon workers, e.g. 1,2,3"
+    );
+    println!(
         "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
     );
     println!(
@@ -511,6 +560,9 @@ fn print_bench_usage() {
     println!("  NANOCAMELID_Q6K_SDOT                      Enable experimental Q6_K SDOT matmuls");
     println!(
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
+    );
+    println!(
+        "  {WORKER_CORES_ENV}                          Comma/range CPU list for pinned Rayon workers, e.g. 1,2,3"
     );
 }
 
@@ -723,14 +775,59 @@ fn print_probe() {
         .or_else(|| cpu_model(&cpuinfo))
         .unwrap_or("unknown");
     let features = cpu_features(&cpuinfo);
+    let core_count = core_affinity::get_core_ids()
+        .map(|cores| cores.len())
+        .unwrap_or(0);
+    let max_freq_khz = read_trimmed("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
+    let governor = read_trimmed("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
+    let isolated_cpus = read_trimmed("/sys/devices/system/cpu/isolated");
+    let worker_cores = worker_core_indices_from_env()
+        .or_else(|| isolated_cpus.as_deref().and_then(parse_cpu_list));
 
     println!("NanoCamelid host probe");
     println!("arch: {}", env::consts::ARCH);
     println!("os: {}", env::consts::OS);
     println!("cpu_model: {model}");
+    println!("logical_cores: {core_count}");
     println!("cpu_features: {}", features.unwrap_or("unknown"));
+    println!(
+        "cpuinfo_max_freq_khz: {}",
+        max_freq_khz.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "scaling_governor: {}",
+        governor.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "isolated_cpus: {}",
+        isolated_cpus
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("none")
+    );
+    println!(
+        "rayon_worker_cores: {}",
+        worker_cores
+            .as_deref()
+            .map(format_cpu_list)
+            .unwrap_or_else(|| "default".to_owned())
+    );
     println!("runtime_neon: {}", runtime_neon());
     println!("runtime_dotprod: {}", runtime_dotprod());
+}
+
+fn read_trimmed(path: &str) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn format_cpu_list(cpus: &[usize]) -> String {
+    cpus.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
@@ -2588,10 +2685,21 @@ mod tests {
 
     use super::{
         HelpTopic, cpu_features, cpu_model, device_model, help_topic_for_args, help_topic_named,
-        inspect_runtime_summary, is_help_flag, parse_generate_args_with_env,
+        inspect_runtime_summary, is_help_flag, parse_cpu_list, parse_generate_args_with_env,
         parse_smoke_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
         runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
     };
+
+    #[test]
+    fn parses_cpu_lists() {
+        assert_eq!(parse_cpu_list("1,2,3"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_cpu_list("1-3"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_cpu_list("3,1-2,2"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_cpu_list(""), None);
+        assert_eq!(parse_cpu_list("3-1"), None);
+        assert_eq!(parse_cpu_list("core1"), None);
+    }
+
     #[test]
     fn parses_aarch64_cpuinfo() {
         let cpuinfo = "\

@@ -240,6 +240,9 @@ Useful environment controls:
 - `NANOCAMELID_CONTEXT_LIMIT`: optional runtime KV-cache context cap for short
   smoke tests of long-context models.
 - `NANOCAMELID_RAYON_THREADS`: global Rayon worker count.
+- `NANOCAMELID_WORKER_CORES=1,2,3`: pin Rayon workers to a CPU list. If this is
+  unset and Linux reports isolated CPUs in `/sys/devices/system/cpu/isolated`,
+  NanoCamelid uses that isolated set automatically.
 - `NANOCAMELID_MATMUL_MIN_ROWS`: row-count threshold before matmuls enter Rayon.
 - `NANOCAMELID_Q8_DOT_KERNEL=scalar|neon|sdot`: force the selected Q8 kernel.
 - `NANOCAMELID_Q8_DOT_SDOT=1`: enable SDOT candidate benchmarking.
@@ -294,6 +297,11 @@ The Q4_0 1B path is faster than Q8_0 on the same prompt, but the measured
 end-to-end gain is still far below the theoretical memory-traffic ceiling. The
 next useful performance work should be driven by real prompt/decode timings, not
 isolated kernel wins alone.
+
+Use `nanocamelid probe` on Raspberry Pi hosts to inspect CPU max frequency,
+governor, isolated CPU state, selected worker-core policy, and SIMD support. The
+tool reports telemetry only; boot parameters and overclock settings remain an
+operator decision outside NanoCamelid.
 
 ## Raspberry Pi Deployment
 
