@@ -36,8 +36,10 @@ looks_like_gguf_path() {
   esac
 }
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
-REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
+REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
