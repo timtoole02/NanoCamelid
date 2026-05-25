@@ -129,6 +129,35 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("ready") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Ready);
+                return ExitCode::SUCCESS;
+            }
+
+            match args.get(1).map(String::as_str) {
+                Some("1b" | "llama32-1b" | "llama-3.2-1b") => {
+                    match parse_smoke_1b_args(&args[2..]) {
+                        Ok(parsed) => run_ready_1b(parsed),
+                        Err(err) => {
+                            eprintln!("{err}");
+                            print_help(HelpTopic::Ready);
+                            ExitCode::from(2)
+                        }
+                    }
+                }
+                Some(other) => {
+                    eprintln!("unknown readiness target: {other}");
+                    print_help(HelpTopic::Ready);
+                    ExitCode::from(2)
+                }
+                None => {
+                    eprintln!("missing readiness target");
+                    print_help(HelpTopic::Ready);
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("bench") => {
             if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
                 print_help(HelpTopic::Bench);
@@ -376,6 +405,7 @@ enum HelpTopic {
     Generate,
     Chat,
     Tui,
+    Ready,
     Bench,
     Smoke,
 }
@@ -395,6 +425,7 @@ fn help_topic_named(name: &str) -> Option<HelpTopic> {
         "generate" => Some(HelpTopic::Generate),
         "chat" => Some(HelpTopic::Chat),
         "tui" => Some(HelpTopic::Tui),
+        "ready" => Some(HelpTopic::Ready),
         "bench" => Some(HelpTopic::Bench),
         "smoke" => Some(HelpTopic::Smoke),
         _ => None,
@@ -413,6 +444,7 @@ fn print_help(topic: HelpTopic) {
         HelpTopic::Generate => print_generate_usage(),
         HelpTopic::Chat => print_chat_usage(),
         HelpTopic::Tui => print_tui_usage(),
+        HelpTopic::Ready => print_ready_usage(),
         HelpTopic::Bench => print_bench_usage(),
         HelpTopic::Smoke => print_smoke_usage(),
     }
@@ -449,6 +481,10 @@ fn print_usage() {
     println!("  tui 1b [temp] [max_tokens]");
     println!("  tui 3b [temp] [max_tokens]");
     println!("                                            Open an interactive terminal chat");
+    println!("  ready 1b [model.gguf] [chat|model] [prompt] [max_tokens]");
+    println!(
+        "                                            Run inspect, smoke, and direct chat gates for 1B"
+    );
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!(
@@ -606,6 +642,30 @@ fn print_tui_usage() {
     );
     println!();
     println!("Commands inside the TUI: /help, /model <path>, /clear, /exit, /quit");
+}
+
+fn print_ready_usage() {
+    println!("NanoCamelid ready");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid ready 1b [chat|model] [prompt] [max_tokens]");
+    println!("  nanocamelid ready 1b <model.gguf> [chat|model] [prompt] [max_tokens]");
+    println!();
+    println!(
+        "Run the Llama 3.2 1B readiness gate: inspect metadata, smoke scalar-vs-selected logits, then run one direct chat turn."
+    );
+    println!();
+    println!("Env:");
+    println!("  {SMOKE_MODEL_GGUF_ENV}                    Override the 1B readiness GGUF path");
+    println!(
+        "  {DEFAULT_MODEL_GGUF_ENV}                    Shared default GGUF path for inspect/generate/smoke"
+    );
+    println!(
+        "  {WORKSPACE_ENV}                         Pi workspace for the 1B default; default {DEFAULT_PI_WORKSPACE}"
+    );
+    println!(
+        "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
+    );
 }
 
 fn print_bench_usage() {
@@ -1877,6 +1937,36 @@ fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_ready_1b(parsed: Smoke1BArgs) -> ExitCode {
+    let model_path = Path::new(&parsed.model_path);
+    if !model_path.is_file() {
+        eprintln!(
+            "1B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_1B_Q4_MODEL} or {LLAMA32_1B_Q8_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
+            model_path.display()
+        );
+        return ExitCode::from(2);
+    }
+
+    println!("NanoCamelid Llama 3.2 1B readiness");
+    println!("==> Inspecting 1B model: {}", model_path.display());
+    let inspect_code = inspect_gguf(model_path);
+    if inspect_code != ExitCode::SUCCESS {
+        return inspect_code;
+    }
+
+    println!("==> Running 1B smoke gate");
+    let smoke_code = match parsed.kind {
+        SmokeKind::Q8Model => smoke_q8_model(model_path, &parsed.prompt, parsed.max_tokens),
+        SmokeKind::Q8Chat => smoke_q8_chat(model_path, &parsed.prompt, parsed.max_tokens),
+    };
+    if smoke_code != ExitCode::SUCCESS {
+        return smoke_code;
+    }
+
+    println!("==> Running direct 1B chat turn");
+    run_chat(model_path, &parsed.prompt, 0.0, parsed.max_tokens)
 }
 
 #[derive(Debug)]
@@ -3188,6 +3278,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(help_topic_named("generate"), Some(HelpTopic::Generate));
         assert_eq!(help_topic_named("chat"), Some(HelpTopic::Chat));
         assert_eq!(help_topic_named("tui"), Some(HelpTopic::Tui));
+        assert_eq!(help_topic_named("ready"), Some(HelpTopic::Ready));
         assert_eq!(help_topic_named("bench"), Some(HelpTopic::Bench));
         assert_eq!(help_topic_named("smoke"), Some(HelpTopic::Smoke));
         assert_eq!(help_topic_named("unknown"), None);
@@ -3214,6 +3305,10 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "smoke".to_owned()]),
             Some(HelpTopic::Smoke)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "ready".to_owned()]),
+            Some(HelpTopic::Ready)
         );
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "tui".to_owned()]),
