@@ -433,8 +433,12 @@ impl Tokenizer {
     pub fn chat_template_format(&self) -> Option<&'static str> {
         self.chat_template.as_deref().map_or_else(
             || {
-                self.has_mistral_inst_tokens()
-                    .then_some("mistral_inst_token_fallback")
+                if self.has_qwen_im_tokens() {
+                    Some("qwen_im_token_fallback")
+                } else {
+                    self.has_mistral_inst_tokens()
+                        .then_some("mistral_inst_token_fallback")
+                }
             },
             |template| Some(detect_chat_template_format(template)),
         )
@@ -466,6 +470,14 @@ impl Tokenizer {
                     renderer: "qwen_im",
                 };
             }
+            if is_gemma_turn_template(template) {
+                return RenderedChatPrompt {
+                    text: render_gemma_turn_prompt(messages),
+                    add_special: true,
+                    parse_special: self.chat_prompt_parse_special(),
+                    renderer: "gemma_turn",
+                };
+            }
             if is_deepseek_r1_qwen_template(template) {
                 return RenderedChatPrompt {
                     text: render_deepseek_r1_qwen_prompt(messages, self),
@@ -483,6 +495,14 @@ impl Tokenizer {
                 };
             }
         }
+        if self.has_qwen_im_tokens() {
+            return RenderedChatPrompt {
+                text: render_qwen_im_prompt(messages),
+                add_special: true,
+                parse_special: self.chat_prompt_parse_special(),
+                renderer: "qwen_im_token_fallback",
+            };
+        }
         if self.has_mistral_inst_tokens() {
             return RenderedChatPrompt {
                 text: render_mistral_inst_prompt(messages),
@@ -498,6 +518,12 @@ impl Tokenizer {
             parse_special: self.chat_prompt_parse_special(),
             renderer: "role_colon_fallback",
         }
+    }
+
+    fn has_qwen_im_tokens(&self) -> bool {
+        self.model == TokenizerModel::Gpt2Bpe
+            && self.token_to_id.contains_key("<|im_start|>")
+            && self.token_to_id.contains_key("<|im_end|>")
     }
 
     fn has_mistral_inst_tokens(&self) -> bool {
@@ -1135,6 +1161,8 @@ fn detect_chat_template_format(template: &str) -> &'static str {
         "llama3_instruct"
     } else if is_qwen_im_template(template) {
         "qwen_im"
+    } else if is_gemma_turn_template(template) {
+        "gemma_turn"
     } else if is_deepseek_r1_qwen_template(template) {
         "deepseek_r1_qwen"
     } else if is_mistral_inst_template(template) {
@@ -1160,6 +1188,10 @@ fn is_llama3_instruct_template(template: &str) -> bool {
 
 fn is_qwen_im_template(template: &str) -> bool {
     template.contains("<|im_start|>") && template.contains("<|im_end|>")
+}
+
+fn is_gemma_turn_template(template: &str) -> bool {
+    template.contains("<start_of_turn>") && template.contains("<end_of_turn>")
 }
 
 fn is_deepseek_r1_qwen_template(template: &str) -> bool {
@@ -1224,6 +1256,28 @@ fn render_qwen_im_prompt(messages: &[ChatMessage<'_>]) -> String {
         .is_none_or(|message| message.role.trim() != "assistant")
     {
         prompt.push_str("<|im_start|>assistant\n");
+    }
+    prompt
+}
+
+fn render_gemma_turn_prompt(messages: &[ChatMessage<'_>]) -> String {
+    let mut prompt = String::new();
+    for message in messages {
+        let role = match message.role.trim() {
+            "assistant" => "model",
+            role => role,
+        };
+        prompt.push_str("<start_of_turn>");
+        prompt.push_str(role);
+        prompt.push('\n');
+        prompt.push_str(message.content);
+        prompt.push_str("<end_of_turn>\n");
+    }
+    if messages
+        .last()
+        .is_none_or(|message| message.role.trim() != "assistant")
+    {
+        prompt.push_str("<start_of_turn>model\n");
     }
     prompt
 }
@@ -1531,6 +1585,56 @@ mod tests {
                 add_special: true,
                 parse_special: true,
                 renderer: "qwen_im",
+            }
+        );
+    }
+
+    #[test]
+    fn tokenizer_renders_qwen_im_without_metadata_template_when_tokens_exist() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.chat_template = None;
+        tokenizer
+            .token_to_id
+            .insert("<|im_start|>".to_owned(), 1000);
+        tokenizer.token_to_id.insert("<|im_end|>".to_owned(), 1001);
+
+        assert_eq!(
+            tokenizer.chat_template_format(),
+            Some("qwen_im_token_fallback")
+        );
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "Write fizzbuzz.",
+            }]),
+            RenderedChatPrompt {
+                text: "<|im_start|>user\nWrite fizzbuzz.<|im_end|>\n<|im_start|>assistant\n"
+                    .to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: "qwen_im_token_fallback",
+            }
+        );
+    }
+
+    #[test]
+    fn tokenizer_renders_gemma_turn_chat_prompt() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.chat_template =
+            Some("{{ '<start_of_turn>' + role }}{{ '<end_of_turn>' }}".to_owned());
+
+        assert_eq!(tokenizer.chat_template_format(), Some("gemma_turn"));
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "Say hello.",
+            }]),
+            RenderedChatPrompt {
+                text: "<start_of_turn>user\nSay hello.<end_of_turn>\n<start_of_turn>model\n"
+                    .to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: "gemma_turn",
             }
         );
     }

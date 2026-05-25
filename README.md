@@ -11,8 +11,10 @@ evidence.
 ## Current State
 
 - GGUF metadata and tensor layout inspection are available.
-- Q8_0, Q4_0, and Q6_K tensor paths are implemented for the tested rows below.
-- Llama and Qwen2 chat-template rendering is available for smoke tests and chat.
+- Q8_0, Q4_0, Q4_1, and Q6_K tensor paths are implemented for the tested rows
+  below.
+- Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma turn-template
+  rendering is available for smoke tests and chat.
 - The terminal TUI keeps the model loaded and reuses matching KV-cache prefixes
   across turns.
 - Prompt ingestion uses guarded batched prefill by default. The current default
@@ -147,6 +149,12 @@ context cap; the context pack checks run `smoke ... chat` at each listed cap.
 | --- | --- | --- | --- | --- | --- | --- |
 | Qwen2.5 0.5B Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `28.41 tok/sec` | 4 tokens at `36.30 tok/sec`; HWM about `1.32 GiB` | `max_logit_delta: 0.00000000`, generated `" SMART"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Qwen2.5-Coder 0.5B Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `32.16 tok/sec` | 4 tokens at `37.37 tok/sec`; HWM about `1.32 GiB` | `max_logit_delta: 0.00000000`, generated `"nodiscard"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"To"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Qwen3 0.6B Instruct Q8_0 | `ready`; `qwen3`; `qwen_im` | 8 tokens at `5.90 tok/sec` | 8 tokens at `6.41 tok/sec`; sampled RSS about `1.41 GiB` | `max_logit_delta: 0.00000000`, generated `"0"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"0"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Qwen3 1.7B Instruct Q8_0 | `ready`; `qwen3`; `qwen_im` | 8 tokens at `2.86 tok/sec` | 8 tokens at `2.87 tok/sec`; sampled RSS about `3.56 GiB` | `max_logit_delta: 0.00000000`, generated zero-width space | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated zero-width space | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Qwen3 4B Instruct Q4_0 | `ready`; `qwen3`; `qwen_im` | 8 tokens at `2.22 tok/sec` | 8 tokens at `2.22 tok/sec`; sampled RSS about `5.50 GiB` | `max_logit_delta: 0.00000000`, generated `"ations"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"ations"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| SmolLM3 3B Q4_0 | `ready`; `smollm3`; `qwen_im_token_fallback` | 8 tokens at `3.10 tok/sec` | 8 tokens at `3.09 tok/sec`; sampled RSS about `3.94 GiB` | `max_logit_delta: 0.00000000`, generated `"<think>"` | renderer `qwen_im_token_fallback`; `max_logit_delta: 0.00000000`, generated `"<think>"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| SmolLM2 1.7B Instruct Q4_0 | `ready`; `llama`; `qwen_im` | Prompt ended immediately in direct mode | 2 tokens at `5.82 tok/sec`; sampled RSS about `2.02 GiB` | `max_logit_delta: 0.00000000`, generated `"Hello"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Gemma 3 1B IT Q4_0 | `ready`; `gemma3`; `gemma_turn` | 8 tokens at `3.78 tok/sec` | 8 tokens at `3.83 tok/sec`; sampled RSS about `2.20 GiB` | `max_logit_delta: 0.00000000`, generated `"擬"` | renderer `gemma_turn`; `max_logit_delta: 0.00000000`, generated `"擬"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | DeepSeek-R1-Distill-Qwen 1.5B Q4_0 | `ready`; `qwen2`; `deepseek_r1_qwen` | 8 tokens at `12.38 tok/sec` | 4 tokens at `15.59 tok/sec`; HWM about `2.83 GiB` | `max_logit_delta: 0.00000000`, generated `"!"` | renderer `deepseek_r1_qwen`; `max_logit_delta: 0.00000000` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Llama 3.2 1B Instruct Q4_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `4.11 tok/sec` | 2 tokens at `3.61 tok/sec`; HWM about `2.37 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Llama 3.2 1B Instruct Q8_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `3.49 tok/sec` | 2 tokens at `3.12 tok/sec`; HWM about `3.31 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
