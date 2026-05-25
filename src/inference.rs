@@ -9,6 +9,7 @@ use std::{env, sync::OnceLock};
 pub const MATMUL_MIN_ROWS_ENV: &str = "NANOCAMELID_MATMUL_MIN_ROWS";
 pub const Q4_1X4_SDOT_ENV: &str = "NANOCAMELID_Q4_1X4_SDOT";
 pub const Q6K_SDOT_ENV: &str = "NANOCAMELID_Q6K_SDOT";
+pub const ATTENTION_HEAD_PARALLEL_ENV: &str = "NANOCAMELID_ATTENTION_HEAD_PARALLEL";
 const DEFAULT_MATMUL_MIN_ROWS: usize = 128;
 
 fn matmul_min_rows() -> usize {
@@ -40,6 +41,16 @@ fn q6_k_sdot_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(Q6K_SDOT_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
+fn attention_head_parallel_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(ATTENTION_HEAD_PARALLEL_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
             .unwrap_or(false)
@@ -162,6 +173,11 @@ impl LlamaWorkspace {
             .vocab_size
             .max(config.feed_forward_length)
             .max(config.embedding_length);
+        let attn_score_len = if attention_head_parallel_enabled() {
+            config.attention_head_count * config.context_length
+        } else {
+            config.context_length
+        };
         Self {
             hidden: vec![0.0; config.embedding_length],
             residual: vec![0.0; config.embedding_length],
@@ -170,7 +186,7 @@ impl LlamaWorkspace {
             k: vec![0.0; config.kv_width],
             v: vec![0.0; config.kv_width],
             attn_output: vec![0.0; config.embedding_length],
-            attn_scores: vec![0.0; config.context_length],
+            attn_scores: vec![0.0; attn_score_len],
             ffn_gate: vec![0.0; config.feed_forward_length],
             ffn_up: vec![0.0; config.feed_forward_length],
             ffn_gate_up: vec![0.0; config.feed_forward_length],
@@ -187,6 +203,11 @@ impl LlamaBatchWorkspace {
             .vocab_size
             .max(config.feed_forward_length)
             .max(config.embedding_length);
+        let attn_score_len = if attention_head_parallel_enabled() {
+            max_batch * config.attention_head_count * config.context_length
+        } else {
+            max_batch * config.context_length
+        };
         Self {
             max_batch,
             hidden: vec![0.0; max_batch * config.embedding_length],
@@ -196,7 +217,7 @@ impl LlamaBatchWorkspace {
             k: vec![0.0; max_batch * config.kv_width],
             v: vec![0.0; max_batch * config.kv_width],
             attn_output: vec![0.0; max_batch * config.embedding_length],
-            attn_scores: vec![0.0; max_batch * config.context_length],
+            attn_scores: vec![0.0; attn_score_len],
             ffn_gate: vec![0.0; max_batch * config.feed_forward_length],
             ffn_up: vec![0.0; max_batch * config.feed_forward_length],
             ffn_gate_up: vec![0.0; max_batch * config.feed_forward_length],
@@ -1448,35 +1469,41 @@ pub fn prefill_pass_batch(
         let k_cache = cache.get_k_cache(layer_idx);
         let v_cache = cache.get_v_cache(layer_idx);
         let scale = 1.0 / (config.head_dim as f32).sqrt();
-        let kv_mul = config.attention_head_count / config.attention_head_count_kv;
         ws.attn_output[..hidden_len].fill(0.0);
+        let parallel_heads = attention_head_parallel_enabled();
 
         for token_idx in 0..batch_size {
             let pos = start_pos + token_idx;
-            let scores_start = token_idx * config.context_length;
             let q_token_start = token_idx * config.embedding_length;
             let out_token_start = token_idx * config.embedding_length;
-            for h in 0..config.attention_head_count {
-                let kv_h = h / kv_mul;
-                let q_head = &ws.q[q_token_start + h * config.head_dim
-                    ..q_token_start + (h + 1) * config.head_dim];
-                let scores =
-                    &mut ws.attn_scores[scores_start..scores_start + config.context_length];
-                for p in 0..=pos {
-                    let k_head = &k_cache[p * cache.kv_width + kv_h * config.head_dim
-                        ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
-                    scores[p] = dot_f32(q_head, k_head) * scale;
-                }
-                softmax(&mut scores[0..=pos]);
-
-                let out_head = &mut ws.attn_output[out_token_start + h * config.head_dim
-                    ..out_token_start + (h + 1) * config.head_dim];
-                for p in 0..=pos {
-                    let v_head = &v_cache[p * cache.kv_width + kv_h * config.head_dim
-                        ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
-                    add_weighted_f32(out_head, v_head, scores[p]);
-                }
-            }
+            let scores = if parallel_heads
+                && ws.attn_scores.len()
+                    >= batch_size * config.attention_head_count * config.context_length
+            {
+                let scores_start = token_idx * config.attention_head_count * config.context_length;
+                let scores_end = scores_start + config.attention_head_count * config.context_length;
+                &mut ws.attn_scores[scores_start..scores_end]
+            } else {
+                let scores_start = token_idx * config.context_length;
+                &mut ws.attn_scores[scores_start..scores_start + config.context_length]
+            };
+            apply_attention_heads(
+                &mut ws.attn_output[out_token_start..out_token_start + config.embedding_length],
+                scores,
+                AttentionInput {
+                    q: &ws.q[q_token_start..q_token_start + config.embedding_length],
+                    k_cache,
+                    v_cache,
+                    pos,
+                    head_count: config.attention_head_count,
+                    kv_head_count: config.attention_head_count_kv,
+                    head_dim: config.head_dim,
+                    cache_kv_width: cache.kv_width,
+                    context_length: config.context_length,
+                    scale,
+                },
+                parallel_heads,
+            );
         }
 
         quantize_f32_to_q8_0_batch(
@@ -1577,6 +1604,74 @@ fn add_residual_batch(values: &mut [f32], residual: &[f32]) {
     debug_assert_eq!(values.len(), residual.len());
     for (value, residual) in values.iter_mut().zip(residual) {
         *value += residual;
+    }
+}
+
+struct AttentionInput<'a> {
+    q: &'a [f32],
+    k_cache: &'a [f32],
+    v_cache: &'a [f32],
+    pos: usize,
+    head_count: usize,
+    kv_head_count: usize,
+    head_dim: usize,
+    cache_kv_width: usize,
+    context_length: usize,
+    scale: f32,
+}
+
+fn apply_attention_heads(
+    attn_output: &mut [f32],
+    attn_scores: &mut [f32],
+    input: AttentionInput<'_>,
+    parallel_heads: bool,
+) {
+    let kv_mul = input.head_count / input.kv_head_count;
+    let can_parallelize =
+        parallel_heads && attn_scores.len() >= input.head_count * input.context_length;
+
+    if can_parallelize {
+        attn_output
+            .par_chunks_exact_mut(input.head_dim)
+            .zip(attn_scores.par_chunks_exact_mut(input.context_length))
+            .enumerate()
+            .for_each(|(h, (out_head, scores))| {
+                apply_attention_head(out_head, scores, &input, h, kv_mul);
+            });
+    } else {
+        for h in 0..input.head_count {
+            let out_start = h * input.head_dim;
+            apply_attention_head(
+                &mut attn_output[out_start..out_start + input.head_dim],
+                attn_scores,
+                &input,
+                h,
+                kv_mul,
+            );
+        }
+    }
+}
+
+fn apply_attention_head(
+    out_head: &mut [f32],
+    scores: &mut [f32],
+    input: &AttentionInput<'_>,
+    head_idx: usize,
+    kv_mul: usize,
+) {
+    let kv_h = head_idx / kv_mul;
+    let q_head = &input.q[head_idx * input.head_dim..(head_idx + 1) * input.head_dim];
+    for (p, score) in scores.iter_mut().enumerate().take(input.pos + 1) {
+        let k_head = &input.k_cache[p * input.cache_kv_width + kv_h * input.head_dim
+            ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
+        *score = dot_f32(q_head, k_head) * input.scale;
+    }
+    softmax(&mut scores[0..=input.pos]);
+
+    for (p, &score) in scores.iter().enumerate().take(input.pos + 1) {
+        let v_head = &input.v_cache[p * input.cache_kv_width + kv_h * input.head_dim
+            ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
+        add_weighted_f32(out_head, v_head, score);
     }
 }
 
@@ -1684,32 +1779,23 @@ fn forward_pass_inner<'a>(
 
         // Compute attention outputs per head
         ws.attn_output.fill(0.0);
-        let kv_mul = config.attention_head_count / config.attention_head_count_kv;
-
-        for h in 0..config.attention_head_count {
-            let kv_h = h / kv_mul;
-            let q_head = &ws.q[h * config.head_dim..(h + 1) * config.head_dim];
-
-            // Compute scores against all positions p = 0..=pos
-            for p in 0..=pos {
-                let k_head = &k_cache[p * cache.kv_width + kv_h * config.head_dim
-                    ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
-
-                ws.attn_scores[p] = dot_f32(q_head, k_head) * scale;
-            }
-
-            // Softmax
-            softmax(&mut ws.attn_scores[0..=pos]);
-
-            // Weighted sum of V
-            let out_head = &mut ws.attn_output[h * config.head_dim..(h + 1) * config.head_dim];
-            for p in 0..=pos {
-                let v_head = &v_cache[p * cache.kv_width + kv_h * config.head_dim
-                    ..p * cache.kv_width + (kv_h + 1) * config.head_dim];
-                let weight = ws.attn_scores[p];
-                add_weighted_f32(out_head, v_head, weight);
-            }
-        }
+        apply_attention_heads(
+            &mut ws.attn_output,
+            &mut ws.attn_scores,
+            AttentionInput {
+                q: &ws.q,
+                k_cache,
+                v_cache,
+                pos,
+                head_count: config.attention_head_count,
+                kv_head_count: config.attention_head_count_kv,
+                head_dim: config.head_dim,
+                cache_kv_width: cache.kv_width,
+                context_length: config.context_length,
+                scale,
+            },
+            attention_head_parallel_enabled(),
+        );
 
         // Projection O (wo)
         quantize_f32_to_q8_0(&ws.attn_output, &mut ws.x_i8, &mut ws.x_scales);
@@ -1875,10 +1961,11 @@ fn rand_simple() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchMatmulShape, RopeScaling, add_weighted_f32, add_weighted_f32_scalar, apply_rope,
-        dot_f32, dot_f32_scalar, fused_silu_mul, matmul_q4_0, matmul_q4_0_batch,
-        matmul_q4_0_swizzled_1x4, matmul_q6_k, matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch,
-        quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, silu,
+        AttentionInput, BatchMatmulShape, RopeScaling, add_weighted_f32, add_weighted_f32_scalar,
+        apply_attention_heads, apply_rope, dot_f32, dot_f32_scalar, fused_silu_mul, matmul_q4_0,
+        matmul_q4_0_batch, matmul_q4_0_swizzled_1x4, matmul_q6_k, matmul_q6_k_batch, matmul_q8_0,
+        matmul_q8_0_batch, quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, rms_norm,
+        rms_norm_batch, silu,
     };
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
@@ -1944,6 +2031,73 @@ mod tests {
         add_weighted_f32_scalar(&mut expected_out, &rhs, 0.375);
 
         for (idx, (&candidate, &expected)) in candidate_out.iter().zip(&expected_out).enumerate() {
+            assert!(
+                (candidate - expected).abs() < 1e-6,
+                "idx {idx} candidate {candidate} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn head_parallel_attention_matches_serial_attention() {
+        let head_count = 4;
+        let kv_head_count = 2;
+        let head_dim = 8;
+        let context_length = 5;
+        let cache_kv_width = kv_head_count * head_dim;
+        let pos = 4;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let q: Vec<f32> = (0..head_count * head_dim)
+            .map(|idx| idx as f32 * 0.017 - 0.25)
+            .collect();
+        let k_cache: Vec<f32> = (0..context_length * cache_kv_width)
+            .map(|idx| 0.5 - idx as f32 * 0.009)
+            .collect();
+        let v_cache: Vec<f32> = (0..context_length * cache_kv_width)
+            .map(|idx| idx as f32 * 0.013 - 0.4)
+            .collect();
+
+        let mut serial_out = vec![0.0; head_count * head_dim];
+        let mut serial_scores = vec![0.0; context_length];
+        apply_attention_heads(
+            &mut serial_out,
+            &mut serial_scores,
+            AttentionInput {
+                q: &q,
+                k_cache: &k_cache,
+                v_cache: &v_cache,
+                pos,
+                head_count,
+                kv_head_count,
+                head_dim,
+                cache_kv_width,
+                context_length,
+                scale,
+            },
+            false,
+        );
+
+        let mut parallel_out = vec![0.0; head_count * head_dim];
+        let mut parallel_scores = vec![0.0; head_count * context_length];
+        apply_attention_heads(
+            &mut parallel_out,
+            &mut parallel_scores,
+            AttentionInput {
+                q: &q,
+                k_cache: &k_cache,
+                v_cache: &v_cache,
+                pos,
+                head_count,
+                kv_head_count,
+                head_dim,
+                cache_kv_width,
+                context_length,
+                scale,
+            },
+            true,
+        );
+
+        for (idx, (&candidate, &expected)) in parallel_out.iter().zip(&serial_out).enumerate() {
             assert!(
                 (candidate - expected).abs() < 1e-6,
                 "idx {idx} candidate {candidate} expected {expected}"
