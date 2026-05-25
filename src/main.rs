@@ -600,8 +600,10 @@ fn print_usage() {
     println!(
         "                                            Compare scalar vs selected Q8 model logits through the tokenizer chat template"
     );
-    println!("  smoke 1b [chat|model] [prompt] [max_tokens]");
+    println!("  smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
     println!("                                            Run the default Llama 3.2 1B smoke path");
+    println!("  smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
+    println!("                                            Run the default Llama 3.2 3B smoke path");
     println!("  help [command]                            Show top-level or subcommand help");
     println!();
     println!("Run `nanocamelid help <command>` or `nanocamelid <command> --help` for details.");
@@ -853,12 +855,16 @@ fn print_smoke_usage() {
     println!("Usage:");
     println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-chat <model.gguf> [prompt] [max_tokens]");
-    println!("  nanocamelid smoke 1b [chat|model] [prompt] [max_tokens]");
-    println!("  nanocamelid smoke 3b [chat|model] [prompt] [max_tokens]");
+    println!("  nanocamelid smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
+    println!("  nanocamelid smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-model [prompt] [max_tokens]  with NANOCAMELID_SMOKE_GGUF set");
     println!("  nanocamelid smoke q8-chat [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set");
-    println!("  nanocamelid smoke 1b <model.gguf> [chat|model] [prompt] [max_tokens]");
-    println!("  nanocamelid smoke 3b <model.gguf> [chat|model] [prompt] [max_tokens]");
+    println!(
+        "  nanocamelid smoke 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens]"
+    );
+    println!(
+        "  nanocamelid smoke 3b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens]"
+    );
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
