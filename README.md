@@ -352,9 +352,13 @@ release binary or Cargo directly:
 
 ```bash
 nanocamelid ready 1b
-NANOCAMELID_READY_CHAT=0 nanocamelid ready 1b
+nanocamelid ready 1b --no-chat
 nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ```
+
+Use `--no-chat` or `--smoke-only` for the inspect plus smoke-only form when you
+want the CLI gate to validate the model path without launching the final direct
+chat turn.
 
 For the supported Llama 3.2 3B Instruct Q4_0 row, place
 `Llama-3.2-3B-Instruct-Q4_0.gguf` under the same `models/` directory and use the
