@@ -213,7 +213,11 @@ fn main() -> ExitCode {
                         .get(3)
                         .and_then(|value| value.parse::<usize>().ok())
                         .unwrap_or(DEFAULT_Q4_PREFILL_BATCH);
-                    bench_q4_prefill(prompt_len, batch_size, DEFAULT_Q4_PREFILL_RUNS)
+                    let runs = args
+                        .get(4)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(DEFAULT_Q4_PREFILL_RUNS);
+                    bench_q4_prefill(prompt_len, batch_size, runs)
                 }
                 Some(other) => {
                     eprintln!("unknown benchmark: {other}");
@@ -724,7 +728,7 @@ fn print_bench_usage() {
     println!("Usage:");
     println!("  nanocamelid bench q8-dot [iterations] [runs]");
     println!("  nanocamelid bench q4-layout [rows] [cols] [runs]");
-    println!("  nanocamelid bench q4-prefill [prompt_len] [batch_size]");
+    println!("  nanocamelid bench q4-prefill [prompt_len] [batch_size] [runs]");
     println!();
     println!("Args:");
     println!(
@@ -750,6 +754,10 @@ fn print_bench_usage() {
     println!(
         "  q4-prefill [batch_size]                  Synthetic prefill batch size, default {}",
         DEFAULT_Q4_PREFILL_BATCH
+    );
+    println!(
+        "  q4-prefill [runs]                        Repeated timing samples, default {}",
+        DEFAULT_Q4_PREFILL_RUNS
     );
     println!();
     println!("Env:");
@@ -1531,6 +1539,10 @@ fn bench_q4_prefill(prompt_len: usize, batch_size: usize, runs: usize) -> ExitCo
     }
     if batch_size == 0 {
         eprintln!("batch_size must be greater than zero");
+        return ExitCode::from(2);
+    }
+    if runs == 0 {
+        eprintln!("runs must be greater than zero");
         return ExitCode::from(2);
     }
 
