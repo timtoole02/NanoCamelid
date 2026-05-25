@@ -34,9 +34,7 @@ evidence.
 Quick 1B readiness check on a Pi workspace:
 
 ```bash
-CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
-./scripts/pi/smoke-1b.sh
-CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- chat 1b "Say hello in one sentence." 0 8
+./scripts/pi/ready-1b.sh
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 3b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 3b chat "Say hello in one sentence." 4
 ```
@@ -319,6 +317,13 @@ For the matching one-command 1B validation path on that same Pi workspace:
 ./scripts/pi/smoke-1b.sh
 ```
 
+For the fuller 1B readiness gate, including inspect, smoke, and one direct chat
+turn:
+
+```bash
+./scripts/pi/ready-1b.sh
+```
+
 For the supported Llama 3.2 3B Instruct Q4_0 row, place
 `Llama-3.2-3B-Instruct-Q4_0.gguf` under the same `models/` directory and use the
 matching launchers:
@@ -354,6 +359,14 @@ arguments let you override the smoke kind, prompt, and token budget directly:
 ./scripts/pi/smoke-1b.sh chat "Say hello in one sentence." 8
 ./scripts/pi/smoke-1b.sh model "Hello" 1
 ./scripts/pi/smoke-3b.sh chat "Say hello in one sentence." 4
+```
+
+`ready-1b.sh` uses the same Pi target directory and model defaults, then runs
+`inspect`, `smoke 1b`, and `chat` against the resolved GGUF. Optional arguments
+override the final direct-chat prompt and token budget:
+
+```bash
+./scripts/pi/ready-1b.sh "Say hello in one sentence." 8
 ```
 
 For faster local iteration, disable the preflight smoke gate explicitly:
