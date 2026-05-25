@@ -407,13 +407,8 @@ fn run_master_generate(
         master_stage_total += master_start.elapsed();
 
         let round_trip_start = Instant::now();
-        cluster::send_activation_packet(
-            &mut stream,
-            pos as u32,
-            (pos + 1) as u32,
-            &node0_ws.hidden,
-        )
-        .map_err(|err| format!("failed to send decode activation packet: {err}"))?;
+        cluster::send_activation_packet(&mut stream, pos as u32, 1, &node0_ws.hidden)
+            .map_err(|err| format!("failed to send decode activation packet: {err}"))?;
         let feedback = cluster::recv_token_feedback(&mut stream)
             .map_err(|err| format!("failed to receive decode token feedback: {err}"))?;
         tcp_round_trip_total += round_trip_start.elapsed();
@@ -552,13 +547,8 @@ fn run_master_session(
         master_stage_total += master_start.elapsed();
 
         let round_trip_start = Instant::now();
-        cluster::send_activation_packet(
-            &mut stream,
-            pos as u32,
-            (pos + 1) as u32,
-            &node0_ws.hidden,
-        )
-        .map_err(|err| format!("failed to send activation packet: {err}"))?;
+        cluster::send_activation_packet(&mut stream, pos as u32, 1, &node0_ws.hidden)
+            .map_err(|err| format!("failed to send activation packet: {err}"))?;
         let feedback = cluster::recv_token_feedback(&mut stream)
             .map_err(|err| format!("failed to receive token feedback: {err}"))?;
         let round_trip = round_trip_start.elapsed();
