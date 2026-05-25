@@ -319,6 +319,15 @@ For the matching one-command 1B validation path on that same Pi workspace:
 ./scripts/pi/smoke-1b.sh
 ```
 
+For the supported Llama 3.2 3B Instruct Q4_0 row, place
+`Llama-3.2-3B-Instruct-Q4_0.gguf` under the same `models/` directory and use the
+matching launchers:
+
+```bash
+./scripts/pi/smoke-3b.sh
+./scripts/pi/chat-3b.sh
+```
+
 The launcher prefers the Pi-local Q4_0 model when present, falls back to Q8_0,
 and defaults the block dot path to SDOT on Pi-class ARM64 hardware. It runs a
 `smoke 1b chat` preflight before opening the TUI, so the 1B instruct path keeps
@@ -344,12 +353,14 @@ arguments let you override the smoke kind, prompt, and token budget directly:
 ```bash
 ./scripts/pi/smoke-1b.sh chat "Say hello in one sentence." 8
 ./scripts/pi/smoke-1b.sh model "Hello" 1
+./scripts/pi/smoke-3b.sh chat "Say hello in one sentence." 4
 ```
 
 For faster local iteration, disable the preflight smoke gate explicitly:
 
 ```bash
 NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh
+NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-3b.sh
 ```
 
 The preflight smoke defaults to `chat` with a one-token response budget, and
