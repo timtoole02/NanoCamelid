@@ -36,11 +36,15 @@ Quick 1B readiness check on a Pi workspace:
 ```bash
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 ./scripts/pi/smoke-1b.sh
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- chat 1b "Say hello in one sentence." 0 8
 ```
 
 `inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
 first, then the Pi-local `Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback
 under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
+The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
+model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
+override.
 
 ## High-Performance Architecture
 
