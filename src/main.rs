@@ -1001,7 +1001,19 @@ fn bench_q4_layout(rows: usize, cols: usize, runs: usize) -> ExitCode {
     println!("swizzled_total_ms: {:.3}", report.swizzled_total_ms());
     println!("swizzled_speedup: {:.3}x", report.swizzled_speedup());
     println!(
-        "json: {{\"benchmark\":\"q4-layout\",\"rows\":{},\"cols\":{},\"runs\":{},\"blocks_per_row\":{},\"dotprod_feature_detected\":{},\"row_major\":{{\"checksum\":{},\"run_ms\":{}}},\"swizzled_1x4\":{{\"checksum\":{},\"run_ms\":{}}},\"swizzled_speedup\":{:.6}}}",
+        "aligned_swizzled_checksum: {}",
+        report.aligned_swizzled_1x4.checksum
+    );
+    println!(
+        "aligned_swizzled_total_ms: {:.3}",
+        report.aligned_swizzled_total_ms()
+    );
+    println!(
+        "aligned_vs_swizzled_speedup: {:.3}x",
+        report.aligned_vs_swizzled_speedup()
+    );
+    println!(
+        "json: {{\"benchmark\":\"q4-layout\",\"rows\":{},\"cols\":{},\"runs\":{},\"blocks_per_row\":{},\"dotprod_feature_detected\":{},\"row_major\":{{\"checksum\":{},\"run_ms\":{}}},\"swizzled_1x4\":{{\"checksum\":{},\"run_ms\":{}}},\"aligned_swizzled_1x4\":{{\"checksum\":{},\"run_ms\":{}}},\"swizzled_speedup\":{:.6},\"aligned_vs_swizzled_speedup\":{:.6}}}",
         report.rows,
         report.cols,
         report.runs,
@@ -1011,11 +1023,18 @@ fn bench_q4_layout(rows: usize, cols: usize, runs: usize) -> ExitCode {
         duration_ms_json(&report.row_major.elapsed_runs),
         report.swizzled_1x4.checksum,
         duration_ms_json(&report.swizzled_1x4.elapsed_runs),
-        report.swizzled_speedup()
+        report.aligned_swizzled_1x4.checksum,
+        duration_ms_json(&report.aligned_swizzled_1x4.elapsed_runs),
+        report.swizzled_speedup(),
+        report.aligned_vs_swizzled_speedup()
     );
 
     if report.row_major.checksum != report.swizzled_1x4.checksum {
         eprintln!("swizzled layout checksum mismatch");
+        return ExitCode::FAILURE;
+    }
+    if report.row_major.checksum != report.aligned_swizzled_1x4.checksum {
+        eprintln!("aligned swizzled layout checksum mismatch");
         return ExitCode::FAILURE;
     }
 
@@ -1041,6 +1060,7 @@ fn bench_q4_prefill(prompt_len: usize, batch_size: usize, runs: usize) -> ExitCo
     let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, blocks_per_row);
     let matrix = model::QuantizedMatrix::Q4_0Swizzled1x4(model::Q4_0Swizzled1x4Matrix {
         swizzled_1x4,
+        page_aligned_1x4: None,
         rows,
         cols,
     });

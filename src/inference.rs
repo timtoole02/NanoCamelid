@@ -1,4 +1,4 @@
-use crate::model::{LlamaModelConfig, LlamaWeights, QuantizedMatrix};
+use crate::model::{LlamaModelConfig, LlamaWeights, PageAlignedQ4_0Swizzled1x4, QuantizedMatrix};
 use crate::q8::{
     Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
     QK_K_BLOCK_SIZE,
@@ -488,7 +488,7 @@ pub fn matmul_quantized(
         QuantizedMatrix::Q4_0Swizzled1x4(matrix) => {
             debug_assert_eq!(matrix.rows, rows);
             debug_assert_eq!(matrix.cols, cols);
-            matmul_q4_0_swizzled_1x4(out, x_i8, x_scales, &matrix.swizzled_1x4, cols, selector);
+            matmul_q4_0_swizzled_1x4(out, x_i8, x_scales, matrix, cols, selector);
         }
         QuantizedMatrix::Q6K(blocks) => matmul_q6_k(out, x_i8, x_scales, blocks, rows, cols),
     }
@@ -521,14 +521,7 @@ pub fn matmul_quantized_batch(
         QuantizedMatrix::Q4_0Swizzled1x4(matrix) => {
             debug_assert_eq!(matrix.rows, rows);
             debug_assert_eq!(matrix.cols, cols);
-            matmul_q4_0_swizzled_1x4_batch(
-                out,
-                x_i8,
-                x_scales,
-                &matrix.swizzled_1x4,
-                shape,
-                selector,
-            );
+            matmul_q4_0_swizzled_1x4_batch(out, x_i8, x_scales, matrix, shape, selector);
         }
         QuantizedMatrix::Q6K(blocks) => matmul_q6_k_batch(out, x_i8, x_scales, blocks, shape),
     }
@@ -640,7 +633,7 @@ fn matmul_q4_0_swizzled_1x4_batch(
     out: &mut [f32],
     x_i8: &[i8],
     x_scales: &[f32],
-    w: &[Q4_0Block],
+    matrix: &crate::model::Q4_0Swizzled1x4Matrix,
     shape: BatchMatmulShape,
     selector: Q8DotKernelSelector,
 ) {
@@ -650,8 +643,14 @@ fn matmul_q4_0_swizzled_1x4_batch(
         cols,
     } = shape;
     let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    let w = &matrix.swizzled_1x4;
     debug_assert_eq!(w.len(), rows * blocks_per_row);
     debug_assert!(rows.is_multiple_of(4));
+
+    if let Some(aligned) = &matrix.page_aligned_1x4 {
+        matmul_q4_0_page_aligned_1x4_batch(out, x_i8, x_scales, aligned, shape, selector);
+        return;
+    }
 
     if selector.selected == Q8DotKernel::Sdot && q4_1x4_sdot_enabled() {
         matmul_q4_0_swizzled_1x4_sdot_batch(out, x_i8, x_scales, w, shape, blocks_per_row);
@@ -739,6 +738,159 @@ fn compute_q4_0_swizzled_1x4_sdot_batch_chunk(
         let row1 = &ctx.w[w_base + 1];
         let row2 = &ctx.w[w_base + 2];
         let row3 = &ctx.w[w_base + 3];
+        let row0_scale = row0.scale_f32();
+        let row1_scale = row1.scale_f32();
+        let row2_scale = row2.scale_f32();
+        let row3_scale = row3.scale_f32();
+
+        #[cfg(target_arch = "aarch64")]
+        let unpacked = unsafe {
+            let (w0_low, w0_high) = crate::q8::unpack_q4_0_lanes_aarch64(row0);
+            let (w1_low, w1_high) = crate::q8::unpack_q4_0_lanes_aarch64(row1);
+            let (w2_low, w2_high) = crate::q8::unpack_q4_0_lanes_aarch64(row2);
+            let (w3_low, w3_high) = crate::q8::unpack_q4_0_lanes_aarch64(row3);
+            crate::q8::Q4_0Unpacked1x4Aarch64 {
+                w0_low,
+                w0_high,
+                w1_low,
+                w1_high,
+                w2_low,
+                w2_high,
+                w3_low,
+                w3_high,
+            }
+        };
+
+        for (token_idx, sums) in token_sums.iter_mut().enumerate() {
+            let x_offset = token_idx * cols;
+            let x_scale = ctx.x_scales[token_idx * ctx.blocks_per_row + b];
+            let x_token = &ctx.x_i8[x_offset..x_offset + cols];
+            let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+
+            #[cfg(target_arch = "aarch64")]
+            let dots = unsafe {
+                crate::q8::dot_q4_0_q8_0_1x4_sdot_preloaded_aarch64(unpacked, x_block_vals)
+            };
+            #[cfg(not(target_arch = "aarch64"))]
+            let dots = [
+                crate::q8::dot_q4_0_q8_0_scalar(row0, x_block_vals),
+                crate::q8::dot_q4_0_q8_0_scalar(row1, x_block_vals),
+                crate::q8::dot_q4_0_q8_0_scalar(row2, x_block_vals),
+                crate::q8::dot_q4_0_q8_0_scalar(row3, x_block_vals),
+            ];
+
+            sums[0] += row0_scale * x_scale * dots[0] as f32;
+            sums[1] += row1_scale * x_scale * dots[1] as f32;
+            sums[2] += row2_scale * x_scale * dots[2] as f32;
+            sums[3] += row3_scale * x_scale * dots[3] as f32;
+        }
+    }
+
+    for (token_idx, sums) in token_sums.into_iter().enumerate() {
+        for (lane, sum) in sums.into_iter().enumerate() {
+            unsafe {
+                write_batch_out(ctx.out_addr, token_idx, rows, row_base + lane, sum);
+            }
+        }
+    }
+}
+
+fn matmul_q4_0_page_aligned_1x4_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    matrix: &PageAlignedQ4_0Swizzled1x4,
+    shape: BatchMatmulShape,
+    selector: Q8DotKernelSelector,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    debug_assert_eq!(matrix.blocks_per_row(), blocks_per_row);
+    debug_assert_eq!(matrix.chunk_count(), rows / 4);
+
+    if selector.selected == Q8DotKernel::Sdot && q4_1x4_sdot_enabled() {
+        let chunks = rows / 4;
+        let out_addr = out.as_mut_ptr() as usize;
+        let ctx = PageAlignedBatchChunkContext {
+            out_addr,
+            x_i8,
+            x_scales,
+            matrix,
+            shape,
+            blocks_per_row,
+        };
+        if should_parallelize_matmul(rows) {
+            (0..chunks).into_par_iter().for_each(|chunk_idx| {
+                compute_q4_0_page_aligned_1x4_sdot_batch_chunk(chunk_idx, ctx);
+            });
+        } else {
+            (0..chunks).for_each(|chunk_idx| {
+                compute_q4_0_page_aligned_1x4_sdot_batch_chunk(chunk_idx, ctx);
+            });
+        }
+        return;
+    }
+
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let chunk_idx = r / 4;
+        let lane = r % 4;
+        let chunk = matrix.chunk_ptr(chunk_idx);
+        for token_idx in 0..batch_size {
+            let x_offset = token_idx * cols;
+            let scale_offset = token_idx * blocks_per_row;
+            let x_token = &x_i8[x_offset..x_offset + cols];
+            let x_token_scales = &x_scales[scale_offset..scale_offset + blocks_per_row];
+            let mut sum = 0.0_f32;
+            for (b, x_scale) in x_token_scales
+                .iter()
+                .copied()
+                .enumerate()
+                .take(blocks_per_row)
+            {
+                let w_block = unsafe { &*chunk.add(b * 4 + lane) };
+                let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+                let dot_val =
+                    crate::q8::dot_q4_0_q8_0_with_selector(w_block, x_block_vals, selector);
+                sum += w_block.scale_f32() * x_scale * dot_val as f32;
+            }
+            unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+        }
+    });
+}
+
+#[derive(Clone, Copy)]
+struct PageAlignedBatchChunkContext<'a> {
+    out_addr: usize,
+    x_i8: &'a [i8],
+    x_scales: &'a [f32],
+    matrix: &'a PageAlignedQ4_0Swizzled1x4,
+    shape: BatchMatmulShape,
+    blocks_per_row: usize,
+}
+
+fn compute_q4_0_page_aligned_1x4_sdot_batch_chunk(
+    chunk_idx: usize,
+    ctx: PageAlignedBatchChunkContext<'_>,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = ctx.shape;
+    let chunk = ctx.matrix.chunk_ptr(chunk_idx);
+    let row_base = chunk_idx * 4;
+    let mut token_sums = vec![[0.0_f32; 4]; batch_size];
+    for b in 0..ctx.blocks_per_row {
+        let w_base = b * 4;
+        let row0 = unsafe { &*chunk.add(w_base) };
+        let row1 = unsafe { &*chunk.add(w_base + 1) };
+        let row2 = unsafe { &*chunk.add(w_base + 2) };
+        let row3 = unsafe { &*chunk.add(w_base + 3) };
         let row0_scale = row0.scale_f32();
         let row1_scale = row1.scale_f32();
         let row2_scale = row2.scale_f32();
@@ -973,13 +1125,19 @@ fn matmul_q4_0_swizzled_1x4(
     out: &mut [f32],
     x_i8: &[i8],
     x_scales: &[f32],
-    w: &[Q4_0Block],
+    matrix: &crate::model::Q4_0Swizzled1x4Matrix,
     cols: usize,
     selector: Q8DotKernelSelector,
 ) {
     let blocks_per_row = cols / 32;
+    let w = &matrix.swizzled_1x4;
     debug_assert_eq!(w.len(), out.len() * blocks_per_row);
     debug_assert!(out.len().is_multiple_of(4));
+
+    if let Some(aligned) = &matrix.page_aligned_1x4 {
+        matmul_q4_0_page_aligned_1x4(out, x_i8, x_scales, aligned, cols, selector);
+        return;
+    }
 
     if should_parallelize_matmul(out.len()) {
         out.par_chunks_mut(4)
@@ -1066,6 +1224,81 @@ fn dot_q4_0_q8_0_1x4_sdot(weights: [&Q4_0Block; 4], activation: &[i8; 32]) -> [i
             crate::q8::dot_q4_0_q8_0_scalar(weights[3], activation),
         ]
     }
+}
+
+fn matmul_q4_0_page_aligned_1x4(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    matrix: &PageAlignedQ4_0Swizzled1x4,
+    cols: usize,
+    selector: Q8DotKernelSelector,
+) {
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    debug_assert_eq!(matrix.blocks_per_row(), blocks_per_row);
+    debug_assert_eq!(matrix.chunk_count(), out.len() / 4);
+    debug_assert!(out.len().is_multiple_of(4));
+
+    if should_parallelize_matmul(out.len()) {
+        out.par_chunks_mut(4)
+            .enumerate()
+            .for_each(|(chunk_idx, out_chunk)| {
+                compute_q4_0_page_aligned_1x4_chunk(
+                    chunk_idx, out_chunk, x_i8, x_scales, matrix, selector,
+                );
+            });
+    } else {
+        out.chunks_mut(4)
+            .enumerate()
+            .for_each(|(chunk_idx, out_chunk)| {
+                compute_q4_0_page_aligned_1x4_chunk(
+                    chunk_idx, out_chunk, x_i8, x_scales, matrix, selector,
+                );
+            });
+    }
+}
+
+fn compute_q4_0_page_aligned_1x4_chunk(
+    chunk_idx: usize,
+    out_chunk: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    matrix: &PageAlignedQ4_0Swizzled1x4,
+    selector: Q8DotKernelSelector,
+) {
+    debug_assert_eq!(out_chunk.len(), 4);
+
+    let mut sums = [0.0_f32; 4];
+    let chunk = matrix.chunk_ptr(chunk_idx);
+    for (b, x_scale) in x_scales
+        .iter()
+        .copied()
+        .enumerate()
+        .take(matrix.blocks_per_row())
+    {
+        let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
+        let w_base = b * 4;
+        let row0 = unsafe { &*chunk.add(w_base) };
+        let row1 = unsafe { &*chunk.add(w_base + 1) };
+        let row2 = unsafe { &*chunk.add(w_base + 2) };
+        let row3 = unsafe { &*chunk.add(w_base + 3) };
+        let dots = if selector.selected == Q8DotKernel::Sdot && q4_1x4_sdot_enabled() {
+            dot_q4_0_q8_0_1x4_sdot([row0, row1, row2, row3], x_block_vals)
+        } else {
+            [
+                crate::q8::dot_q4_0_q8_0_with_selector(row0, x_block_vals, selector),
+                crate::q8::dot_q4_0_q8_0_with_selector(row1, x_block_vals, selector),
+                crate::q8::dot_q4_0_q8_0_with_selector(row2, x_block_vals, selector),
+                crate::q8::dot_q4_0_q8_0_with_selector(row3, x_block_vals, selector),
+            ]
+        };
+        sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
+        sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
+        sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
+        sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+    }
+
+    out_chunk.copy_from_slice(&sums);
 }
 
 pub fn matmul_q6_k(
@@ -2326,16 +2559,44 @@ mod tests {
         );
 
         let mut candidate = vec![0.0; rows];
+        let matrix = crate::model::Q4_0Swizzled1x4Matrix {
+            swizzled_1x4: swizzled.clone(),
+            page_aligned_1x4: None,
+            rows,
+            cols,
+        };
         matmul_q4_0_swizzled_1x4(
             &mut candidate,
             &x_i8,
             &x_scales,
-            &swizzled,
+            &matrix,
             cols,
             selector(Q8DotKernel::Sdot),
         );
 
         assert_eq!(candidate, expected);
+
+        let mut aligned_candidate = vec![0.0; rows];
+        let aligned_matrix = crate::model::Q4_0Swizzled1x4Matrix {
+            page_aligned_1x4: Some(crate::model::PageAlignedQ4_0Swizzled1x4::from_swizzled(
+                &swizzled,
+                rows,
+                cols / Q8_BLOCK_SIZE,
+            )),
+            swizzled_1x4: swizzled,
+            rows,
+            cols,
+        };
+        matmul_q4_0_swizzled_1x4(
+            &mut aligned_candidate,
+            &x_i8,
+            &x_scales,
+            &aligned_matrix,
+            cols,
+            selector(Q8DotKernel::Sdot),
+        );
+
+        assert_eq!(aligned_candidate, expected);
     }
 
     #[test]

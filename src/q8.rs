@@ -70,6 +70,7 @@ pub struct Q4LayoutBenchmarkReport {
     pub dotprod_feature_detected: bool,
     pub row_major: DotTimingSummary,
     pub swizzled_1x4: DotTimingSummary,
+    pub aligned_swizzled_1x4: DotTimingSummary,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -253,6 +254,14 @@ impl Q4LayoutBenchmarkReport {
 
     pub fn swizzled_speedup(&self) -> f64 {
         self.row_major_total_ms() / self.swizzled_total_ms()
+    }
+
+    pub fn aligned_swizzled_total_ms(&self) -> f64 {
+        self.aligned_swizzled_1x4.total_elapsed().as_secs_f64() * 1000.0
+    }
+
+    pub fn aligned_vs_swizzled_speedup(&self) -> f64 {
+        self.swizzled_total_ms() / self.aligned_swizzled_total_ms()
     }
 }
 
@@ -886,6 +895,7 @@ pub fn bench_q4_1x4_layout_runs(
     let blocks_per_row = cols / Q8_BLOCK_SIZE;
     let weights = synthetic_q4_blocks(rows, blocks_per_row);
     let swizzled = swizzle_q4_0_1x4(&weights, rows, blocks_per_row);
+    let aligned_swizzled = PageAlignedQ4Swizzled1x4::from_swizzled(&swizzled, rows, blocks_per_row);
     let activation: Vec<i8> = (0..cols).map(|idx| ((idx * 17) % 127) as i8 - 63).collect();
     let x_scales: Vec<f32> = (0..blocks_per_row)
         .map(|idx| 0.015625 * (1 + (idx % 7)) as f32)
@@ -910,6 +920,13 @@ pub fn bench_q4_1x4_layout_runs(
             blocks_per_row,
         )
     });
+    let aligned_swizzled_1x4 = time_layout_runs(runs, || {
+        bench_q4_1x4_aligned_swizzled(
+            black_box(&aligned_swizzled),
+            black_box(&activation),
+            black_box(&x_scales),
+        )
+    });
 
     Ok(Q4LayoutBenchmarkReport {
         rows,
@@ -919,7 +936,59 @@ pub fn bench_q4_1x4_layout_runs(
         dotprod_feature_detected,
         row_major,
         swizzled_1x4,
+        aligned_swizzled_1x4,
     })
+}
+
+struct PageAlignedQ4Swizzled1x4 {
+    chunks: Vec<std::ptr::NonNull<Q4_0Block>>,
+    blocks_per_row: usize,
+    layout: std::alloc::Layout,
+}
+
+impl PageAlignedQ4Swizzled1x4 {
+    fn from_swizzled(swizzled: &[Q4_0Block], rows: usize, blocks_per_row: usize) -> Self {
+        debug_assert!(rows.is_multiple_of(4));
+        debug_assert_eq!(swizzled.len(), rows * blocks_per_row);
+        let chunk_blocks = blocks_per_row * 4;
+        let chunk_bytes = chunk_blocks * std::mem::size_of::<Q4_0Block>();
+        let layout = std::alloc::Layout::from_size_align(chunk_bytes, 4096).unwrap();
+        let mut chunks = Vec::with_capacity(rows / 4);
+        for chunk_idx in 0..rows / 4 {
+            // SAFETY: layout has non-zero size and valid power-of-two alignment.
+            let ptr = unsafe { std::alloc::alloc(layout) as *mut Q4_0Block };
+            let Some(non_null) = std::ptr::NonNull::new(ptr) else {
+                std::alloc::handle_alloc_error(layout);
+            };
+            let src_start = chunk_idx * chunk_blocks;
+            // SAFETY: destination chunk has chunk_blocks initialized by copying from a valid slice.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    swizzled[src_start..src_start + chunk_blocks].as_ptr(),
+                    non_null.as_ptr(),
+                    chunk_blocks,
+                );
+            }
+            chunks.push(non_null);
+        }
+
+        Self {
+            chunks,
+            blocks_per_row,
+            layout,
+        }
+    }
+}
+
+impl Drop for PageAlignedQ4Swizzled1x4 {
+    fn drop(&mut self) {
+        for ptr in &self.chunks {
+            // SAFETY: every pointer was allocated with self.layout in from_swizzled.
+            unsafe {
+                std::alloc::dealloc(ptr.as_ptr().cast::<u8>(), self.layout);
+            }
+        }
+    }
 }
 
 fn synthetic_q4_blocks(rows: usize, blocks_per_row: usize) -> Vec<Q4_0Block> {
@@ -1007,6 +1076,19 @@ fn bench_q4_1x4_swizzled(
     black_box(checksum)
 }
 
+fn bench_q4_1x4_aligned_swizzled(
+    weights: &PageAlignedQ4Swizzled1x4,
+    activation: &[i8],
+    x_scales: &[f32],
+) -> i64 {
+    let mut checksum = 0_i64;
+    for chunk_idx in 0..weights.chunks.len() {
+        let sums = bench_q4_1x4_aligned_swizzled_chunk(weights, activation, x_scales, chunk_idx);
+        checksum = checksum.wrapping_add(layout_checksum(sums));
+    }
+    black_box(checksum)
+}
+
 fn bench_q4_1x4_row_major_chunk(
     weights: &[Q4_0Block],
     activation: &[i8],
@@ -1047,6 +1129,36 @@ fn bench_q4_1x4_swizzled_chunk(
         let row1 = &weights[weight_base + 1];
         let row2 = &weights[weight_base + 2];
         let row3 = &weights[weight_base + 3];
+        let dots = dot_q4_0_q8_0_1x4_for_bench([row0, row1, row2, row3], activation_block);
+        sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
+        sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;
+        sums[2] += row2.scale_f32() * x_scale * dots[2] as f32;
+        sums[3] += row3.scale_f32() * x_scale * dots[3] as f32;
+    }
+    sums
+}
+
+fn bench_q4_1x4_aligned_swizzled_chunk(
+    weights: &PageAlignedQ4Swizzled1x4,
+    activation: &[i8],
+    x_scales: &[f32],
+    chunk_idx: usize,
+) -> [f32; 4] {
+    let mut sums = [0.0_f32; 4];
+    let chunk = weights.chunks[chunk_idx].as_ptr();
+    for (block, x_scale) in x_scales
+        .iter()
+        .copied()
+        .enumerate()
+        .take(weights.blocks_per_row)
+    {
+        let activation_block = activation_block(activation, block);
+        let weight_base = block * 4;
+        // SAFETY: chunk points to a page-aligned allocation containing blocks_per_row * 4 blocks.
+        let row0 = unsafe { &*chunk.add(weight_base) };
+        let row1 = unsafe { &*chunk.add(weight_base + 1) };
+        let row2 = unsafe { &*chunk.add(weight_base + 2) };
+        let row3 = unsafe { &*chunk.add(weight_base + 3) };
         let dots = dot_q4_0_q8_0_1x4_for_bench([row0, row1, row2, row3], activation_block);
         sums[0] += row0.scale_f32() * x_scale * dots[0] as f32;
         sums[1] += row1.scale_f32() * x_scale * dots[1] as f32;

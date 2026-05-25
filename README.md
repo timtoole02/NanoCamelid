@@ -249,6 +249,9 @@ Useful environment controls:
 - `NANOCAMELID_Q4_1X4_SDOT=1`: enable the experimental Q4_0 1x4 SDOT path.
 - `NANOCAMELID_Q4_SWIZZLE_1X4=1`: load compatible Q4_0 tensors in the swizzled
   1x4 runtime layout.
+- `NANOCAMELID_Q4_PAGE_ALIGN_1X4=1`: when the swizzled Q4_0 path is enabled,
+  also keep an opt-in page-aligned copy of each 1x4 row chunk. This costs extra
+  memory and is not the default.
 - `NANOCAMELID_Q6K_SDOT=1`: enable the experimental AArch64 SDOT path for
   Q6_K-by-Q8 matmuls when the CPU reports dot-product support.
 - `NANOCAMELID_ATTENTION_HEAD_PARALLEL=1`: enable experimental Rayon
@@ -258,6 +261,11 @@ Useful environment controls:
 The swizzled Q4_0 1x4 path is an opt-in performance path. It has shown a real
 Pi 2 short-chat win with smoke parity, but it remains explicit until broader
 prompts and models confirm the shape.
+
+The page-aligned Q4_0 1x4 path is narrower: the Pi 2 layout microbenchmark
+showed a small gain over contiguous swizzled storage, but it duplicates the
+swizzled matrix chunks and should be treated as a measurement switch until
+real-model runs justify making it broader.
 
 ## Tested Models
 
@@ -289,6 +297,11 @@ Current Pi 2 evidence, measured on local release builds:
   (`0.17 tok/sec`).
 - Experimental Q6_K SDOT on Pi 2 preserved the Strand 14B one-token smoke output
   and reduced a capped one-token wall-clock run from `78s` to `54s`.
+- Q4_0 page-aligned 1x4 swizzled storage improved the isolated Pi 2 layout
+  microbenchmark from `99.716ms` to `96.445ms` over 7 runs, about `1.034x`
+  versus contiguous swizzled storage. The same Qwen prompt stayed essentially
+  flat end-to-end, so this remains opt-in because the win is small and requires
+  duplicate swizzled chunks.
 - mmap-backed source reads improve the warm Qwen2.5-Coder-7B-Instruct Q4_0
   load path to `2.63s`, but they do not make large models instant. Strand 14B
   Q6_K still takes about `47s` to load because the current runtime still

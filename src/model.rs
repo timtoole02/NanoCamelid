@@ -1,4 +1,11 @@
-use std::{env, fs::File, path::Path, sync::OnceLock};
+use std::{
+    alloc::{Layout, alloc, dealloc, handle_alloc_error},
+    env,
+    fs::File,
+    path::Path,
+    ptr::NonNull,
+    sync::OnceLock,
+};
 
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{
@@ -8,6 +15,7 @@ use crate::q8::{
 use memmap2::Mmap;
 
 pub const Q4_SWIZZLE_1X4_ENV: &str = "NANOCAMELID_Q4_SWIZZLE_1X4";
+pub const Q4_PAGE_ALIGN_1X4_ENV: &str = "NANOCAMELID_Q4_PAGE_ALIGN_1X4";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LlamaModelConfig {
@@ -191,8 +199,76 @@ pub enum QuantizedMatrix {
 
 pub struct Q4_0Swizzled1x4Matrix {
     pub swizzled_1x4: Vec<Q4_0Block>,
+    pub page_aligned_1x4: Option<PageAlignedQ4_0Swizzled1x4>,
     pub rows: usize,
     pub cols: usize,
+}
+
+pub struct PageAlignedQ4_0Swizzled1x4 {
+    chunks: Vec<NonNull<Q4_0Block>>,
+    blocks_per_row: usize,
+    layout: Layout,
+}
+
+unsafe impl Send for PageAlignedQ4_0Swizzled1x4 {}
+unsafe impl Sync for PageAlignedQ4_0Swizzled1x4 {}
+
+impl PageAlignedQ4_0Swizzled1x4 {
+    pub(crate) fn from_swizzled(
+        swizzled: &[Q4_0Block],
+        rows: usize,
+        blocks_per_row: usize,
+    ) -> Self {
+        debug_assert!(rows.is_multiple_of(4));
+        debug_assert_eq!(swizzled.len(), rows * blocks_per_row);
+        let chunk_blocks = blocks_per_row * 4;
+        let chunk_bytes = chunk_blocks * std::mem::size_of::<Q4_0Block>();
+        let layout = Layout::from_size_align(chunk_bytes, 4096).unwrap();
+        let mut chunks = Vec::with_capacity(rows / 4);
+        for chunk_idx in 0..rows / 4 {
+            let ptr = unsafe { alloc(layout) as *mut Q4_0Block };
+            let Some(non_null) = NonNull::new(ptr) else {
+                handle_alloc_error(layout);
+            };
+            let src_start = chunk_idx * chunk_blocks;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    swizzled[src_start..src_start + chunk_blocks].as_ptr(),
+                    non_null.as_ptr(),
+                    chunk_blocks,
+                );
+            }
+            chunks.push(non_null);
+        }
+
+        Self {
+            chunks,
+            blocks_per_row,
+            layout,
+        }
+    }
+
+    pub(crate) fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+
+    pub(crate) fn blocks_per_row(&self) -> usize {
+        self.blocks_per_row
+    }
+
+    pub(crate) fn chunk_ptr(&self, chunk_idx: usize) -> *const Q4_0Block {
+        self.chunks[chunk_idx].as_ptr()
+    }
+}
+
+impl Drop for PageAlignedQ4_0Swizzled1x4 {
+    fn drop(&mut self) {
+        for ptr in &self.chunks {
+            unsafe {
+                dealloc(ptr.as_ptr().cast::<u8>(), self.layout);
+            }
+        }
+    }
 }
 
 impl LlamaWeights {
@@ -515,9 +591,13 @@ fn load_q4_0_matrix(bytes: &[u8], desc: &GgufTensorDescriptor) -> Result<Quantiz
         return Ok(QuantizedMatrix::Q4_0(row_major));
     }
 
-    let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, cols / 32);
+    let blocks_per_row = cols / 32;
+    let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, blocks_per_row);
+    let page_aligned_1x4 = q4_page_align_1x4_enabled()
+        .then(|| PageAlignedQ4_0Swizzled1x4::from_swizzled(&swizzled_1x4, rows, blocks_per_row));
     Ok(QuantizedMatrix::Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix {
         swizzled_1x4,
+        page_aligned_1x4,
         rows,
         cols,
     }))
@@ -527,6 +607,16 @@ fn q4_swizzle_1x4_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(Q4_SWIZZLE_1X4_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
+fn q4_page_align_1x4_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q4_PAGE_ALIGN_1X4_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
             .unwrap_or(false)
