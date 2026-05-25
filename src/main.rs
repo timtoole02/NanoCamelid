@@ -479,6 +479,14 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
     match args.first().map(String::as_str) {
         Some("-h" | "--help") | Some("help") if args.len() == 1 => Some(HelpTopic::TopLevel),
         Some("help") => help_topic_named(args.get(1).map(String::as_str).unwrap_or_default()),
+        Some("inspect")
+            if args
+                .get(1)
+                .is_some_and(|value| is_llama32_1b_alias(value) || is_llama32_3b_alias(value))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Inspect)
+        }
         Some("generate")
             if args
                 .get(1)
@@ -586,7 +594,7 @@ fn print_usage() {
     println!("  tui 3b [temp] [max_tokens]");
     println!("                                            Open an interactive terminal chat");
     println!(
-        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat]"
+        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat]"
     );
     println!(
         "                                            Run inspect, smoke, and direct chat gates for 1B"
@@ -3721,6 +3729,18 @@ flags\t\t: sse4_2 avx2
 
     #[test]
     fn help_topic_for_args_detects_nested_model_alias_help() {
+        assert_eq!(
+            help_topic_for_args(&["inspect".to_owned(), "1b".to_owned(), "--help".to_owned()]),
+            Some(HelpTopic::Inspect)
+        );
+        assert_eq!(
+            help_topic_for_args(&[
+                "inspect".to_owned(),
+                "llama32-3b".to_owned(),
+                "-h".to_owned()
+            ]),
+            Some(HelpTopic::Inspect)
+        );
         assert_eq!(
             help_topic_for_args(&["generate".to_owned(), "1b".to_owned(), "--help".to_owned()]),
             Some(HelpTopic::Generate)
