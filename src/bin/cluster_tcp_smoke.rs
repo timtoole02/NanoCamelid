@@ -38,6 +38,23 @@ fn run() -> Result<(), String> {
             let requested_split_layer = parse_optional_usize(args.next(), 0, "split_layer")?;
             run_worker(Path::new(&model_path), &bind_addr, requested_split_layer)
         }
+        Some("middle-worker") => {
+            let Some(model_path) = args.next() else {
+                print_usage();
+                return Err("missing middle worker model path".to_owned());
+            };
+            let bind_addr = args.next().unwrap_or_else(|| "127.0.0.1:5006".to_owned());
+            let next_addr = args.next().unwrap_or_else(|| "127.0.0.1:5005".to_owned());
+            let start_layer = parse_optional_usize(args.next(), 0, "start_layer")?;
+            let end_layer = parse_optional_usize(args.next(), 0, "end_layer")?;
+            run_middle_worker(
+                Path::new(&model_path),
+                &bind_addr,
+                &next_addr,
+                start_layer,
+                end_layer,
+            )
+        }
         Some("master") => {
             let Some(model_path) = args.next() else {
                 print_usage();
@@ -237,6 +254,151 @@ fn run_worker(
         );
     }
     println!("result: WORKER_DONE");
+    Ok(())
+}
+
+fn run_middle_worker(
+    model_path: &Path,
+    bind_addr: &str,
+    next_addr: &str,
+    start_layer: usize,
+    end_layer: usize,
+) -> Result<(), String> {
+    let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf)
+        .map_err(|err| format!("failed to parse model config: {err}"))?;
+    apply_context_limit(&mut config)?;
+    if start_layer == 0 || end_layer == 0 {
+        return Err("middle-worker requires explicit start_layer and end_layer".to_owned());
+    }
+    let node =
+        model::LlamaWeights::load_distributed(model_path, &config, &gguf, start_layer, end_layer)
+            .map_err(|err| format!("failed to load middle partial weights: {err}"))?;
+
+    let listener =
+        TcpListener::bind(bind_addr).map_err(|err| format!("failed to bind {bind_addr}: {err}"))?;
+    println!("NanoCamelid cluster TCP middle worker");
+    println!("model: {}", model_path.display());
+    println!("bind_addr: {bind_addr}");
+    println!("next_addr: {next_addr}");
+    println!("layers: {}", config.block_count);
+    println!("layer_range: {}..{}", node.layer_start, node.layer_end);
+    println!("waiting for upstream master connection...");
+
+    let mut downstream = TcpStream::connect(next_addr)
+        .map_err(|err| format!("failed to connect to downstream worker {next_addr}: {err}"))?;
+    downstream
+        .set_nodelay(true)
+        .map_err(|err| format!("failed to set downstream TCP_NODELAY: {err}"))?;
+    println!("downstream_connected: {next_addr}");
+
+    let (mut upstream, peer_addr) = listener
+        .accept()
+        .map_err(|err| format!("failed to accept upstream connection: {err}"))?;
+    upstream
+        .set_nodelay(true)
+        .map_err(|err| format!("failed to set upstream TCP_NODELAY: {err}"))?;
+    println!("upstream_connected: {peer_addr}");
+
+    let options = runtime_options();
+    let mut cache =
+        inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+    let mut ws = inference::LlamaWorkspace::new(&config);
+    let mut batch_ws = inference::LlamaBatchWorkspace::new(&config, config.context_length);
+    let mut activations = Vec::new();
+    let mut feedback_tokens = Vec::new();
+    let mut middle_compute_total = Duration::ZERO;
+    let mut downstream_round_trip_total = Duration::ZERO;
+
+    loop {
+        let header = match cluster::recv_activation_packet(&mut upstream, &mut activations) {
+            Ok(header) => header,
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(err) => {
+                return Err(format!(
+                    "failed to receive upstream activation packet: {err}"
+                ));
+            }
+        };
+        let seq_len = header.seq_len as usize;
+        let pos = header.pos as usize;
+        let expected_floats = seq_len * config.embedding_length;
+        if activations.len() != expected_floats {
+            return Err(format!(
+                "received {} activations, expected {}",
+                activations.len(),
+                expected_floats
+            ));
+        }
+        if seq_len == 0 {
+            return Err("received empty activation sequence".to_owned());
+        }
+        if pos + seq_len > config.context_length {
+            return Err(format!(
+                "received pos {} seq_len {} outside context length {}",
+                header.pos, header.seq_len, config.context_length
+            ));
+        }
+
+        let compute_start = Instant::now();
+        let outgoing = if seq_len > 1 {
+            batch_ws.hidden[..expected_floats].copy_from_slice(&activations);
+            inference::run_layer_range_batch(
+                node.layer_start,
+                &node.layers,
+                seq_len,
+                pos,
+                &config,
+                &mut cache,
+                &mut batch_ws,
+                options,
+            );
+            &batch_ws.hidden[..expected_floats]
+        } else {
+            ws.hidden.copy_from_slice(&activations);
+            run_distributed_range(&node, pos, &config, &mut cache, &mut ws, options)?;
+            &ws.hidden[..]
+        };
+        middle_compute_total += compute_start.elapsed();
+
+        let downstream_start = Instant::now();
+        cluster::send_activation_packet(&mut downstream, header.pos, header.seq_len, outgoing)
+            .map_err(|err| format!("failed to send downstream activation packet: {err}"))?;
+        let feedback = cluster::recv_token_feedback(&mut downstream)
+            .map_err(|err| format!("failed to receive downstream token feedback: {err}"))?;
+        downstream_round_trip_total += downstream_start.elapsed();
+        cluster::send_token_feedback(&mut upstream, feedback.token_id, feedback.is_finished)
+            .map_err(|err| format!("failed to send upstream token feedback: {err}"))?;
+
+        println!("received_pos: {}", header.pos);
+        println!("received_seq_len: {}", header.seq_len);
+        println!("received_float_count: {}", header.float_count);
+        println!("middle_feedback_token: {}", feedback.token_id);
+        feedback_tokens.push(feedback.token_id);
+    }
+
+    println!("middle_tokens: {}", feedback_tokens.len());
+    println!("middle_feedback_tokens: {feedback_tokens:?}");
+    println!(
+        "middle_compute_total_ms: {:.3}",
+        middle_compute_total.as_secs_f64() * 1000.0
+    );
+    println!(
+        "middle_downstream_round_trip_total_ms: {:.3}",
+        downstream_round_trip_total.as_secs_f64() * 1000.0
+    );
+    if !feedback_tokens.is_empty() {
+        let token_count = feedback_tokens.len() as f64;
+        println!(
+            "middle_compute_avg_ms: {:.3}",
+            middle_compute_total.as_secs_f64() * 1000.0 / token_count
+        );
+        println!(
+            "middle_downstream_round_trip_avg_ms: {:.3}",
+            downstream_round_trip_total.as_secs_f64() * 1000.0 / token_count
+        );
+    }
+    println!("result: MIDDLE_WORKER_DONE");
     Ok(())
 }
 
@@ -785,6 +947,9 @@ fn print_usage() {
     println!("Usage:");
     println!(
         "  cargo run --release --bin cluster_tcp_smoke -- worker <model.gguf> [bind_addr] [split_layer]"
+    );
+    println!(
+        "  cargo run --release --bin cluster_tcp_smoke -- middle-worker <model.gguf> [bind_addr] [next_addr] <start_layer> <end_layer>"
     );
     println!(
         "  cargo run --release --bin cluster_tcp_smoke -- master <model.gguf> [worker_addr] [token_id] [split_layer] [max_tokens]"
