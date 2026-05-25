@@ -294,11 +294,12 @@ Optional arguments set temperature and maximum assistant output tokens:
 ./scripts/pi/chat-1b.sh 0.0 64
 ```
 
-`smoke-1b.sh` uses the same model-selection and kernel defaults, but runs only
-the smoke gate and exits. By default it runs the real instruct prompt path with
-`chat`, the prompt `Say hello in one sentence.`, and an 8-token response
-budget. Optional arguments let you override the smoke kind, prompt, and token
-budget directly:
+`smoke-1b.sh` uses the same kernel defaults, but runs only the smoke gate and
+exits. Its model-selection precedence is `NANOCAMELID_SMOKE_GGUF`,
+`NANOCAMELID_MODEL_GGUF`, Pi-local Q4_0, then Pi-local Q8_0. By default it
+runs the real instruct prompt path with `chat`, the prompt
+`Say hello in one sentence.`, and an 8-token response budget. Optional
+arguments let you override the smoke kind, prompt, and token budget directly:
 
 ```bash
 ./scripts/pi/smoke-1b.sh chat "Say hello in one sentence." 8

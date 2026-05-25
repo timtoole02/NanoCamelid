@@ -7,7 +7,9 @@ REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
-if [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
+if [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
+  MODEL="$NANOCAMELID_SMOKE_GGUF"
+elif [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
   MODEL="$NANOCAMELID_MODEL_GGUF"
 elif [[ -f "$Q4_MODEL" ]]; then
   MODEL="$Q4_MODEL"
@@ -29,7 +31,7 @@ fi
 
 if [[ ! -f "$MODEL" ]]; then
   echo "Model not found: $MODEL" >&2
-  echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
+  echo "Set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
   exit 2
 fi
 
