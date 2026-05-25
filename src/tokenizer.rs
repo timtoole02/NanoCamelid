@@ -165,6 +165,7 @@ pub struct TokenizerConfig {
 
 #[derive(Debug, Clone)]
 pub struct Tokenizer {
+    pub source_name: Option<String>,
     pub model: TokenizerModel,
     pub tokens: Vec<Token>,
     pub token_to_id: HashMap<String, TokenId>,
@@ -308,6 +309,7 @@ impl Tokenizer {
         validate_token_id("mask", mask, tokens.len())?;
 
         Ok(Self {
+            source_name: file.metadata_string("general.name").map(str::to_owned),
             model,
             tokens,
             token_to_id,
@@ -429,9 +431,13 @@ impl Tokenizer {
     }
 
     pub fn chat_template_format(&self) -> Option<&'static str> {
-        self.chat_template
-            .as_deref()
-            .map(detect_chat_template_format)
+        self.chat_template.as_deref().map_or_else(
+            || {
+                self.has_mistral_inst_tokens()
+                    .then_some("mistral_inst_token_fallback")
+            },
+            |template| Some(detect_chat_template_format(template)),
+        )
     }
 
     pub fn render_chat_prompt(&self, messages: &[ChatMessage<'_>]) -> RenderedChatPrompt {
@@ -460,6 +466,14 @@ impl Tokenizer {
                     renderer: "qwen_im",
                 };
             }
+            if is_deepseek_r1_qwen_template(template) {
+                return RenderedChatPrompt {
+                    text: render_deepseek_r1_qwen_prompt(messages, self),
+                    add_special: false,
+                    parse_special: self.chat_prompt_parse_special(),
+                    renderer: "deepseek_r1_qwen",
+                };
+            }
             if is_mistral_inst_template(template) {
                 return RenderedChatPrompt {
                     text: render_mistral_inst_prompt(messages),
@@ -469,6 +483,14 @@ impl Tokenizer {
                 };
             }
         }
+        if self.has_mistral_inst_tokens() {
+            return RenderedChatPrompt {
+                text: render_mistral_inst_prompt(messages),
+                add_special: false,
+                parse_special: self.chat_prompt_parse_special(),
+                renderer: "mistral_inst_token_fallback",
+            };
+        }
 
         RenderedChatPrompt {
             text: render_role_colon_prompt(messages),
@@ -476,6 +498,16 @@ impl Tokenizer {
             parse_special: self.chat_prompt_parse_special(),
             renderer: "role_colon_fallback",
         }
+    }
+
+    fn has_mistral_inst_tokens(&self) -> bool {
+        self.model == TokenizerModel::LlamaSpm
+            && (self
+                .source_name
+                .as_deref()
+                .is_some_and(|name| name.to_ascii_lowercase().contains("mistral"))
+                || (self.token_to_id.contains_key("[INST]")
+                    && self.token_to_id.contains_key("[/INST]")))
     }
 
     fn encode_bpe_text(&self, text: &str, parse_special: bool) -> Result<Vec<TokenId>, String> {
@@ -1103,6 +1135,8 @@ fn detect_chat_template_format(template: &str) -> &'static str {
         "llama3_instruct"
     } else if is_qwen_im_template(template) {
         "qwen_im"
+    } else if is_deepseek_r1_qwen_template(template) {
+        "deepseek_r1_qwen"
     } else if is_mistral_inst_template(template) {
         "mistral_inst"
     } else if is_tinyllama_marker_template(template) {
@@ -1126,6 +1160,10 @@ fn is_llama3_instruct_template(template: &str) -> bool {
 
 fn is_qwen_im_template(template: &str) -> bool {
     template.contains("<|im_start|>") && template.contains("<|im_end|>")
+}
+
+fn is_deepseek_r1_qwen_template(template: &str) -> bool {
+    template.contains("<｜User｜>") && template.contains("<｜Assistant｜>")
 }
 
 fn is_mistral_inst_template(template: &str) -> bool {
@@ -1186,6 +1224,53 @@ fn render_qwen_im_prompt(messages: &[ChatMessage<'_>]) -> String {
         .is_none_or(|message| message.role.trim() != "assistant")
     {
         prompt.push_str("<|im_start|>assistant\n");
+    }
+    prompt
+}
+
+fn render_deepseek_r1_qwen_prompt(messages: &[ChatMessage<'_>], tokenizer: &Tokenizer) -> String {
+    let mut prompt = tokenizer
+        .special
+        .bos
+        .and_then(|id| tokenizer.token_text(Some(id)))
+        .unwrap_or("")
+        .to_owned();
+    let mut pending_system = String::new();
+
+    for message in messages {
+        let role = message.role.trim();
+        let content = message.content.trim();
+        match role {
+            "system" => {
+                if !pending_system.is_empty() {
+                    pending_system.push_str("\n\n");
+                }
+                pending_system.push_str(content);
+            }
+            "user" => {
+                if !pending_system.is_empty() {
+                    prompt.push_str(&pending_system);
+                    pending_system.clear();
+                }
+                prompt.push_str("<｜User｜>");
+                prompt.push_str(content);
+            }
+            "assistant" => {
+                prompt.push_str("<｜Assistant｜>");
+                prompt.push_str(content);
+                prompt.push_str("<｜end▁of▁sentence｜>");
+            }
+            _ => {
+                prompt.push_str("<｜User｜>");
+                prompt.push_str(content);
+            }
+        }
+    }
+    if messages
+        .last()
+        .is_none_or(|message| message.role.trim() != "assistant")
+    {
+        prompt.push_str("<｜Assistant｜><think>\n");
     }
     prompt
 }
@@ -1427,6 +1512,34 @@ mod tests {
     }
 
     #[test]
+    fn tokenizer_renders_deepseek_r1_qwen_chat_prompt() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.chat_template =
+            Some("{{ bos_token }}{{ '<｜User｜>' + message['content'] }}{{ '<｜Assistant｜><think>\\n' }}".to_owned());
+
+        assert_eq!(tokenizer.chat_template_format(), Some("deepseek_r1_qwen"));
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[
+                ChatMessage {
+                    role: "system",
+                    content: "be brief",
+                },
+                ChatMessage {
+                    role: "user",
+                    content: "Say hello.",
+                },
+            ]),
+            RenderedChatPrompt {
+                text: "<|begin_of_text|>be brief<｜User｜>Say hello.<｜Assistant｜><think>\n"
+                    .to_owned(),
+                add_special: false,
+                parse_special: true,
+                renderer: "deepseek_r1_qwen",
+            }
+        );
+    }
+
+    #[test]
     fn tokenizer_falls_back_to_role_colon_prompt_for_unparsed_templates() {
         let mut tokenizer = llama3_test_tokenizer();
         tokenizer.chat_template = Some("{{ messages }}".to_owned());
@@ -1465,6 +1578,31 @@ mod tests {
             }
         );
         assert_eq!(tokenizer.chat_template_format(), Some("mistral_inst"));
+    }
+
+    #[test]
+    fn tokenizer_renders_mistral_inst_without_metadata_template_when_tokens_exist() {
+        let mut tokenizer = llama3_test_tokenizer();
+        tokenizer.model = TokenizerModel::LlamaSpm;
+        tokenizer.source_name = Some("mistralai_mistral-7b-instruct-v0.1".to_owned());
+        tokenizer.chat_template = None;
+
+        assert_eq!(
+            tokenizer.chat_template_format(),
+            Some("mistral_inst_token_fallback")
+        );
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "hello",
+            }]),
+            RenderedChatPrompt {
+                text: "<s>[INST] hello [/INST]".to_owned(),
+                add_special: false,
+                parse_special: false,
+                renderer: "mistral_inst_token_fallback",
+            }
+        );
     }
 
     #[test]
@@ -1547,6 +1685,7 @@ mod tests {
         ]);
 
         Tokenizer {
+            source_name: None,
             model: TokenizerModel::Gpt2Bpe,
             tokens,
             token_to_id,

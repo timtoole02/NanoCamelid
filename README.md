@@ -137,25 +137,28 @@ Llama 3.2 3B Instruct Q4_0 is also supported as a Pi-local single-node row:
   passed with `max_logit_delta: 0.00000000` and generated `"Hello!"`
 - capped 8096-context TUI launch: `./scripts/pi/chat-3b.sh` loaded with `ctx 8096`
 
-Small single-Pi Llama support now has row-level evidence for load, direct
-completion, chat completion, compact model parity, broader chat-template parity,
-metadata-backed Jinja template detection, template-shape rendering, unique chat
-perf/RSS sampling, and capped context packs. The perf/RSS samples below use a
-512-token runtime context cap for the unique direct/chat runs; the context pack
-checks run `smoke ... chat` at each listed cap.
+Small single-Pi support now has row-level evidence for load, direct completion,
+chat completion, compact model parity, broader chat-template parity,
+metadata-backed or template-shape chat rendering, unique perf/RSS sampling, and
+capped context packs. The unique direct/chat runs below use a 512-token runtime
+context cap; the context pack checks run `smoke ... chat` at each listed cap.
 
-| Model row | Load + metadata/Jinja template | Completion | Chat completion perf/RSS | Compact parity | Broader chat parity | Checked context packs |
+| Model row | Load + chat renderer | Direct completion | Chat perf/RSS | Compact parity | Broader chat parity | Checked context packs |
 | --- | --- | --- | --- | --- | --- | --- |
-| Llama 3.2 1B Instruct Q4_0 | `ready`; `tensor_layouts: ok`; `tokenizer_chat_template: true`; `llama3_instruct` | `generate` passed; 4 tokens at `4.71 tok/sec` | `chat` passed; 2 tokens at `3.58 tok/sec`; sampled HWM about `2.37 GiB` | `q8-model`: `max_logit_delta: 0.00000000`, status ok | `q8-chat`: renderer `llama3_instruct`, `max_logit_delta: 0.00000000`, status ok | `512`, `1024`, `2048`, `4096`, `8192`: all passed with exact parity |
-| Llama 3.2 1B Instruct Q8_0 | `ready`; `tensor_layouts: ok`; `tokenizer_chat_template: true`; `llama3_instruct` | `generate` passed; 4 tokens at `4.12 tok/sec` | `chat` passed; 2 tokens at `3.13 tok/sec`; sampled HWM about `3.31 GiB` | `q8-model`: `max_logit_delta: 0.00000000`, status ok | `q8-chat`: renderer `llama3_instruct`, `max_logit_delta: 0.00000000`, status ok | `512`, `1024`, `2048`, `4096`, `8192`: all passed with exact parity |
-| Llama 3.2 3B Instruct Q4_0 | `ready`; `tensor_layouts: ok`; `tokenizer_chat_template: true`; `llama3_instruct` | `generate` passed; 4 tokens at `2.71 tok/sec` | `chat` passed; 2 tokens at `2.04 tok/sec`; sampled HWM about `4.94 GiB` | `q8-model`: `max_logit_delta: 0.00000000`, status ok | `q8-chat`: renderer `llama3_instruct`, `max_logit_delta: 0.00000000`, status ok | `512`, `1024`, `2048`, `4096`, `8192`: all passed with exact parity |
+| Qwen2.5 0.5B Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `28.41 tok/sec` | 4 tokens at `36.30 tok/sec`; HWM about `1.32 GiB` | `max_logit_delta: 0.00000000`, generated `" SMART"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Qwen2.5-Coder 0.5B Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `32.16 tok/sec` | 4 tokens at `37.37 tok/sec`; HWM about `1.32 GiB` | `max_logit_delta: 0.00000000`, generated `"nodiscard"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"To"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| DeepSeek-R1-Distill-Qwen 1.5B Q4_0 | `ready`; `qwen2`; `deepseek_r1_qwen` | 8 tokens at `12.38 tok/sec` | 4 tokens at `15.59 tok/sec`; HWM about `2.83 GiB` | `max_logit_delta: 0.00000000`, generated `"!"` | renderer `deepseek_r1_qwen`; `max_logit_delta: 0.00000000` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Llama 3.2 1B Instruct Q4_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `4.11 tok/sec` | 2 tokens at `3.61 tok/sec`; HWM about `2.37 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Llama 3.2 1B Instruct Q8_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `3.49 tok/sec` | 2 tokens at `3.12 tok/sec`; HWM about `3.31 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Llama 3.2 3B Instruct Q4_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `2.29 tok/sec` | 2 tokens at `2.04 tok/sec`; HWM about `4.93 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Mistral 7B Instruct v0.1 Q4_0 | `ready`; tested GGUF reports `llama`; `mistral_inst_token_fallback` | 8 tokens at `2.91 tok/sec` | 4 tokens at `3.53 tok/sec`; HWM about `8.21 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `mistral_inst_token_fallback`; `max_logit_delta: 0.00000000` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Qwen2.5-Coder-7B-Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `2.88 tok/sec` | 4 tokens at `3.54 tok/sec`; HWM about `10.14 GiB` | `max_logit_delta: 0.00000000`, generated `"odzi"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"One"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 
-On the Pi 2 benchmark lane, Qwen2.5-Coder-7B-Instruct Q4_0 currently validates
-through the smoke path with exact scalar-vs-selected logit parity:
-
-- `max_logit_delta: 0.00000000`
-- generated smoke text: `"Hello"`
-- default prefill batch: `16`
+The Mistral v0.1 GGUF row above does not provide `tokenizer.chat_template`
+metadata. NanoCamelid detects the row shape from GGUF metadata and renders the
+standard `[INST] ... [/INST]` prompt form through `mistral_inst_token_fallback`;
+that fallback is covered by scalar-vs-selected parity and every capped context
+pack listed above.
 
 The main prefill improvement came from loop-inverted batched Q4 prefill:
 
@@ -191,17 +194,6 @@ it is not a practical Pi target yet:
   prompt prefill about `6.6s`, 8-token generation `46.06s` (`0.17 tok/sec`)
 - Q6_K SDOT preserved the initial smoke output and reduced a capped one-token
   Strand run from about `78s` to about `54s`.
-
-Additional small-model catalog rows now validate on the Pi smoke lane:
-
-- Qwen2.5 0.5B Instruct Q4_0: `ready`, 8-token generation at about
-  `33.31 tok/sec`
-- Qwen2.5-Coder 0.5B Instruct Q4_0: `ready`, 8-token generation at about
-  `33.28 tok/sec`
-- DeepSeek-R1-Distill-Qwen 1.5B Q4_0: `ready`, 8-token generation at about
-  `13.25 tok/sec`
-- Mistral 7B Instruct v0.1 Q4_0: `ready`, 4-token generation at about
-  `3.68 tok/sec`
 
 Mixtral Q4_0 now has an experimental three-Pi cluster smoke. NanoCamelid can
 parse the expert-indexed MoE tensors, render the Mistral/Mixtral `[INST]` chat
