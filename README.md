@@ -37,6 +37,7 @@ Quick 1B readiness check on a Pi workspace:
 ./scripts/pi/ready-1b.sh
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
+CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
 ```
 
 `inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
@@ -45,6 +46,11 @@ under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override.
+`ready 1b` runs inspect, scalar-vs-selected smoke validation, and one direct
+chat turn. Set `NANOCAMELID_READY_CHAT=0` for inspect+smoke only, or set
+`NANOCAMELID_READY_PROMPT`, `NANOCAMELID_READY_TOKENS`, and
+`NANOCAMELID_READY_TEMP` when the direct chat turn should differ from the smoke
+prompt.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 

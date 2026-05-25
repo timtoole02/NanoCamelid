@@ -17,6 +17,9 @@ const WORKER_CORES_ENV: &str = "NANOCAMELID_WORKER_CORES";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
 const READY_CHAT_ENV: &str = "NANOCAMELID_READY_CHAT";
+const READY_PROMPT_ENV: &str = "NANOCAMELID_READY_PROMPT";
+const READY_TOKENS_ENV: &str = "NANOCAMELID_READY_TOKENS";
+const READY_TEMP_ENV: &str = "NANOCAMELID_READY_TEMP";
 const DEFAULT_PI_WORKSPACE: &str = "/mnt/nanocamelid";
 const LLAMA32_1B_Q4_MODEL: &str = "Llama-3.2-1B-Instruct-Q4_0.gguf";
 const LLAMA32_1B_Q8_MODEL: &str = "Llama-3.2-1B-Instruct-Q8_0.gguf";
@@ -422,6 +425,37 @@ fn ready_chat_enabled_from_env_value(value: &str) -> bool {
     )
 }
 
+fn ready_chat_prompt(smoke_prompt: &str) -> String {
+    ready_chat_prompt_from_env_value(env::var(READY_PROMPT_ENV).ok(), smoke_prompt)
+}
+
+fn ready_chat_prompt_from_env_value(value: Option<String>, smoke_prompt: &str) -> String {
+    value
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| smoke_prompt.to_owned())
+}
+
+fn ready_chat_tokens(smoke_tokens: usize) -> usize {
+    ready_chat_tokens_from_env_value(env::var(READY_TOKENS_ENV).ok(), smoke_tokens)
+}
+
+fn ready_chat_tokens_from_env_value(value: Option<String>, smoke_tokens: usize) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(smoke_tokens)
+}
+
+fn ready_chat_temp() -> f32 {
+    ready_chat_temp_from_env_value(env::var(READY_TEMP_ENV).ok())
+}
+
+fn ready_chat_temp_from_env_value(value: Option<String>) -> f32 {
+    value
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpTopic {
     TopLevel,
@@ -737,6 +771,9 @@ fn print_ready_usage() {
     println!(
         "  {READY_CHAT_ENV}                           Set to 0 to stop after inspect and smoke"
     );
+    println!("  {READY_PROMPT_ENV}                         Direct chat prompt after smoke");
+    println!("  {READY_TOKENS_ENV}                         Direct chat generated token count");
+    println!("  {READY_TEMP_ENV}                           Direct chat temperature, default 0.0");
 }
 
 fn print_bench_usage() {
@@ -2060,8 +2097,12 @@ fn run_ready_1b(parsed: Smoke1BArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let chat_prompt = ready_chat_prompt(&parsed.prompt);
+    let chat_tokens = ready_chat_tokens(parsed.max_tokens);
+    let chat_temp = ready_chat_temp();
+
     println!("==> Running direct 1B chat turn");
-    run_chat(model_path, &parsed.prompt, 0.0, parsed.max_tokens)
+    run_chat(model_path, &chat_prompt, chat_temp, chat_tokens)
 }
 
 #[derive(Debug)]
@@ -3277,9 +3318,10 @@ mod tests {
         parse_generate_args_with_env_and_workspace, parse_smoke_1b_args_with_env,
         parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
         parse_tui_args_with_env_and_workspace, ready_chat_enabled_from_env_value,
-        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        resolve_model_path_arg, runtime_options_from_gguf, shared_token_prefix_len,
-        validate_generation_budget,
+        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
+        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
+        resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
+        runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
     };
 
     #[test]
@@ -3310,6 +3352,40 @@ mod tests {
         assert!(ready_chat_enabled_from_env_value("1"));
         assert!(ready_chat_enabled_from_env_value("true"));
         assert!(ready_chat_enabled_from_env_value(""));
+    }
+
+    #[test]
+    fn ready_chat_prompt_uses_env_override_when_non_empty() {
+        assert_eq!(
+            ready_chat_prompt_from_env_value(Some("Give one Pi tip.".to_owned()), "Smoke prompt"),
+            "Give one Pi tip."
+        );
+        assert_eq!(
+            ready_chat_prompt_from_env_value(Some(String::new()), "Smoke prompt"),
+            "Smoke prompt"
+        );
+        assert_eq!(
+            ready_chat_prompt_from_env_value(None, "Smoke prompt"),
+            "Smoke prompt"
+        );
+    }
+
+    #[test]
+    fn ready_chat_tokens_parse_positive_env_override() {
+        assert_eq!(ready_chat_tokens_from_env_value(Some("4".to_owned()), 8), 4);
+        assert_eq!(ready_chat_tokens_from_env_value(Some("0".to_owned()), 8), 8);
+        assert_eq!(
+            ready_chat_tokens_from_env_value(Some("bad".to_owned()), 8),
+            8
+        );
+        assert_eq!(ready_chat_tokens_from_env_value(None, 8), 8);
+    }
+
+    #[test]
+    fn ready_chat_temp_defaults_to_zero_for_invalid_env() {
+        assert_eq!(ready_chat_temp_from_env_value(Some("0.2".to_owned())), 0.2);
+        assert_eq!(ready_chat_temp_from_env_value(Some("bad".to_owned())), 0.0);
+        assert_eq!(ready_chat_temp_from_env_value(None), 0.0);
     }
 
     #[test]
