@@ -5,7 +5,16 @@ repo_url="${NANOCAMELID_REPO_URL:-https://github.com/timtoole02/NanoCamelid.git}
 repo_ref="${NANOCAMELID_REF:-main}"
 install_dir="${NANOCAMELID_INSTALL_DIR:-$HOME/.local/share/nanocamelid/NanoCamelid}"
 bin_dir="${NANOCAMELID_BIN_DIR:-$HOME/.local/bin}"
-target_dir="${CARGO_TARGET_DIR:-$HOME/.cache/nanocamelid/target}"
+
+default_target_dir() {
+  if [[ -d /mnt/nanocamelid || -e /mnt/nanocamelid ]]; then
+    echo "/mnt/nanocamelid/target"
+  else
+    echo "$HOME/.cache/nanocamelid/target"
+  fi
+}
+
+target_dir="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-$(default_target_dir)}}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then

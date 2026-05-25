@@ -200,10 +200,15 @@ The installer clones NanoCamelid, builds the release binary with Cargo, and
 links `nanocamelid` into `~/.local/bin`. Override paths when needed:
 
 ```bash
-NANOCAMELID_INSTALL_DIR=/mnt/nanocamelid/src/NanoCamelid \
-CARGO_TARGET_DIR=/mnt/nanocamelid/target \
-curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | \
+  env NANOCAMELID_INSTALL_DIR=/mnt/nanocamelid/src/NanoCamelid \
+    CARGO_TARGET_DIR=/mnt/nanocamelid/target \
+    bash
 ```
+
+On Pi workspaces mounted at `/mnt/nanocamelid`, the installer uses
+`/mnt/nanocamelid/target` by default unless `CARGO_TARGET_DIR` or
+`NANOCAMELID_TARGET_DIR` is set.
 
 Manual checkout still works:
 
