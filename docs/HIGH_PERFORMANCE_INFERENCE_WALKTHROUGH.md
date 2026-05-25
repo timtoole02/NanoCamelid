@@ -7,15 +7,14 @@ distributed multi-node Raspberry Pi 5 clusters.
 
 By combining single-core SIMD vectorization with a low-overhead,
 pipeline-parallel raw socket cluster architecture, `NanoCamelid` can improve
-inference throughput and run larger models across inexpensive edge devices.
+inference throughput and run large models across inexpensive edge devices.
 
 ## Repository and Artifacts
 
-The authoritative active workspace root for NanoCamelid development is the
-`NanoCamelid` repository. Private operator paths, local machine names, and
-artifact directories are intentionally excluded from this public-facing
-document. Keep reproducible benchmark summaries in the repo and retain raw
-machine-local artifacts outside source control.
+This public-facing walkthrough intentionally excludes private operator paths,
+local machine names, hostnames, and `file://` links. Keep reproducible benchmark
+summaries in the repository and retain raw machine-local artifacts outside
+source control.
 
 ## Part 1: Single-Node Speedups and Key Benchmarks
 
@@ -47,23 +46,15 @@ model shape with `32,768` rows and `3,584` columns:
 | Swizzled 1x4 Q4 | `70.648 ms` | `1.28x` |
 | Page-aligned swizzled 1x4 | `68.337 ms` | `1.32x` |
 
-Swizzled 1x4 blocks reduce cache-line misses and register loading overhead by
-packing four blocks together. Page-aligned chunks offer a marginal speedup but
-add virtual memory setup and page-table management overhead, so standard
-swizzled 1x4 storage is the active default while page alignment remains an
-opt-in experiment.
-
 ## Part 2: Distributed Clustered Inference and True Batched Prefill
 
-NanoCamelid now includes a zero-dependency, pipeline-parallel clustered
-execution runtime spanning multiple nodes over a physical 1 Gbps Ethernet
-connection.
+NanoCamelid includes a zero-dependency, pipeline-parallel clustered execution
+runtime spanning up to three nodes over a physical 1 Gbps Ethernet connection.
 
 ### 1. Network Transit Benchmarks
 
 Using standard-library raw TCP streams configured with `TCP_NODELAY`, physical
-transit latencies between nodes are low enough to represent less than 1% of the
-compute time per token in the measured setup:
+transit latencies between nodes are low:
 
 - p50 median transit latency: `0.355 ms`
 - p95 transit latency: `0.359 ms`
@@ -72,54 +63,56 @@ compute time per token in the measured setup:
 ### 2. Sparse Model Loading and Memory Footprint
 
 To avoid out-of-memory failures on 8 GB Raspberry Pi 5 units when loading large
-models, the loader dynamically maps and parses GGUF weights, selectively
-loading only the layers assigned to each node.
+models, the loader selectively loads only the layers assigned to each node.
 
-This saves about `2.1 GB` of RAM per node during a 14B model split, enabling
-smooth execution of models that would otherwise exceed a single node's memory
-budget.
+This saves about `2.1 GB` of RAM per node during a 14B split and up to about
+`6.5 GB` of RAM per node during a 32B split, enabling edge devices to run large
+models natively.
 
 ### 3. End-to-End Clustered Run: Strand 14B Q6_K
 
-The cluster splits the 48-layer model into 24-layer ranges: `0..24` on the
-master and `24..48` on the worker.
+The cluster partitions the 48 layers into three ranges: `0..16`, `16..32`, and
+`32..48`.
 
 - Model: `Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf`
 - Test prompt: `Write a quick Rust hello-world function:`
-- Token output, monolithic baseline: `[5168, 23811, 31792, 368, 1464, 923]`
-- Text output, monolithic baseline: ` fn hello_world() -> String`
-- Token output, clustered split: `[5168, 23811, 31792, 368, 1464, 923]`
-- Text output, clustered split: ` fn hello_world() -> String`
+- Tokens, monolithic baseline: `[5168, 23811, 31792, 368, 1464, 923]`
+- Text, monolithic baseline: ` fn hello_world() -> String`
+- Tokens, three-node clustered split: `[5168, 23811, 31792, 368, 1464, 923]`
+- Text, three-node clustered split: ` fn hello_world() -> String`
+- Interactive decode speed: `1.202 tokens/sec` over three nodes
 
 The clustered split matched the monolithic baseline with exact token parity for
 this run.
 
-### 4. Batched Prefill Performance Gains
+### 4. Running a 32B Coder Model: Qwen2.5-Coder-32B Instruct Q4_0
 
-Initially, prompt ingestion streamed activations sequentially token by token.
-With true batched prefill, the full prompt sequence is processed and transmitted
-in one batched network payload:
+The three-node cluster can split a 64-layer 32B coder model into ranges
+`0..21`, `21..43`, and `43..64`, avoiding the single-node out-of-memory failure
+mode for this class of model.
 
-| Prefill Strategy | Prompt Ingest Latency (seconds) | Prefill Phase Speedup |
-| :--- | :---: | :---: |
-| Token-by-token streaming | `7.602s` | Baseline (`1.00x`) |
-| True batched prefill | `6.012s` | `1.26x` (`21%` reduction) |
-
-Interactive decode throughput over physical 1 Gbps Ethernet was
-`1.250 tokens/sec`.
+- Model: `Qwen2.5-Coder-32B-Instruct-Q4_0.gguf`
+- GGUF weight payload: about `19.4 GB`
+- Tokens generated: `[3817, 368, 341, 257, 13751, 17223]`
+- Text generated: `main() {\n     println!("`
+- Prompt ingest with true batched prefill: `19.340s`
+- Interactive decode speed: `0.556 tokens/sec`
 
 ## Implemented Architectural Optimizations
 
 ```mermaid
 graph TD
  A[Prompt Tokens] -->|Batch Embeddings| B(Master Batch Workspace)
- B -->|run_layer_range_batch| C[Master Layers 0..K]
- C -->|Single TCP Packet: N x hidden| D{Network / 1 Gbps Ethernet}
- D -->|Worker Recvs Matrix| E(Worker Batch Workspace)
- E -->|run_layer_range_batch| F[Worker Layers K..N]
- F -->|Copy Last Row| G[Logit Compute and Sample]
- G -->|Single Token Feedback| H[Master Tokenizer]
- H -->|Autoregressive Decode| I[Loopback Warm Socket Decode]
+ B -->|run_layer_range_batch| C[Master Layers 0..21]
+ C -->|Single TCP Packet: N x hidden| D{Network Hop 1}
+ D -->|Worker 1 Recvs Matrix| E(Worker 1 Workspace)
+ E -->|run_layer_range_batch| F[Worker 1 Layers 21..43]
+ F -->|Single TCP Packet: N x hidden| G{Network Hop 2}
+ G -->|Worker 2 Recvs Matrix| H(Worker 2 Workspace)
+ H -->|run_layer_range_batch| I[Worker 2 Layers 43..64]
+ I -->|Copy Last Row| J[Logit Compute and Sample]
+ J -->|Single Token Feedback| K[Master Tokenizer]
+ K -->|Autoregressive Decode| L[Loopback Warm Socket Decode]
 ```
 
 ### 1. Reusable Batched Execution (`src/inference.rs`)
@@ -127,25 +120,18 @@ graph TD
 - `run_layer_range_batch`: implemented a range-based batch execution loop that
   bypasses unowned layers and performs SIMD batch normalization plus quantized
   matrix multiplications.
-- Refactored prefill: updated `prefill_pass_batch` to invoke
-  `run_layer_range_batch` under the hood while preserving exact behavior.
+- Refactored prefill: overhauled `prefill_pass_batch` to invoke
+  `run_layer_range_batch` under the hood.
 
-### 2. Batched Ingest and Streaming CLI (`src/bin/cluster_tcp_smoke.rs`)
+### 2. Multi-Hop TCP Pipeline CLI (`src/bin/cluster_tcp_smoke.rs`)
 
-- Master (`master-generate`): extracts embeddings for the full prompt, executes
-  `run_layer_range_batch` for the bottom half, streams the full activation
-  matrix in a single payload, and awaits single-token feedback.
-- Worker (`worker`): dynamically inspects the packet header. If `seq_len > 1`,
-  it runs the batch pipeline and copies only the last row's hidden state for
-  sampling. If `seq_len == 1`, it routes through the single-token
-  autoregressive path.
-
-## Verification and Parity Results
-
-The implementation was validated with:
-
-1. `cargo fmt --all -- --check`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
-3. `cargo test`
-4. Clustered-vs-monolithic logit parity with `0.00000000` max logit delta
+- Master (`master-generate`): extracts prompt embeddings, runs
+  `run_layer_range_batch` for the bottom layer range, streams the full
+  activation matrix to the middle worker, and awaits single-token feedback from
+  the final worker.
+- Middle worker (`worker`): receives activations, processes its layer range, and
+  transparently streams output activations forward to the next node in the
+  pipeline.
+- Final worker (`worker`): processes the final layer range, computes logits,
+  samples the next token, and transmits the resulting token back to the master.
 
