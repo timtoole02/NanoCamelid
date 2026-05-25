@@ -230,7 +230,8 @@ impl LlamaWorkspace {
         let max_size = config
             .vocab_size
             .max(config.feed_forward_length)
-            .max(config.embedding_length);
+            .max(config.embedding_length)
+            .max(config.attention_output_width);
         let attn_score_len = if attention_head_parallel_enabled() {
             config.attention_head_count * config.context_length
         } else {
@@ -240,10 +241,10 @@ impl LlamaWorkspace {
             hidden: vec![0.0; config.embedding_length],
             residual: vec![0.0; config.embedding_length],
             norm_x: vec![0.0; config.embedding_length],
-            q: vec![0.0; config.embedding_length],
+            q: vec![0.0; config.attention_output_width],
             k: vec![0.0; config.kv_width],
             v: vec![0.0; config.kv_width],
-            attn_output: vec![0.0; config.embedding_length],
+            attn_output: vec![0.0; config.attention_output_width],
             attn_scores: vec![0.0; attn_score_len],
             ffn_gate: vec![0.0; config.feed_forward_length],
             ffn_up: vec![0.0; config.feed_forward_length],
@@ -260,7 +261,8 @@ impl LlamaBatchWorkspace {
         let max_size = config
             .vocab_size
             .max(config.feed_forward_length)
-            .max(config.embedding_length);
+            .max(config.embedding_length)
+            .max(config.attention_output_width);
         let attn_score_len = if attention_head_parallel_enabled() {
             max_batch * config.attention_head_count * config.context_length
         } else {
@@ -271,10 +273,10 @@ impl LlamaBatchWorkspace {
             hidden: vec![0.0; max_batch * config.embedding_length],
             residual: vec![0.0; max_batch * config.embedding_length],
             norm_x: vec![0.0; max_batch * config.embedding_length],
-            q: vec![0.0; max_batch * config.embedding_length],
+            q: vec![0.0; max_batch * config.attention_output_width],
             k: vec![0.0; max_batch * config.kv_width],
             v: vec![0.0; max_batch * config.kv_width],
-            attn_output: vec![0.0; max_batch * config.embedding_length],
+            attn_output: vec![0.0; max_batch * config.attention_output_width],
             attn_scores: vec![0.0; attn_score_len],
             ffn_gate: vec![0.0; max_batch * config.feed_forward_length],
             ffn_up: vec![0.0; max_batch * config.feed_forward_length],
@@ -1897,6 +1899,8 @@ pub fn run_layer_range_batch(
     for (local_layer_idx, layer) in layers.iter().enumerate() {
         let layer_idx = layer_start + local_layer_idx;
         let hidden_len = batch_size * config.embedding_length;
+        let q_len = batch_size * config.attention_output_width;
+        let attn_len = batch_size * config.attention_output_width;
         let kv_len = batch_size * config.kv_width;
         let ffn_len = batch_size * config.feed_forward_length;
 
@@ -1919,11 +1923,11 @@ pub fn run_layer_range_batch(
 
         let attention_shape = BatchMatmulShape {
             batch_size,
-            rows: config.embedding_length,
+            rows: config.attention_output_width,
             cols: config.embedding_length,
         };
         matmul_quantized_batch(
-            &mut ws.q[..hidden_len],
+            &mut ws.q[..q_len],
             &ws.x_i8[..batch_size * config.embedding_length],
             &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
             &layer.wq,
@@ -1931,10 +1935,10 @@ pub fn run_layer_range_batch(
             options.q8_selector,
         );
         add_bias_batch(
-            &mut ws.q[..hidden_len],
+            &mut ws.q[..q_len],
             &layer.wq_bias,
             batch_size,
-            config.embedding_length,
+            config.attention_output_width,
         );
 
         let kv_shape = BatchMatmulShape {
@@ -1973,10 +1977,10 @@ pub fn run_layer_range_batch(
 
         for token_idx in 0..batch_size {
             let pos = start_pos + token_idx;
-            let q_start = token_idx * config.embedding_length;
+            let q_start = token_idx * config.attention_output_width;
             let kv_start = token_idx * config.kv_width;
             apply_rope(
-                &mut ws.q[q_start..q_start + config.embedding_length],
+                &mut ws.q[q_start..q_start + config.attention_output_width],
                 pos,
                 config.attention_head_count,
                 config.head_dim,
@@ -2004,13 +2008,13 @@ pub fn run_layer_range_batch(
         let k_cache = cache.get_k_cache(layer_idx);
         let v_cache = cache.get_v_cache(layer_idx);
         let scale = 1.0 / (config.head_dim as f32).sqrt();
-        ws.attn_output[..hidden_len].fill(0.0);
+        ws.attn_output[..attn_len].fill(0.0);
         let parallel_heads = attention_head_parallel_enabled();
 
         for token_idx in 0..batch_size {
             let pos = start_pos + token_idx;
-            let q_token_start = token_idx * config.embedding_length;
-            let out_token_start = token_idx * config.embedding_length;
+            let q_token_start = token_idx * config.attention_output_width;
+            let out_token_start = token_idx * config.attention_output_width;
             let scores = if parallel_heads
                 && ws.attn_scores.len()
                     >= batch_size * config.attention_head_count * config.context_length
@@ -2023,10 +2027,11 @@ pub fn run_layer_range_batch(
                 &mut ws.attn_scores[scores_start..scores_start + config.context_length]
             };
             apply_attention_heads(
-                &mut ws.attn_output[out_token_start..out_token_start + config.embedding_length],
+                &mut ws.attn_output
+                    [out_token_start..out_token_start + config.attention_output_width],
                 scores,
                 AttentionInput {
-                    q: &ws.q[q_token_start..q_token_start + config.embedding_length],
+                    q: &ws.q[q_token_start..q_token_start + config.attention_output_width],
                     k_cache,
                     v_cache,
                     pos,
@@ -2042,18 +2047,22 @@ pub fn run_layer_range_batch(
         }
 
         quantize_f32_to_q8_0_batch(
-            &ws.attn_output[..hidden_len],
-            &mut ws.x_i8[..batch_size * config.embedding_length],
-            &mut ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &ws.attn_output[..attn_len],
+            &mut ws.x_i8[..batch_size * config.attention_output_width],
+            &mut ws.x_scales[..batch_size * (config.attention_output_width / Q8_BLOCK_SIZE)],
             batch_size,
-            config.embedding_length,
+            config.attention_output_width,
         );
         matmul_quantized_batch(
             &mut ws.hidden[..hidden_len],
-            &ws.x_i8[..batch_size * config.embedding_length],
-            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+            &ws.x_i8[..batch_size * config.attention_output_width],
+            &ws.x_scales[..batch_size * (config.attention_output_width / Q8_BLOCK_SIZE)],
             &layer.wo,
-            attention_shape,
+            BatchMatmulShape {
+                batch_size,
+                rows: config.embedding_length,
+                cols: config.attention_output_width,
+            },
             options.q8_selector,
         );
         add_residual_batch(&mut ws.hidden[..hidden_len], &ws.residual[..hidden_len]);
@@ -2403,7 +2412,7 @@ pub fn run_layer_range(
             &ws.x_i8,
             &ws.x_scales,
             &layer.wq,
-            config.embedding_length,
+            config.attention_output_width,
             config.embedding_length,
             options.q8_selector,
         );
@@ -2494,7 +2503,7 @@ pub fn run_layer_range(
             &ws.x_scales,
             &layer.wo,
             config.embedding_length,
-            config.embedding_length,
+            config.attention_output_width,
             options.q8_selector,
         );
 
@@ -2754,6 +2763,7 @@ mod tests {
             rms_norm_epsilon: 1e-5,
             vocab_size: 4,
             head_dim: 32,
+            attention_output_width: 32,
             kv_width: 32,
             expert_count: 0,
             expert_used_count: 0,

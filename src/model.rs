@@ -32,6 +32,7 @@ pub struct LlamaModelConfig {
     pub rms_norm_epsilon: f32,
     pub vocab_size: usize,
     pub head_dim: usize,
+    pub attention_output_width: usize,
     pub kv_width: usize,
     pub expert_count: usize,
     pub expert_used_count: usize,
@@ -122,7 +123,9 @@ impl LlamaModelConfig {
             }
         };
 
-        let head_dim = embedding_length / attention_head_count;
+        let head_dim =
+            gguf.metadata_u32(&metadata_key(metadata_prefix, "attention.key_length"))
+                .unwrap_or((embedding_length / attention_head_count) as u32) as usize;
         let rope_dimension_count = gguf
             .metadata_u32(&metadata_key(metadata_prefix, "rope.dimension_count"))
             .unwrap_or(head_dim as u32) as usize;
@@ -134,6 +137,7 @@ impl LlamaModelConfig {
                 "RoPE dimension count {rope_dimension_count} must be even and within head dimension {head_dim}"
             ));
         }
+        let attention_output_width = attention_head_count * head_dim;
         let kv_width = attention_head_count_kv * head_dim;
         let expert_count = gguf
             .metadata_u32(&metadata_key(metadata_prefix, "expert_count"))
@@ -166,6 +170,7 @@ impl LlamaModelConfig {
             rms_norm_epsilon,
             vocab_size,
             head_dim,
+            attention_output_width,
             kv_width,
             expert_count,
             expert_used_count,
@@ -181,6 +186,11 @@ pub fn metadata_prefix_for_arch(arch: &str) -> Option<&'static str> {
     match arch {
         "llama" => Some("llama"),
         "qwen2" => Some("qwen2"),
+        "qwen3" => Some("qwen3"),
+        "smollm3" => Some("smollm3"),
+        "gemma3" => Some("gemma3"),
+        "phi3" => Some("phi3"),
+        "lfm2" => Some("lfm2"),
         "mistral" => Some("mistral"),
         _ => None,
     }
@@ -570,13 +580,13 @@ pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Res
         require_descriptor_matrix_shape(
             load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.weight"))?,
             config.embedding_length,
-            config.embedding_length,
+            config.attention_output_width,
             &format!("layer {layer_idx} attention q"),
         )?;
         if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.bias")) {
             require_descriptor_shape(
                 bias,
-                &[config.embedding_length],
+                &[config.attention_output_width],
                 &format!("layer {layer_idx} attention q bias"),
             )?;
         }
@@ -608,7 +618,7 @@ pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Res
         }
         require_descriptor_matrix_shape(
             load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_output.weight"))?,
-            config.embedding_length,
+            config.attention_output_width,
             config.embedding_length,
             &format!("layer {layer_idx} attention output"),
         )?;
@@ -1040,6 +1050,41 @@ mod tests {
     }
 
     #[test]
+    fn parses_llama32_1b_metadata_shape() {
+        let gguf = gguf_fixture(
+            [
+                ("llama.context_length", GgufMetadataValue::U32(131072)),
+                ("llama.embedding_length", GgufMetadataValue::U32(2048)),
+                ("llama.block_count", GgufMetadataValue::U32(16)),
+                ("llama.feed_forward_length", GgufMetadataValue::U32(8192)),
+                ("llama.attention.head_count", GgufMetadataValue::U32(32)),
+                ("llama.attention.head_count_kv", GgufMetadataValue::U32(8)),
+                ("llama.rope.freq_base", GgufMetadataValue::F32(500000.0)),
+                ("llama.vocab_size", GgufMetadataValue::U32(128256)),
+            ],
+            vec![tensor_desc(
+                "token_embd.weight",
+                vec![128256, 2048],
+                GgufTensorType::Q8_0,
+                q8_bytes(2048, 128256),
+            )],
+        );
+
+        let config = LlamaModelConfig::from_gguf(&gguf).expect("Llama 3.2 1B config should parse");
+        assert_eq!(config.context_length, 131072);
+        assert_eq!(config.embedding_length, 2048);
+        assert_eq!(config.block_count, 16);
+        assert_eq!(config.feed_forward_length, 8192);
+        assert_eq!(config.attention_head_count, 32);
+        assert_eq!(config.attention_head_count_kv, 8);
+        assert_eq!(config.vocab_size, 128256);
+        assert_eq!(config.head_dim, 64);
+        assert_eq!(config.attention_output_width, 2048);
+        assert_eq!(config.kv_width, 512);
+        assert_eq!(config.rope_freq_base, 500000.0);
+    }
+
+    #[test]
     fn rejects_invalid_rope_dimension_count() {
         let gguf = gguf_fixture(
             [
@@ -1094,6 +1139,36 @@ mod tests {
         assert_eq!(config.head_dim, 128);
         assert_eq!(config.kv_width, 512);
         assert_eq!(config.rope_freq_base, 1_000_000.0);
+    }
+
+    #[test]
+    fn parses_qwen3_metadata_namespace() {
+        let gguf = gguf_fixture(
+            [
+                (
+                    "general.architecture",
+                    GgufMetadataValue::String("qwen3".to_owned()),
+                ),
+                ("qwen3.context_length", GgufMetadataValue::U32(40960)),
+                ("qwen3.embedding_length", GgufMetadataValue::U32(1024)),
+                ("qwen3.block_count", GgufMetadataValue::U32(28)),
+                ("qwen3.feed_forward_length", GgufMetadataValue::U32(3072)),
+                ("qwen3.attention.head_count", GgufMetadataValue::U32(16)),
+                ("qwen3.attention.head_count_kv", GgufMetadataValue::U32(8)),
+            ],
+            vec![tensor_desc(
+                "token_embd.weight",
+                vec![151936, 1024],
+                GgufTensorType::Q8_0,
+                q8_bytes(1024, 151936),
+            )],
+        );
+
+        let config = LlamaModelConfig::from_gguf(&gguf).expect("qwen3 config should parse");
+        assert_eq!(config.architecture, "qwen3");
+        assert_eq!(config.metadata_prefix, "qwen3");
+        assert_eq!(config.vocab_size, 151936);
+        assert_eq!(config.kv_width, 512);
     }
 
     #[test]
@@ -1217,6 +1292,7 @@ mod tests {
             rms_norm_epsilon: 1e-5,
             vocab_size: 32000,
             head_dim: 64,
+            attention_output_width: 2048,
             kv_width: 256,
             expert_count: 0,
             expert_used_count: 0,
