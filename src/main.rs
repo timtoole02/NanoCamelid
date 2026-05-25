@@ -925,6 +925,13 @@ impl SmokeKind {
     fn looks_like_arg(value: &str) -> bool {
         matches!(value, "chat" | "model") || value.starts_with("q8-")
     }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Q8Model => "model",
+            Self::Q8Chat => "chat",
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2083,7 +2090,7 @@ fn run_ready_1b(parsed: Smoke1BArgs) -> ExitCode {
         return inspect_code;
     }
 
-    println!("==> Running 1B smoke gate");
+    println!("==> Running 1B {} smoke gate", parsed.kind.label());
     let smoke_code = match parsed.kind {
         SmokeKind::Q8Model => smoke_q8_model(model_path, &parsed.prompt, parsed.max_tokens),
         SmokeKind::Q8Chat => smoke_q8_chat(model_path, &parsed.prompt, parsed.max_tokens),

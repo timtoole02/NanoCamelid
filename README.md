@@ -401,8 +401,9 @@ directly:
 `ready-1b.sh` uses the same Pi target directory and model defaults, then runs
 `inspect`, `smoke 1b`, and `chat` against the resolved GGUF. A leading `.gguf`
 argument overrides the model path. The remaining optional arguments override
-the final direct-chat prompt and token budget. Set `NANOCAMELID_READY_CHAT=0`
-to stop after inspect and smoke when you only need the readiness gate:
+the final direct-chat prompt and token budget; when omitted, direct chat reuses
+the selected smoke prompt and token budget. Set `NANOCAMELID_READY_CHAT=0` to
+stop after inspect and smoke when you only need the readiness gate:
 
 ```bash
 ./scripts/pi/ready-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf "Say hello in one sentence." 8
