@@ -33,6 +33,8 @@ pub struct LlamaModelConfig {
     pub vocab_size: usize,
     pub head_dim: usize,
     pub kv_width: usize,
+    pub expert_count: usize,
+    pub expert_used_count: usize,
 }
 
 impl LlamaModelConfig {
@@ -133,6 +135,22 @@ impl LlamaModelConfig {
             ));
         }
         let kv_width = attention_head_count_kv * head_dim;
+        let expert_count = gguf
+            .metadata_u32(&metadata_key(metadata_prefix, "expert_count"))
+            .unwrap_or(0) as usize;
+        let expert_used_count = gguf
+            .metadata_u32(&metadata_key(metadata_prefix, "expert_used_count"))
+            .unwrap_or(0) as usize;
+        if expert_count == 0 && expert_used_count != 0 {
+            return Err(format!(
+                "{metadata_prefix}.expert_used_count is set but expert_count is missing"
+            ));
+        }
+        if expert_used_count > expert_count {
+            return Err(format!(
+                "{metadata_prefix}.expert_used_count {expert_used_count} exceeds expert_count {expert_count}"
+            ));
+        }
 
         Ok(Self {
             architecture: arch.to_owned(),
@@ -149,6 +167,8 @@ impl LlamaModelConfig {
             vocab_size,
             head_dim,
             kv_width,
+            expert_count,
+            expert_used_count,
         })
     }
 }
@@ -182,6 +202,24 @@ pub struct LlamaLayerWeights {
     pub wav_bias: Option<Vec<f32>>,
     pub wo: QuantizedMatrix,
     pub ffn_norm: Vec<f32>,
+    pub ffn: LlamaFfnWeights,
+}
+
+#[allow(clippy::large_enum_variant)]
+pub enum LlamaFfnWeights {
+    Dense {
+        w1: QuantizedMatrix,
+        w3: QuantizedMatrix,
+        w2: QuantizedMatrix,
+    },
+    MoE {
+        router: Vec<f32>,
+        expert_used_count: usize,
+        experts: Vec<MoeExpertWeights>,
+    },
+}
+
+pub struct MoeExpertWeights {
     pub w1: QuantizedMatrix,
     pub w3: QuantizedMatrix,
     pub w2: QuantizedMatrix,
@@ -384,9 +422,62 @@ fn load_layer_weights(
     let wo = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_output.weight"))?;
 
     let ffn_norm = load_f32_or_f16(mmap, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
-    let w1 = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
-    let w3 = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?;
-    let w2 = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_down.weight"))?;
+    let ffn = if gguf
+        .tensors
+        .iter()
+        .any(|tensor| tensor.name == format!("blk.{i}.ffn_gate.0.weight"))
+    {
+        let expert_count =
+            gguf.metadata_u32("llama.expert_count")
+                .or_else(|| gguf.metadata_u32("mistral.expert_count"))
+                .unwrap_or_else(|| count_layer_experts(gguf, i) as u32) as usize;
+        let expert_used_count = gguf
+            .metadata_u32("llama.expert_used_count")
+            .or_else(|| gguf.metadata_u32("mistral.expert_used_count"))
+            .unwrap_or(2) as usize;
+        if expert_count == 0 {
+            return Err(format!("layer {i} has MoE tensors but no experts"));
+        }
+        if expert_used_count == 0 || expert_used_count > expert_count {
+            return Err(format!(
+                "layer {i} invalid expert_used_count {expert_used_count} for {expert_count} experts"
+            ));
+        }
+
+        let router = load_f32_or_f16(mmap, gguf, &format!("blk.{i}.ffn_gate_inp.weight"))?;
+        let mut experts = Vec::with_capacity(expert_count);
+        for expert_idx in 0..expert_count {
+            experts.push(MoeExpertWeights {
+                w1: load_quantized_matrix(
+                    mmap,
+                    gguf,
+                    &format!("blk.{i}.ffn_gate.{expert_idx}.weight"),
+                )?,
+                w3: load_quantized_matrix(
+                    mmap,
+                    gguf,
+                    &format!("blk.{i}.ffn_up.{expert_idx}.weight"),
+                )?,
+                w2: load_quantized_matrix(
+                    mmap,
+                    gguf,
+                    &format!("blk.{i}.ffn_down.{expert_idx}.weight"),
+                )?,
+            });
+        }
+
+        LlamaFfnWeights::MoE {
+            router,
+            expert_used_count,
+            experts,
+        }
+    } else {
+        LlamaFfnWeights::Dense {
+            w1: load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_gate.weight"))?,
+            w3: load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?,
+            w2: load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_down.weight"))?,
+        }
+    };
 
     Ok(LlamaLayerWeights {
         attention_norm,
@@ -398,10 +489,24 @@ fn load_layer_weights(
         wav_bias,
         wo,
         ffn_norm,
-        w1,
-        w3,
-        w2,
+        ffn,
     })
+}
+
+fn count_layer_experts(gguf: &GgufFile, layer_idx: usize) -> usize {
+    let prefix = format!("blk.{layer_idx}.ffn_gate.");
+    gguf.tensors
+        .iter()
+        .filter_map(|tensor| {
+            let suffix = tensor.name.strip_prefix(&prefix)?;
+            let (idx, tail) = suffix.split_once('.')?;
+            (tail == "weight")
+                .then(|| idx.parse::<usize>().ok())
+                .flatten()
+        })
+        .max()
+        .map(|idx| idx + 1)
+        .unwrap_or(0)
 }
 
 fn validate_distributed_layer_range(
@@ -512,27 +617,84 @@ pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Res
             &[config.embedding_length],
             &format!("layer {layer_idx} ffn norm"),
         )?;
-        require_descriptor_matrix_shape(
-            load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_gate.weight"))?,
-            config.embedding_length,
-            config.feed_forward_length,
-            &format!("layer {layer_idx} ffn gate"),
-        )?;
-        require_descriptor_matrix_shape(
-            load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_up.weight"))?,
-            config.embedding_length,
-            config.feed_forward_length,
-            &format!("layer {layer_idx} ffn up"),
-        )?;
-        require_descriptor_matrix_shape(
-            load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_down.weight"))?,
-            config.feed_forward_length,
-            config.embedding_length,
-            &format!("layer {layer_idx} ffn down"),
-        )?;
+        if has_moe_layer(gguf, layer_idx) {
+            let expert_count = config
+                .expert_count
+                .max(count_layer_experts(gguf, layer_idx));
+            if expert_count == 0 {
+                return Err(format!("layer {layer_idx} has MoE tensors but no experts"));
+            }
+            let expert_used_count = if config.expert_used_count == 0 {
+                2
+            } else {
+                config.expert_used_count
+            };
+            if expert_used_count == 0 || expert_used_count > expert_count {
+                return Err(format!(
+                    "layer {layer_idx} invalid expert_used_count {expert_used_count} for {expert_count} experts"
+                ));
+            }
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_gate_inp.weight"))?,
+                config.embedding_length,
+                expert_count,
+                &format!("layer {layer_idx} MoE router"),
+            )?;
+            for expert_idx in 0..expert_count {
+                require_descriptor_matrix_shape(
+                    load_tensor_desc(
+                        gguf,
+                        &format!("blk.{layer_idx}.ffn_gate.{expert_idx}.weight"),
+                    )?,
+                    config.embedding_length,
+                    config.feed_forward_length,
+                    &format!("layer {layer_idx} expert {expert_idx} ffn gate"),
+                )?;
+                require_descriptor_matrix_shape(
+                    load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_up.{expert_idx}.weight"))?,
+                    config.embedding_length,
+                    config.feed_forward_length,
+                    &format!("layer {layer_idx} expert {expert_idx} ffn up"),
+                )?;
+                require_descriptor_matrix_shape(
+                    load_tensor_desc(
+                        gguf,
+                        &format!("blk.{layer_idx}.ffn_down.{expert_idx}.weight"),
+                    )?,
+                    config.feed_forward_length,
+                    config.embedding_length,
+                    &format!("layer {layer_idx} expert {expert_idx} ffn down"),
+                )?;
+            }
+        } else {
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_gate.weight"))?,
+                config.embedding_length,
+                config.feed_forward_length,
+                &format!("layer {layer_idx} ffn gate"),
+            )?;
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_up.weight"))?,
+                config.embedding_length,
+                config.feed_forward_length,
+                &format!("layer {layer_idx} ffn up"),
+            )?;
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_down.weight"))?,
+                config.feed_forward_length,
+                config.embedding_length,
+                &format!("layer {layer_idx} ffn down"),
+            )?;
+        }
     }
 
     Ok(())
+}
+
+fn has_moe_layer(gguf: &GgufFile, layer_idx: usize) -> bool {
+    gguf.tensors
+        .iter()
+        .any(|tensor| tensor.name == format!("blk.{layer_idx}.ffn_gate.0.weight"))
 }
 
 fn load_tensor_desc<'a>(
@@ -978,6 +1140,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_validates_moe_expert_tensor_layouts() {
+        let gguf = moe_tensor_fixture(2, 1);
+        let config = LlamaModelConfig::from_gguf(&gguf).expect("moe config should parse");
+
+        assert_eq!(config.expert_count, 2);
+        assert_eq!(config.expert_used_count, 1);
+        validate_model_tensors(&gguf, &config).expect("moe tensors should validate");
+    }
+
+    #[test]
+    fn rejects_moe_expert_used_count_above_expert_count() {
+        let gguf = moe_tensor_fixture(2, 3);
+
+        let err = LlamaModelConfig::from_gguf(&gguf).unwrap_err();
+        assert!(err.contains("expert_used_count 3 exceeds expert_count 2"));
+    }
+
+    #[test]
     fn rejects_mismatched_output_row_storage_bytes() {
         let err = validate_model_tensors(
             &full_tensor_fixture(q8_bytes(2048, 32000) + 34),
@@ -1038,6 +1218,8 @@ mod tests {
             vocab_size: 32000,
             head_dim: 64,
             kv_width: 256,
+            expert_count: 0,
+            expert_used_count: 0,
         }
     }
 
@@ -1127,6 +1309,51 @@ mod tests {
                 ),
             ],
         )
+    }
+
+    fn moe_tensor_fixture(expert_count: usize, expert_used_count: usize) -> GgufFile {
+        let mut fixture = full_tensor_fixture(q8_bytes(2048, 32000));
+        fixture.metadata.insert(
+            "llama.expert_count".to_owned(),
+            GgufMetadataValue::U32(expert_count as u32),
+        );
+        fixture.metadata.insert(
+            "llama.expert_used_count".to_owned(),
+            GgufMetadataValue::U32(expert_used_count as u32),
+        );
+        fixture.metadata_count = fixture.metadata.len() as u64;
+
+        fixture.tensors.push(tensor_desc(
+            "blk.0.ffn_gate_inp.weight",
+            vec![2048, expert_count as u64],
+            GgufTensorType::F32,
+            2048 * expert_count as u64 * 4,
+        ));
+        for expert_idx in 0..expert_count {
+            fixture.tensors.extend([
+                tensor_desc(
+                    &format!("blk.0.ffn_gate.{expert_idx}.weight"),
+                    vec![2048, 5632],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 5632),
+                ),
+                tensor_desc(
+                    &format!("blk.0.ffn_up.{expert_idx}.weight"),
+                    vec![2048, 5632],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(2048, 5632),
+                ),
+                tensor_desc(
+                    &format!("blk.0.ffn_down.{expert_idx}.weight"),
+                    vec![5632, 2048],
+                    GgufTensorType::Q8_0,
+                    q8_bytes(5632, 2048),
+                ),
+            ]);
+        }
+        fixture.tensor_count = fixture.tensors.len() as u64;
+
+        fixture
     }
 
     fn gguf_fixture<const N: usize>(

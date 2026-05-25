@@ -1,5 +1,6 @@
 use crate::model::{
-    LlamaLayerWeights, LlamaModelConfig, LlamaWeights, PageAlignedQ4_0Swizzled1x4, QuantizedMatrix,
+    LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, MoeExpertWeights,
+    PageAlignedQ4_0Swizzled1x4, QuantizedMatrix,
 };
 use crate::q8::{
     Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
@@ -1536,6 +1537,136 @@ pub fn fused_silu_mul(gate_up: &mut [f32], gate: &[f32], up: &[f32]) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExpertRoute {
+    pub expert_idx: usize,
+    pub weight: f32,
+}
+
+pub fn route_token_to_experts(
+    hidden: &[f32],
+    router: &[f32],
+    expert_count: usize,
+    expert_used_count: usize,
+) -> Vec<ExpertRoute> {
+    debug_assert!(expert_count > 0);
+    debug_assert!(expert_used_count > 0);
+    debug_assert!(expert_used_count <= expert_count);
+    debug_assert_eq!(router.len(), expert_count * hidden.len());
+
+    let mut logits = vec![0.0_f32; expert_count];
+    for (expert_idx, logit) in logits.iter_mut().enumerate() {
+        let row_start = expert_idx * hidden.len();
+        *logit = router[row_start..row_start + hidden.len()]
+            .iter()
+            .zip(hidden)
+            .map(|(&weight, &value)| weight * value)
+            .sum();
+    }
+
+    let mut selected = Vec::with_capacity(expert_used_count);
+    for expert_idx in 0..expert_count {
+        let logit = logits[expert_idx];
+        let insert_at = selected
+            .iter()
+            .position(|route: &ExpertRoute| logit > logits[route.expert_idx])
+            .unwrap_or(selected.len());
+        if insert_at < expert_used_count {
+            selected.insert(
+                insert_at,
+                ExpertRoute {
+                    expert_idx,
+                    weight: logit,
+                },
+            );
+            selected.truncate(expert_used_count);
+        }
+    }
+
+    let max_logit = selected
+        .iter()
+        .map(|route| route.weight)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut exp_sum = 0.0_f32;
+    for route in &mut selected {
+        route.weight = (route.weight - max_logit).exp();
+        exp_sum += route.weight;
+    }
+    if exp_sum != 0.0 {
+        for route in &mut selected {
+            route.weight /= exp_sum;
+        }
+    }
+
+    selected
+}
+
+struct SingleTokenFfnBuffers<'a> {
+    ffn_gate: &'a mut [f32],
+    ffn_up: &'a mut [f32],
+    ffn_gate_up: &'a mut [f32],
+    x_i8: &'a mut [i8],
+    x_scales: &'a mut [f32],
+    expert_out: &'a mut [f32],
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_moe_ffn_single_token(
+    hidden_out: &mut [f32],
+    residual: &[f32],
+    norm_x: &[f32],
+    router: &[f32],
+    expert_used_count: usize,
+    experts: &[MoeExpertWeights],
+    config: &LlamaModelConfig,
+    options: LlamaRuntimeOptions,
+    buffers: SingleTokenFfnBuffers<'_>,
+) {
+    hidden_out.fill(0.0);
+    let routes = route_token_to_experts(norm_x, router, experts.len(), expert_used_count);
+    for route in routes {
+        let expert = &experts[route.expert_idx];
+        quantize_f32_to_q8_0(norm_x, buffers.x_i8, buffers.x_scales);
+        matmul_quantized(
+            buffers.ffn_gate,
+            buffers.x_i8,
+            buffers.x_scales,
+            &expert.w1,
+            config.feed_forward_length,
+            config.embedding_length,
+            options.q8_selector,
+        );
+        matmul_quantized(
+            buffers.ffn_up,
+            buffers.x_i8,
+            buffers.x_scales,
+            &expert.w3,
+            config.feed_forward_length,
+            config.embedding_length,
+            options.q8_selector,
+        );
+        fused_silu_mul(buffers.ffn_gate_up, buffers.ffn_gate, buffers.ffn_up);
+
+        quantize_f32_to_q8_0(buffers.ffn_gate_up, buffers.x_i8, buffers.x_scales);
+        matmul_quantized(
+            buffers.expert_out,
+            buffers.x_i8,
+            buffers.x_scales,
+            &expert.w2,
+            config.embedding_length,
+            config.feed_forward_length,
+            options.q8_selector,
+        );
+        for (accum, &value) in hidden_out.iter_mut().zip(buffers.expert_out.iter()) {
+            *accum += route.weight * value;
+        }
+    }
+
+    for (value, &residual) in hidden_out.iter_mut().zip(residual) {
+        *value += residual;
+    }
+}
+
 pub fn softmax(x: &mut [f32]) {
     let mut max_val = f32::NEG_INFINITY;
     for &val in x.iter() {
@@ -1936,62 +2067,97 @@ pub fn run_layer_range_batch(
             batch_size,
             config.embedding_length,
         );
-        quantize_f32_to_q8_0_batch(
-            &ws.norm_x[..hidden_len],
-            &mut ws.x_i8[..batch_size * config.embedding_length],
-            &mut ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
-            batch_size,
-            config.embedding_length,
-        );
+        match &layer.ffn {
+            LlamaFfnWeights::Dense { w1, w3, w2 } => {
+                quantize_f32_to_q8_0_batch(
+                    &ws.norm_x[..hidden_len],
+                    &mut ws.x_i8[..batch_size * config.embedding_length],
+                    &mut ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+                    batch_size,
+                    config.embedding_length,
+                );
 
-        let ffn_shape = BatchMatmulShape {
-            batch_size,
-            rows: config.feed_forward_length,
-            cols: config.embedding_length,
-        };
-        matmul_quantized_batch(
-            &mut ws.ffn_gate[..ffn_len],
-            &ws.x_i8[..batch_size * config.embedding_length],
-            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
-            &layer.w1,
-            ffn_shape,
-            options.q8_selector,
-        );
-        matmul_quantized_batch(
-            &mut ws.ffn_up[..ffn_len],
-            &ws.x_i8[..batch_size * config.embedding_length],
-            &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
-            &layer.w3,
-            ffn_shape,
-            options.q8_selector,
-        );
-        fused_silu_mul(
-            &mut ws.ffn_gate_up[..ffn_len],
-            &ws.ffn_gate[..ffn_len],
-            &ws.ffn_up[..ffn_len],
-        );
+                let ffn_shape = BatchMatmulShape {
+                    batch_size,
+                    rows: config.feed_forward_length,
+                    cols: config.embedding_length,
+                };
+                matmul_quantized_batch(
+                    &mut ws.ffn_gate[..ffn_len],
+                    &ws.x_i8[..batch_size * config.embedding_length],
+                    &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+                    w1,
+                    ffn_shape,
+                    options.q8_selector,
+                );
+                matmul_quantized_batch(
+                    &mut ws.ffn_up[..ffn_len],
+                    &ws.x_i8[..batch_size * config.embedding_length],
+                    &ws.x_scales[..batch_size * (config.embedding_length / Q8_BLOCK_SIZE)],
+                    w3,
+                    ffn_shape,
+                    options.q8_selector,
+                );
+                fused_silu_mul(
+                    &mut ws.ffn_gate_up[..ffn_len],
+                    &ws.ffn_gate[..ffn_len],
+                    &ws.ffn_up[..ffn_len],
+                );
 
-        quantize_f32_to_q8_0_batch(
-            &ws.ffn_gate_up[..ffn_len],
-            &mut ws.x_i8[..batch_size * config.feed_forward_length],
-            &mut ws.x_scales[..batch_size * (config.feed_forward_length / Q8_BLOCK_SIZE)],
-            batch_size,
-            config.feed_forward_length,
-        );
-        let down_shape = BatchMatmulShape {
-            batch_size,
-            rows: config.embedding_length,
-            cols: config.feed_forward_length,
-        };
-        matmul_quantized_batch(
-            &mut ws.hidden[..hidden_len],
-            &ws.x_i8[..batch_size * config.feed_forward_length],
-            &ws.x_scales[..batch_size * (config.feed_forward_length / Q8_BLOCK_SIZE)],
-            &layer.w2,
-            down_shape,
-            options.q8_selector,
-        );
-        add_residual_batch(&mut ws.hidden[..hidden_len], &ws.residual[..hidden_len]);
+                quantize_f32_to_q8_0_batch(
+                    &ws.ffn_gate_up[..ffn_len],
+                    &mut ws.x_i8[..batch_size * config.feed_forward_length],
+                    &mut ws.x_scales[..batch_size * (config.feed_forward_length / Q8_BLOCK_SIZE)],
+                    batch_size,
+                    config.feed_forward_length,
+                );
+                let down_shape = BatchMatmulShape {
+                    batch_size,
+                    rows: config.embedding_length,
+                    cols: config.feed_forward_length,
+                };
+                matmul_quantized_batch(
+                    &mut ws.hidden[..hidden_len],
+                    &ws.x_i8[..batch_size * config.feed_forward_length],
+                    &ws.x_scales[..batch_size * (config.feed_forward_length / Q8_BLOCK_SIZE)],
+                    w2,
+                    down_shape,
+                    options.q8_selector,
+                );
+                add_residual_batch(&mut ws.hidden[..hidden_len], &ws.residual[..hidden_len]);
+            }
+            LlamaFfnWeights::MoE {
+                router,
+                expert_used_count,
+                experts,
+            } => {
+                let scale_len = config.feed_forward_length / Q8_BLOCK_SIZE + 1;
+                for token_idx in 0..batch_size {
+                    let hidden_start = token_idx * config.embedding_length;
+                    let hidden_end = hidden_start + config.embedding_length;
+                    let ffn_start = token_idx * config.feed_forward_length;
+                    let ffn_end = ffn_start + config.feed_forward_length;
+                    run_moe_ffn_single_token(
+                        &mut ws.hidden[hidden_start..hidden_end],
+                        &ws.residual[hidden_start..hidden_end],
+                        &ws.norm_x[hidden_start..hidden_end],
+                        router,
+                        *expert_used_count,
+                        experts,
+                        config,
+                        options,
+                        SingleTokenFfnBuffers {
+                            ffn_gate: &mut ws.ffn_gate[ffn_start..ffn_end],
+                            ffn_up: &mut ws.ffn_up[ffn_start..ffn_end],
+                            ffn_gate_up: &mut ws.ffn_gate_up[ffn_start..ffn_end],
+                            x_i8: &mut ws.x_i8[..config.feed_forward_length],
+                            x_scales: &mut ws.x_scales[..scale_len],
+                            expert_out: &mut ws.attn_output[hidden_start..hidden_end],
+                        },
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -2348,47 +2514,75 @@ pub fn run_layer_range(
             config.rms_norm_epsilon,
         );
 
-        // Quantize
-        quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
+        match &layer.ffn {
+            LlamaFfnWeights::Dense { w1, w3, w2 } => {
+                // Quantize
+                quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
 
-        // Gate (w1) & Up (w3) matmuls
-        matmul_quantized(
-            &mut ws.ffn_gate,
-            &ws.x_i8,
-            &ws.x_scales,
-            &layer.w1,
-            config.feed_forward_length,
-            config.embedding_length,
-            options.q8_selector,
-        );
-        matmul_quantized(
-            &mut ws.ffn_up,
-            &ws.x_i8,
-            &ws.x_scales,
-            &layer.w3,
-            config.feed_forward_length,
-            config.embedding_length,
-            options.q8_selector,
-        );
+                // Gate (w1) & Up (w3) matmuls
+                matmul_quantized(
+                    &mut ws.ffn_gate,
+                    &ws.x_i8,
+                    &ws.x_scales,
+                    w1,
+                    config.feed_forward_length,
+                    config.embedding_length,
+                    options.q8_selector,
+                );
+                matmul_quantized(
+                    &mut ws.ffn_up,
+                    &ws.x_i8,
+                    &ws.x_scales,
+                    w3,
+                    config.feed_forward_length,
+                    config.embedding_length,
+                    options.q8_selector,
+                );
 
-        // Fused SiLU activation on Gate and element-wise product with Up
-        fused_silu_mul(&mut ws.ffn_gate_up, &ws.ffn_gate, &ws.ffn_up);
+                // Fused SiLU activation on Gate and element-wise product with Up
+                fused_silu_mul(&mut ws.ffn_gate_up, &ws.ffn_gate, &ws.ffn_up);
 
-        // Down projection (w2)
-        quantize_f32_to_q8_0(&ws.ffn_gate_up, &mut ws.x_i8, &mut ws.x_scales);
-        matmul_quantized(
-            &mut ws.hidden,
-            &ws.x_i8,
-            &ws.x_scales,
-            &layer.w2,
-            config.embedding_length,
-            config.feed_forward_length,
-            options.q8_selector,
-        );
+                // Down projection (w2)
+                quantize_f32_to_q8_0(&ws.ffn_gate_up, &mut ws.x_i8, &mut ws.x_scales);
+                matmul_quantized(
+                    &mut ws.hidden,
+                    &ws.x_i8,
+                    &ws.x_scales,
+                    w2,
+                    config.embedding_length,
+                    config.feed_forward_length,
+                    options.q8_selector,
+                );
 
-        // Residual addition
-        for i in 0..config.embedding_length {
-            ws.hidden[i] += ws.residual[i];
+                // Residual addition
+                for i in 0..config.embedding_length {
+                    ws.hidden[i] += ws.residual[i];
+                }
+            }
+            LlamaFfnWeights::MoE {
+                router,
+                expert_used_count,
+                experts,
+            } => {
+                run_moe_ffn_single_token(
+                    &mut ws.hidden,
+                    &ws.residual,
+                    &ws.norm_x,
+                    router,
+                    *expert_used_count,
+                    experts,
+                    config,
+                    options,
+                    SingleTokenFfnBuffers {
+                        ffn_gate: &mut ws.ffn_gate,
+                        ffn_up: &mut ws.ffn_up,
+                        ffn_gate_up: &mut ws.ffn_gate_up,
+                        x_i8: &mut ws.x_i8,
+                        x_scales: &mut ws.x_scales,
+                        expert_out: &mut ws.attn_output,
+                    },
+                );
+            }
         }
     }
 }
@@ -2491,9 +2685,12 @@ mod tests {
         add_weighted_f32_scalar, apply_attention_heads, apply_rope, dot_f32, dot_f32_scalar,
         embed_token, fused_silu_mul, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4,
         matmul_q6_k, matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, quantize_f32_to_q8_0,
-        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, run_layer_range, silu,
+        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, route_token_to_experts,
+        run_layer_range, silu,
     };
-    use crate::model::{LlamaLayerWeights, LlamaModelConfig, LlamaWeights, QuantizedMatrix};
+    use crate::model::{
+        LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, QuantizedMatrix,
+    };
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
         QK_K_BLOCK_SIZE, swizzle_q4_0_1x4,
@@ -2534,9 +2731,11 @@ mod tests {
             wav_bias: None,
             wo: zero_q8_matrix(config.embedding_length, config.embedding_length),
             ffn_norm: vec![1.0; config.embedding_length],
-            w1: zero_q8_matrix(config.feed_forward_length, config.embedding_length),
-            w3: zero_q8_matrix(config.feed_forward_length, config.embedding_length),
-            w2: zero_q8_matrix(config.embedding_length, config.feed_forward_length),
+            ffn: LlamaFfnWeights::Dense {
+                w1: zero_q8_matrix(config.feed_forward_length, config.embedding_length),
+                w3: zero_q8_matrix(config.feed_forward_length, config.embedding_length),
+                w2: zero_q8_matrix(config.embedding_length, config.feed_forward_length),
+            },
         }
     }
 
@@ -2556,6 +2755,8 @@ mod tests {
             vocab_size: 4,
             head_dim: 32,
             kv_width: 32,
+            expert_count: 0,
+            expert_used_count: 0,
         }
     }
 
@@ -2772,6 +2973,25 @@ mod tests {
                 "idx {idx} candidate {candidate} expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn route_token_to_experts_selects_top_k_and_normalizes_weights() {
+        let hidden = [2.0, -1.0, 0.5];
+        let router = [
+            0.0, 1.0, 0.0, // -1.0
+            1.0, 0.0, 0.0, // 2.0
+            0.0, 0.0, 3.0, // 1.5
+            -1.0, 0.0, 0.0, // -2.0
+        ];
+
+        let routes = route_token_to_experts(&hidden, &router, 4, 2);
+
+        assert_eq!(routes[0].expert_idx, 1);
+        assert_eq!(routes[1].expert_idx, 2);
+        let weight_sum: f32 = routes.iter().map(|route| route.weight).sum();
+        assert!((weight_sum - 1.0).abs() < 1e-6);
+        assert!(routes[0].weight > routes[1].weight);
     }
 
     #[test]
