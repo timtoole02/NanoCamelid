@@ -1,9 +1,9 @@
 use std::{
-    env,
+    env, io,
     net::{TcpListener, TcpStream},
     path::Path,
     process::ExitCode,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use nanocamelid::{
@@ -45,11 +45,13 @@ fn run() -> Result<(), String> {
             let worker_addr = args.next().unwrap_or_else(|| "127.0.0.1:5005".to_owned());
             let token_id = parse_optional_usize(args.next(), 1, "token_id")?;
             let requested_split_layer = parse_optional_usize(args.next(), 0, "split_layer")?;
+            let max_tokens = parse_optional_usize(args.next(), 1, "max_tokens")?;
             run_master(
                 Path::new(&model_path),
                 &worker_addr,
                 token_id,
                 requested_split_layer,
+                max_tokens,
             )
         }
         _ => {
@@ -104,17 +106,6 @@ fn run_worker(
         .map_err(|err| format!("failed to set TCP_NODELAY: {err}"))?;
     println!("master_connected: {peer_addr}");
 
-    let mut activations = Vec::new();
-    let header = cluster::recv_activation_packet(&mut stream, &mut activations)
-        .map_err(|err| format!("failed to receive activation packet: {err}"))?;
-    if activations.len() != loaded.config.embedding_length {
-        return Err(format!(
-            "received {} activations, expected {}",
-            activations.len(),
-            loaded.config.embedding_length
-        ));
-    }
-
     let options = runtime_options();
     let mut cache = inference::LlamaKvCache::new(
         loaded.config.block_count,
@@ -122,31 +113,71 @@ fn run_worker(
         loaded.config.kv_width,
     );
     let mut ws = inference::LlamaWorkspace::new(&loaded.config);
-    ws.hidden.copy_from_slice(&activations);
-    run_distributed_range(
-        &node1,
-        header.pos as usize,
-        &loaded.config,
-        &mut cache,
-        &mut ws,
-        options,
-    )?;
-    inference::compute_logits_from_hidden(
-        &loaded.config,
-        output_token_embeddings,
-        output_norm,
-        output_projection,
-        &mut ws,
-        options,
-    );
-    let next_token = inference::sample_logits(&ws.logits, 0.0);
-    cluster::send_token_feedback(&mut stream, next_token as u32, false)
-        .map_err(|err| format!("failed to send token feedback: {err}"))?;
+    let mut activations = Vec::new();
+    let mut decoded_tokens = Vec::new();
+    let mut worker_compute_total = Duration::ZERO;
+    loop {
+        let header = match cluster::recv_activation_packet(&mut stream, &mut activations) {
+            Ok(header) => header,
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(format!("failed to receive activation packet: {err}")),
+        };
+        if activations.len() != loaded.config.embedding_length {
+            return Err(format!(
+                "received {} activations, expected {}",
+                activations.len(),
+                loaded.config.embedding_length
+            ));
+        }
+        if header.pos as usize >= loaded.config.context_length {
+            return Err(format!(
+                "received pos {} outside context length {}",
+                header.pos, loaded.config.context_length
+            ));
+        }
 
-    println!("received_pos: {}", header.pos);
-    println!("received_seq_len: {}", header.seq_len);
-    println!("received_float_count: {}", header.float_count);
-    println!("worker_next_token: {next_token}");
+        ws.hidden.copy_from_slice(&activations);
+        let compute_start = Instant::now();
+        run_distributed_range(
+            &node1,
+            header.pos as usize,
+            &loaded.config,
+            &mut cache,
+            &mut ws,
+            options,
+        )?;
+        inference::compute_logits_from_hidden(
+            &loaded.config,
+            output_token_embeddings,
+            output_norm,
+            output_projection,
+            &mut ws,
+            options,
+        );
+        worker_compute_total += compute_start.elapsed();
+        let next_token = inference::sample_logits(&ws.logits, 0.0);
+        cluster::send_token_feedback(&mut stream, next_token as u32, false)
+            .map_err(|err| format!("failed to send token feedback: {err}"))?;
+
+        println!("received_pos: {}", header.pos);
+        println!("received_seq_len: {}", header.seq_len);
+        println!("received_float_count: {}", header.float_count);
+        println!("worker_next_token: {next_token}");
+        decoded_tokens.push(next_token as u32);
+    }
+
+    println!("worker_tokens: {}", decoded_tokens.len());
+    println!("worker_generated_tokens: {decoded_tokens:?}");
+    println!(
+        "worker_compute_total_ms: {:.3}",
+        worker_compute_total.as_secs_f64() * 1000.0
+    );
+    if !decoded_tokens.is_empty() {
+        println!(
+            "worker_compute_avg_ms: {:.3}",
+            worker_compute_total.as_secs_f64() * 1000.0 / decoded_tokens.len() as f64
+        );
+    }
     println!("result: WORKER_DONE");
     Ok(())
 }
@@ -156,6 +187,7 @@ fn run_master(
     worker_addr: &str,
     token_id: usize,
     requested_split_layer: usize,
+    max_tokens: usize,
 ) -> Result<(), String> {
     let loaded = load_cluster_model(model_path, requested_split_layer)?;
     if token_id >= loaded.config.vocab_size {
@@ -183,6 +215,7 @@ fn run_master(
     println!("model: {}", model_path.display());
     println!("worker_addr: {worker_addr}");
     println!("token_id: {token_id}");
+    println!("max_tokens: {max_tokens}");
     println!("layers: {}", loaded.config.block_count);
     println!("split_layer: {}", loaded.split_layer);
 
@@ -193,63 +226,124 @@ fn run_master(
         loaded.config.kv_width,
     );
     let mut full_ws = inference::LlamaWorkspace::new(&loaded.config);
-    inference::forward_pass(
-        token_id,
-        0,
-        &loaded.config,
-        &full_weights,
-        &mut full_cache,
-        &mut full_ws,
-        options,
-    );
-    let full_next = inference::sample_logits(&full_ws.logits, 0.0);
-
     let mut node0_cache = inference::LlamaKvCache::new(
         loaded.config.block_count,
         loaded.config.context_length,
         loaded.config.kv_width,
     );
     let mut node0_ws = inference::LlamaWorkspace::new(&loaded.config);
-    inference::embed_token(token_id, &loaded.config, token_embeddings, &mut node0_ws);
-    run_distributed_range(
-        &node0,
-        0,
-        &loaded.config,
-        &mut node0_cache,
-        &mut node0_ws,
-        options,
-    )?;
-
-    let start = Instant::now();
     let mut stream = TcpStream::connect(worker_addr)
         .map_err(|err| format!("failed to connect to worker {worker_addr}: {err}"))?;
     stream
         .set_nodelay(true)
         .map_err(|err| format!("failed to set TCP_NODELAY: {err}"))?;
-    cluster::send_activation_packet(&mut stream, 0, 1, &node0_ws.hidden)
-        .map_err(|err| format!("failed to send activation packet: {err}"))?;
-    let feedback = cluster::recv_token_feedback(&mut stream)
-        .map_err(|err| format!("failed to receive token feedback: {err}"))?;
-    let round_trip = start.elapsed();
+    let mut current_token = token_id;
+    let mut generated_tokens = Vec::new();
+    let mut full_forward_total = Duration::ZERO;
+    let mut master_stage_total = Duration::ZERO;
+    let mut tcp_round_trip_total = Duration::ZERO;
+    let decode_limit = max_tokens.min(loaded.config.context_length);
 
-    println!("activation_floats_sent: {}", node0_ws.hidden.len());
+    for pos in 0..decode_limit {
+        let full_start = Instant::now();
+        inference::forward_pass(
+            current_token,
+            pos,
+            &loaded.config,
+            &full_weights,
+            &mut full_cache,
+            &mut full_ws,
+            options,
+        );
+        full_forward_total += full_start.elapsed();
+        let full_next = inference::sample_logits(&full_ws.logits, 0.0);
+
+        let master_start = Instant::now();
+        inference::embed_token(
+            current_token,
+            &loaded.config,
+            token_embeddings,
+            &mut node0_ws,
+        );
+        run_distributed_range(
+            &node0,
+            pos,
+            &loaded.config,
+            &mut node0_cache,
+            &mut node0_ws,
+            options,
+        )?;
+        master_stage_total += master_start.elapsed();
+
+        let round_trip_start = Instant::now();
+        cluster::send_activation_packet(
+            &mut stream,
+            pos as u32,
+            (pos + 1) as u32,
+            &node0_ws.hidden,
+        )
+        .map_err(|err| format!("failed to send activation packet: {err}"))?;
+        let feedback = cluster::recv_token_feedback(&mut stream)
+            .map_err(|err| format!("failed to receive token feedback: {err}"))?;
+        let round_trip = round_trip_start.elapsed();
+        tcp_round_trip_total += round_trip;
+
+        println!(
+            "token[{pos}]: input={current_token} full_next={full_next} worker_next={} round_trip_ms={:.3}",
+            feedback.token_id,
+            round_trip.as_secs_f64() * 1000.0
+        );
+
+        if full_next != feedback.token_id as usize {
+            return Err(format!(
+                "worker token {} did not match full forward token {full_next} at generated index {pos}",
+                feedback.token_id
+            ));
+        }
+
+        generated_tokens.push(feedback.token_id);
+        current_token = feedback.token_id as usize;
+        if feedback.is_finished {
+            break;
+        }
+    }
+
     println!(
-        "activation_payload_kb: {:.2}",
+        "activation_floats_sent_each_token: {}",
+        node0_ws.hidden.len()
+    );
+    println!(
+        "activation_payload_kb_each_token: {:.2}",
         std::mem::size_of_val(node0_ws.hidden.as_slice()) as f64 / 1024.0
     );
     println!(
-        "tcp_round_trip_ms: {:.3}",
-        round_trip.as_secs_f64() * 1000.0
+        "full_forward_total_ms: {:.3}",
+        full_forward_total.as_secs_f64() * 1000.0
     );
-    println!("full_next_token: {full_next}");
-    println!("worker_next_token: {}", feedback.token_id);
-
-    if full_next != feedback.token_id as usize {
-        return Err(format!(
-            "worker token {} did not match full forward token {full_next}",
-            feedback.token_id
-        ));
+    println!(
+        "cluster_master_stage_total_ms: {:.3}",
+        master_stage_total.as_secs_f64() * 1000.0
+    );
+    println!(
+        "cluster_tcp_round_trip_total_ms: {:.3}",
+        tcp_round_trip_total.as_secs_f64() * 1000.0
+    );
+    println!(
+        "cluster_total_measured_ms: {:.3}",
+        (master_stage_total + tcp_round_trip_total).as_secs_f64() * 1000.0
+    );
+    if !generated_tokens.is_empty() {
+        let token_count = generated_tokens.len() as f64;
+        println!(
+            "full_forward_avg_ms: {:.3}",
+            full_forward_total.as_secs_f64() * 1000.0 / token_count
+        );
+        println!(
+            "cluster_total_measured_avg_ms: {:.3}",
+            (master_stage_total + tcp_round_trip_total).as_secs_f64() * 1000.0 / token_count
+        );
     }
+    println!("generated_tokens: {generated_tokens:?}");
 
     println!("result: PASS");
     Ok(())
@@ -362,7 +456,7 @@ fn print_usage() {
         "  cargo run --release --bin cluster_tcp_smoke -- worker <model.gguf> [bind_addr] [split_layer]"
     );
     println!(
-        "  cargo run --release --bin cluster_tcp_smoke -- master <model.gguf> [worker_addr] [token_id] [split_layer]"
+        "  cargo run --release --bin cluster_tcp_smoke -- master <model.gguf> [worker_addr] [token_id] [split_layer] [max_tokens]"
     );
     println!();
     println!("Environment:");
