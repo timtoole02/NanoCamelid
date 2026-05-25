@@ -7,10 +7,10 @@ REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
-if [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
-  MODEL="$NANOCAMELID_MODEL_GGUF"
-elif [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
+if [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
   MODEL="$NANOCAMELID_SMOKE_GGUF"
+elif [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
+  MODEL="$NANOCAMELID_MODEL_GGUF"
 elif [[ -f "$Q4_MODEL" ]]; then
   MODEL="$Q4_MODEL"
 else
