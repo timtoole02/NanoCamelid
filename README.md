@@ -28,8 +28,8 @@ evidence.
   tied to parity tests and Pi-side smoke evidence.
 - The working model catalog lives in
   [`docs/MODEL_CATALOG.md`](docs/MODEL_CATALOG.md). It separates Pi-smoked
-  supported rows from likely-compatible candidates and blocked runtime families
-  such as Mixtral/MoE.
+  supported rows from likely-compatible candidates and broader runtime families
+  that still need more evidence before broad claims.
 
 Quick 1B readiness check on a Pi workspace:
 
@@ -172,6 +172,17 @@ prompt, route through the top experts, and produce prompt-level chat output
 across the Pi pipeline. This is not a single-Pi support claim: full Mixtral
 single-node generation exceeds 16 GB Pi RAM during eager weight load and needs
 clustered execution or a future lazy expert loader.
+
+Latest Mixtral cluster chat evidence:
+
+- model: `mixtral-8x7b-instruct-v0.1.Q4_0.gguf`
+- mode: three-Pi `master-chat`
+- layer split: `0..11`, `11..22`, `22..32`
+- prompt: `Write one short sentence about Raspberry Pi clusters.`
+- rendered prompt: `<s>[INST] Write one short sentence about Raspberry Pi clusters. [/INST]`
+- generated text: `Raspberry Pi clusters are groups of`
+- generated tokens: `8`
+- throughput: about `1.12 tok/sec`
 
 ## Runtime Design
 
@@ -623,11 +634,42 @@ cargo run --release --bin cluster_tcp_smoke -- \
 Use `master-chat` instead of `master-generate` for chat-template rows such as
 Mixtral.
 
+For Mixtral 8x7B Q4_0 specifically, use the 32-layer split that has been
+Pi-smoked: `0..11` on the master, `11..22` on the middle worker, and `22..32`
+on the final worker. Start the final worker:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+NANOCAMELID_Q4_SWIZZLE_1X4=0 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  worker /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf 0.0.0.0:5007 22
+```
+
+Start the middle worker:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+NANOCAMELID_Q4_SWIZZLE_1X4=0 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  middle-worker /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf \
+  0.0.0.0:5006 <final-worker-ip>:5007 11 22
+```
+
+Run chat generation from the master:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+NANOCAMELID_Q4_SWIZZLE_1X4=0 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  master-chat /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf \
+  <middle-worker-ip>:5006 "Write one short sentence about Raspberry Pi clusters." 11 8
+```
+
 Useful output to check:
 
 - `result: PASS` from `cluster_split_smoke`
-- `cluster_generated_tokens`, `cluster_generated_text`, and
-  `cluster_tokens_per_sec` from `master-generate` or `master-chat`
+- `generated_tokens`, streamed generated text, and `cluster_tokens_per_sec` from
+  `master-generate` or `master-chat`
 - `worker_generated_tokens` from the final worker
 - `middle_feedback_tokens` from a middle worker
 - `cluster_tcp_round_trip_total_ms` when comparing network overhead
