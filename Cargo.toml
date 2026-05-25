@@ -3,6 +3,7 @@ name = "nanocamelid"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+default-run = "nanocamelid"
 
 [dependencies]
 core_affinity = "0.8"
