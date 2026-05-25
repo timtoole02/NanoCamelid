@@ -17,6 +17,12 @@ const WORKER_CORES_ENV: &str = "NANOCAMELID_WORKER_CORES";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
 const READY_CHAT_ENV: &str = "NANOCAMELID_READY_CHAT";
+const SMOKE_KIND_ENV: &str = "NANOCAMELID_SMOKE_KIND";
+const SMOKE_PROMPT_ENV: &str = "NANOCAMELID_SMOKE_PROMPT";
+const SMOKE_TOKENS_ENV: &str = "NANOCAMELID_SMOKE_TOKENS";
+const READY_SMOKE_KIND_ENV: &str = "NANOCAMELID_READY_SMOKE_KIND";
+const READY_SMOKE_PROMPT_ENV: &str = "NANOCAMELID_READY_SMOKE_PROMPT";
+const READY_SMOKE_TOKENS_ENV: &str = "NANOCAMELID_READY_SMOKE_TOKENS";
 const READY_PROMPT_ENV: &str = "NANOCAMELID_READY_PROMPT";
 const READY_TOKENS_ENV: &str = "NANOCAMELID_READY_TOKENS";
 const READY_TEMP_ENV: &str = "NANOCAMELID_READY_TEMP";
@@ -768,22 +774,21 @@ fn print_ready_usage() {
     println!("  --chat                                   Force the direct chat turn");
     println!();
     println!("Env:");
-    println!("  {SMOKE_MODEL_GGUF_ENV}                    Override the 1B readiness GGUF path");
+    println!("  {SMOKE_MODEL_GGUF_ENV:<38} Override the 1B readiness GGUF path");
+    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Shared default GGUF path for inspect/generate/smoke");
     println!(
-        "  {DEFAULT_MODEL_GGUF_ENV}                    Shared default GGUF path for inspect/generate/smoke"
+        "  {WORKSPACE_ENV:<38} Pi workspace for the 1B default; default {DEFAULT_PI_WORKSPACE}"
     );
     println!(
-        "  {WORKSPACE_ENV}                         Pi workspace for the 1B default; default {DEFAULT_PI_WORKSPACE}"
+        "  {CONTEXT_LIMIT_ENV:<38} Optional runtime context cap for short long-context smoke runs"
     );
-    println!(
-        "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
-    );
-    println!(
-        "  {READY_CHAT_ENV}                           Set to 0 to stop after inspect and smoke"
-    );
-    println!("  {READY_PROMPT_ENV}                         Direct chat prompt after smoke");
-    println!("  {READY_TOKENS_ENV}                         Direct chat generated token count");
-    println!("  {READY_TEMP_ENV}                           Direct chat temperature, default 0.0");
+    println!("  {READY_SMOKE_KIND_ENV:<38} Smoke kind, default chat");
+    println!("  {READY_SMOKE_PROMPT_ENV:<38} Smoke prompt");
+    println!("  {READY_SMOKE_TOKENS_ENV:<38} Smoke generated token count");
+    println!("  {READY_CHAT_ENV:<38} Set to 0 to stop after inspect and smoke");
+    println!("  {READY_PROMPT_ENV:<38} Direct chat prompt after smoke");
+    println!("  {READY_TOKENS_ENV:<38} Direct chat generated token count");
+    println!("  {READY_TEMP_ENV:<38} Direct chat temperature, default 0.0");
 }
 
 fn print_bench_usage() {
@@ -940,6 +945,23 @@ impl SmokeKind {
         match self {
             Self::Q8Model => "model",
             Self::Q8Chat => "chat",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SmokeDefaults {
+    kind: SmokeKind,
+    prompt: String,
+    max_tokens: usize,
+}
+
+impl Default for SmokeDefaults {
+    fn default() -> Self {
+        Self {
+            kind: SmokeKind::Q8Chat,
+            prompt: DEFAULT_1B_SMOKE_PROMPT.to_owned(),
+            max_tokens: DEFAULT_1B_SMOKE_TOKENS,
         }
     }
 }
@@ -1114,7 +1136,14 @@ fn parse_ready_1b_args(args: &[String]) -> Result<Ready1BArgs, &'static str> {
     let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
     let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
     let q4_exists = Path::new(&q4_path).is_file();
-    parse_ready_1b_args_with_env(args, smoke_model_path_from_env(), &workspace, q4_exists)
+    let smoke_defaults = ready_smoke_defaults_from_env()?;
+    parse_ready_1b_args_with_env_and_smoke_defaults(
+        args,
+        smoke_model_path_from_env(),
+        &workspace,
+        q4_exists,
+        smoke_defaults,
+    )
 }
 
 fn parse_smoke_3b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
@@ -1122,11 +1151,28 @@ fn parse_smoke_3b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
     parse_smoke_3b_args_with_env(args, smoke_model_path_from_env(), &workspace)
 }
 
+#[cfg(test)]
 fn parse_ready_1b_args_with_env(
     args: &[String],
     env_model_path: Option<String>,
     workspace: &str,
     q4_exists: bool,
+) -> Result<Ready1BArgs, &'static str> {
+    parse_ready_1b_args_with_env_and_smoke_defaults(
+        args,
+        env_model_path,
+        workspace,
+        q4_exists,
+        SmokeDefaults::default(),
+    )
+}
+
+fn parse_ready_1b_args_with_env_and_smoke_defaults(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+    smoke_defaults: SmokeDefaults,
 ) -> Result<Ready1BArgs, &'static str> {
     let mut chat_enabled_override = None;
     let mut smoke_args = Vec::with_capacity(args.len());
@@ -1139,7 +1185,13 @@ fn parse_ready_1b_args_with_env(
         }
     }
 
-    let smoke = parse_smoke_1b_args_with_env(&smoke_args, env_model_path, workspace, q4_exists)?;
+    let smoke = parse_smoke_1b_args_with_env_and_defaults(
+        &smoke_args,
+        env_model_path,
+        workspace,
+        q4_exists,
+        smoke_defaults,
+    )?;
     Ok(Ready1BArgs {
         smoke,
         chat_enabled_override,
@@ -1151,6 +1203,22 @@ fn parse_smoke_1b_args_with_env(
     env_model_path: Option<String>,
     workspace: &str,
     q4_exists: bool,
+) -> Result<Smoke1BArgs, &'static str> {
+    parse_smoke_1b_args_with_env_and_defaults(
+        args,
+        env_model_path,
+        workspace,
+        q4_exists,
+        SmokeDefaults::default(),
+    )
+}
+
+fn parse_smoke_1b_args_with_env_and_defaults(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+    defaults: SmokeDefaults,
 ) -> Result<Smoke1BArgs, &'static str> {
     let first_looks_like_model = args
         .first()
@@ -1167,20 +1235,49 @@ fn parse_smoke_1b_args_with_env(
             SmokeKind::from_arg(value)
                 .ok_or("unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model")?
         }
-        _ => SmokeKind::Q8Chat,
+        _ => defaults.kind,
     };
     let prompt = args
         .get(option_idx)
         .cloned()
-        .unwrap_or_else(|| DEFAULT_1B_SMOKE_PROMPT.to_owned());
+        .unwrap_or_else(|| defaults.prompt.clone());
     let max_tokens = args
         .get(option_idx + 1)
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
+        .unwrap_or(defaults.max_tokens);
 
     Ok(Smoke1BArgs {
         kind,
         model_path,
+        prompt,
+        max_tokens,
+    })
+}
+
+fn ready_smoke_defaults_from_env() -> Result<SmokeDefaults, &'static str> {
+    let kind = env::var(READY_SMOKE_KIND_ENV)
+        .ok()
+        .or_else(|| env::var(SMOKE_KIND_ENV).ok())
+        .map(|value| {
+            SmokeKind::from_arg(value.trim())
+                .ok_or("unknown ready smoke kind env; expected chat, model, q8-chat, or q8-model")
+        })
+        .transpose()?
+        .unwrap_or(SmokeKind::Q8Chat);
+    let prompt = env::var(READY_SMOKE_PROMPT_ENV)
+        .ok()
+        .or_else(|| env::var(SMOKE_PROMPT_ENV).ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_1B_SMOKE_PROMPT.to_owned());
+    let max_tokens = env::var(READY_SMOKE_TOKENS_ENV)
+        .ok()
+        .or_else(|| env::var(SMOKE_TOKENS_ENV).ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
+
+    Ok(SmokeDefaults {
+        kind,
         prompt,
         max_tokens,
     })
@@ -3373,12 +3470,13 @@ mod tests {
 
     use super::{
         DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
-        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, SmokeKind,
-        cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
-        default_llama32_3b_model_path, device_model, help_topic_for_args, help_topic_named,
-        inspect_runtime_summary, is_help_flag, llama32_1b_model_not_found_message,
-        llama32_3b_model_not_found_message, parse_cpu_list, parse_generate_args_with_env,
-        parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
+        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, SmokeDefaults,
+        SmokeKind, cpu_features, cpu_governor_recommendation, cpu_model,
+        default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
+        help_topic_for_args, help_topic_named, inspect_runtime_summary, is_help_flag,
+        llama32_1b_model_not_found_message, llama32_3b_model_not_found_message, parse_cpu_list,
+        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_smoke_1b_args_with_env, parse_smoke_3b_args_with_env, parse_smoke_args_with_env,
         parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
         ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
@@ -4164,6 +4262,47 @@ flags\t\t: sse4_2 avx2
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
         );
         assert_eq!(parsed.chat_enabled_override, None);
+    }
+
+    #[test]
+    fn ready_1b_args_use_ready_smoke_defaults_when_positionals_are_missing() {
+        let parsed = parse_ready_1b_args_with_env_and_smoke_defaults(
+            &[],
+            None,
+            "/mnt/nanocamelid",
+            true,
+            SmokeDefaults {
+                kind: SmokeKind::Q8Model,
+                prompt: "Hello".to_owned(),
+                max_tokens: 2,
+            },
+        )
+        .expect("ready smoke defaults should parse");
+
+        assert_eq!(parsed.smoke.kind, SmokeKind::Q8Model);
+        assert_eq!(parsed.smoke.prompt, "Hello");
+        assert_eq!(parsed.smoke.max_tokens, 2);
+        assert_eq!(parsed.chat_enabled_override, None);
+    }
+
+    #[test]
+    fn ready_1b_args_positionals_override_ready_smoke_defaults() {
+        let parsed = parse_ready_1b_args_with_env_and_smoke_defaults(
+            &["chat".to_owned(), "Say hi".to_owned(), "4".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+            SmokeDefaults {
+                kind: SmokeKind::Q8Model,
+                prompt: "Hello".to_owned(),
+                max_tokens: 2,
+            },
+        )
+        .expect("ready smoke positional overrides should parse");
+
+        assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
+        assert_eq!(parsed.smoke.prompt, "Say hi");
+        assert_eq!(parsed.smoke.max_tokens, 4);
     }
 
     #[test]

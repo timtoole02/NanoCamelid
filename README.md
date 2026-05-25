@@ -350,7 +350,10 @@ nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in
 
 Use `--no-chat` or `--smoke-only` for the inspect plus smoke-only form when you
 want the CLI gate to validate the model path without launching the final direct
-chat turn.
+chat turn. For non-interactive automation, the CLI also honors
+`NANOCAMELID_READY_SMOKE_KIND`, `NANOCAMELID_READY_SMOKE_PROMPT`, and
+`NANOCAMELID_READY_SMOKE_TOKENS` as smoke defaults before the final direct chat
+turn.
 
 For the supported Llama 3.2 3B Instruct Q4_0 row, place
 `Llama-3.2-3B-Instruct-Q4_0.gguf` under the same `models/` directory and use the
