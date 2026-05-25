@@ -422,6 +422,8 @@ fn print_usage() {
     println!(
         "                                            Compare scalar vs selected Q8 model logits through the tokenizer chat template"
     );
+    println!("  smoke 1b [chat|model] [prompt] [max_tokens]");
+    println!("                                            Run the default Llama 3.2 1B smoke path");
     println!("  help [command]                            Show top-level or subcommand help");
     println!();
     println!("Run `nanocamelid help <command>` or `nanocamelid <command> --help` for details.");
@@ -611,10 +613,10 @@ fn print_smoke_usage() {
     println!("Usage:");
     println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-chat <model.gguf> [prompt] [max_tokens]");
-    println!("  nanocamelid smoke 1b [q8-chat|q8-model] [prompt] [max_tokens]");
+    println!("  nanocamelid smoke 1b [chat|model] [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-model [prompt] [max_tokens]  with NANOCAMELID_SMOKE_GGUF set");
     println!("  nanocamelid smoke q8-chat [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set");
-    println!("  nanocamelid smoke 1b <model.gguf> [q8-chat|q8-model] [prompt] [max_tokens]");
+    println!("  nanocamelid smoke 1b <model.gguf> [chat|model] [prompt] [max_tokens]");
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
@@ -649,7 +651,7 @@ fn print_smoke_usage() {
         "`q8-model` tokenizes the prompt directly. `q8-chat` renders a single-turn user message through the model tokenizer chat template before parity/generation."
     );
     println!(
-        "`1b` defaults to q8-chat, prompt {DEFAULT_1B_SMOKE_PROMPT:?}, and {DEFAULT_1B_SMOKE_TOKENS} tokens. It prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then Q8_0."
+        "`1b` defaults to chat, prompt {DEFAULT_1B_SMOKE_PROMPT:?}, and {DEFAULT_1B_SMOKE_TOKENS} tokens. It prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then Q8_0. The legacy q8-chat and q8-model aliases are still accepted."
     );
 }
 
@@ -684,10 +686,14 @@ enum SmokeKind {
 impl SmokeKind {
     fn from_arg(value: &str) -> Option<Self> {
         match value {
-            "q8-model" => Some(Self::Q8Model),
-            "q8-chat" => Some(Self::Q8Chat),
+            "model" | "q8-model" => Some(Self::Q8Model),
+            "chat" | "q8-chat" => Some(Self::Q8Chat),
             _ => None,
         }
+    }
+
+    fn looks_like_arg(value: &str) -> bool {
+        matches!(value, "chat" | "model") || value.starts_with("q8-")
     }
 }
 
@@ -809,10 +815,10 @@ fn parse_smoke_1b_args_with_env(
     };
 
     let kind = match args.get(option_idx).map(String::as_str) {
-        Some(value) if value.starts_with("q8-") => {
+        Some(value) if SmokeKind::looks_like_arg(value) => {
             option_idx += 1;
             SmokeKind::from_arg(value)
-                .ok_or("unknown 1B smoke kind; expected q8-chat or q8-model")?
+                .ok_or("unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model")?
         }
         _ => SmokeKind::Q8Chat,
     };
@@ -3210,12 +3216,31 @@ flags\t\t: sse4_2 avx2
     #[test]
     fn smoke_1b_args_accept_kind_prompt_and_tokens() {
         let parsed = parse_smoke_1b_args_with_env(
-            &["q8-model".to_owned(), "Hello".to_owned(), "2".to_owned()],
+            &["model".to_owned(), "Hello".to_owned(), "2".to_owned()],
             None,
             "/mnt/nanocamelid",
             false,
         )
         .expect("custom 1B smoke args should parse");
+
+        assert_eq!(parsed.kind, SmokeKind::Q8Model);
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, 2);
+    }
+
+    #[test]
+    fn smoke_1b_args_keep_legacy_q8_kind_aliases() {
+        let parsed = parse_smoke_1b_args_with_env(
+            &["q8-model".to_owned(), "Hello".to_owned(), "2".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("legacy 1B smoke kind should parse");
 
         assert_eq!(parsed.kind, SmokeKind::Q8Model);
         assert_eq!(
@@ -3250,7 +3275,7 @@ flags\t\t: sse4_2 avx2
     #[test]
     fn smoke_1b_args_use_env_model_path_before_pi_default() {
         let parsed = parse_smoke_1b_args_with_env(
-            &["q8-chat".to_owned()],
+            &["chat".to_owned()],
             Some("/models/env.gguf".to_owned()),
             "/mnt/nanocamelid",
             true,
@@ -3267,7 +3292,10 @@ flags\t\t: sse4_2 avx2
             parse_smoke_1b_args_with_env(&["q8-broken".to_owned()], None, "/mnt/nanocamelid", true)
                 .expect_err("unknown q8 kind should fail");
 
-        assert_eq!(err, "unknown 1B smoke kind; expected q8-chat or q8-model");
+        assert_eq!(
+            err,
+            "unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model"
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ TEMP="${1:-${NANOCAMELID_TEMP:-0.0}}"
 MAX_TOKENS="${2:-${NANOCAMELID_MAX_TOKENS:-64}}"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 SMOKE_ENABLED="${NANOCAMELID_CHAT_SMOKE:-1}"
-SMOKE_KIND="${NANOCAMELID_CHAT_SMOKE_KIND:-q8-chat}"
+SMOKE_KIND="${NANOCAMELID_CHAT_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_CHAT_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_CHAT_SMOKE_TOKENS:-1}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
@@ -63,7 +63,7 @@ exec_nanocamelid() {
 
 if [[ "$SMOKE_ENABLED" != "0" ]]; then
   echo "Running $SMOKE_KIND smoke gate before launching 1B chat..."
-  run_nanocamelid smoke "$SMOKE_KIND" "$MODEL" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+  run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 fi
 
 exec_nanocamelid tui "$MODEL" "$TEMP" "$MAX_TOKENS"

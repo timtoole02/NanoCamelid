@@ -10,7 +10,7 @@ PI_WORKSPACE="${NANOCAMELID_REMOTE_WORKSPACE:-/mnt/nanocamelid}"
 PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
 REMOTE_SMOKE_ENABLED="${NANOCAMELID_REMOTE_SMOKE:-1}"
 REMOTE_SMOKE_GGUF="${NANOCAMELID_REMOTE_SMOKE_GGUF:-}"
-REMOTE_SMOKE_KIND="${NANOCAMELID_REMOTE_SMOKE_KIND:-q8-chat}"
+REMOTE_SMOKE_KIND="${NANOCAMELID_REMOTE_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_SMOKE_TOKENS:-8}"
 
@@ -88,6 +88,16 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
 
   default_q4_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
   default_q8_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+  case "$REMOTE_SMOKE_KIND" in
+    chat) generic_smoke_kind="q8-chat" ;;
+    model) generic_smoke_kind="q8-model" ;;
+    q8-chat|q8-model) generic_smoke_kind="$REMOTE_SMOKE_KIND" ;;
+    *)
+      echo "Unknown smoke kind: $REMOTE_SMOKE_KIND" >&2
+      echo "Expected chat, model, q8-chat, or q8-model." >&2
+      exit 2
+      ;;
+  esac
 
   if [ "$REMOTE_SMOKE_ENABLED" = "0" ]; then
     echo "==> Skipping model-backed smoke; NANOCAMELID_REMOTE_SMOKE=0"
@@ -95,7 +105,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     echo "==> Running model-backed smoke: $REMOTE_SMOKE_KIND"
     NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-neon}" \
       NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}" \
-      cargo run --release -- smoke "$REMOTE_SMOKE_KIND" "$REMOTE_SMOKE_GGUF" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+      cargo run --release -- smoke "$generic_smoke_kind" "$REMOTE_SMOKE_GGUF" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
     echo "==> Running default Pi-local 1B smoke: $REMOTE_SMOKE_KIND"
     NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \

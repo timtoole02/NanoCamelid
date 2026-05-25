@@ -14,16 +14,16 @@ elif [[ -f "$Q4_MODEL" ]]; then
 else
   MODEL="$Q8_MODEL"
 fi
-SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-q8-chat}}"
+SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-chat}}"
 SMOKE_PROMPT="${2:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${3:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
 
-if [[ "$SMOKE_KIND" != "q8-model" && "$SMOKE_KIND" != "q8-chat" ]]; then
+if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q8-model" && "$SMOKE_KIND" != "q8-chat" ]]; then
   echo "Unknown smoke kind: $SMOKE_KIND" >&2
-  echo "Expected q8-model or q8-chat." >&2
+  echo "Expected model, chat, q8-model, or q8-chat." >&2
   exit 2
 fi
 
@@ -55,4 +55,4 @@ run_nanocamelid() {
 }
 
 echo "Running $SMOKE_KIND against $MODEL"
-run_nanocamelid smoke "$SMOKE_KIND" "$MODEL" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"

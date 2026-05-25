@@ -251,7 +251,7 @@ For the matching one-command 1B validation path on that same Pi workspace:
 
 The launcher prefers the Pi-local Q4_0 model when present, falls back to Q8_0,
 and defaults the block dot path to SDOT on Pi-class ARM64 hardware. It runs a
-`smoke q8-chat` preflight before opening the TUI, so the 1B instruct path keeps
+`smoke 1b chat` preflight before opening the TUI, so the 1B instruct path keeps
 the scalar-vs-selected-kernel parity gate in front of interactive chat. It still
 honors `NANOCAMELID_MODEL_GGUF` and `NANOCAMELID_Q8_DOT_KERNEL` if you want to
 force a different model or kernel for comparison. When the helper needs to build
@@ -266,13 +266,13 @@ Optional arguments set temperature and maximum assistant output tokens:
 
 `smoke-1b.sh` uses the same model-selection and kernel defaults, but runs only
 the smoke gate and exits. By default it runs the real instruct prompt path with
-`q8-chat`, the prompt `Say hello in one sentence.`, and an 8-token response
+`chat`, the prompt `Say hello in one sentence.`, and an 8-token response
 budget. Optional arguments let you override the smoke kind, prompt, and token
 budget directly:
 
 ```bash
-./scripts/pi/smoke-1b.sh q8-chat "Say hello in one sentence." 8
-./scripts/pi/smoke-1b.sh q8-model "Hello" 1
+./scripts/pi/smoke-1b.sh chat "Say hello in one sentence." 8
+./scripts/pi/smoke-1b.sh model "Hello" 1
 ```
 
 For faster local iteration, disable the preflight smoke gate explicitly:
@@ -281,10 +281,10 @@ For faster local iteration, disable the preflight smoke gate explicitly:
 NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh
 ```
 
-The preflight smoke defaults to `q8-chat` with a one-token response budget, and
+The preflight smoke defaults to `chat` with a one-token response budget, and
 you can override the gate with:
 
-- `NANOCAMELID_CHAT_SMOKE_KIND=q8-model|q8-chat`
+- `NANOCAMELID_CHAT_SMOKE_KIND=model|chat`
 - `NANOCAMELID_CHAT_SMOKE_PROMPT="..."`
 - `NANOCAMELID_CHAT_SMOKE_TOKENS=1`
 
@@ -446,7 +446,7 @@ NANOCAMELID_REMOTE_SMOKE_GGUF=/path/on/pi/model.gguf \
 To override the default chat smoke kind, prompt, or token budget:
 
 ```bash
-NANOCAMELID_REMOTE_SMOKE_KIND=q8-model \
+NANOCAMELID_REMOTE_SMOKE_KIND=model \
 NANOCAMELID_SMOKE_PROMPT="Hello" \
 NANOCAMELID_SMOKE_TOKENS=1 \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
