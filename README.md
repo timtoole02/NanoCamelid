@@ -37,6 +37,7 @@ Quick 1B readiness check on a Pi workspace:
 
 ```bash
 ./scripts/pi/ready-1b.sh
+./scripts/pi/chat-1b.sh --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
 CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
@@ -53,6 +54,8 @@ chat turn. Set `NANOCAMELID_READY_CHAT=0` for inspect+smoke only, or set
 `NANOCAMELID_READY_PROMPT`, `NANOCAMELID_READY_TOKENS`, and
 `NANOCAMELID_READY_TEMP` when the direct chat turn should differ from the smoke
 prompt.
+`./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
+without requiring the GGUF to exist yet.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 

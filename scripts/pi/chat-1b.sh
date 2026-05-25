@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: chat-1b.sh [model.gguf] [temp] [max_tokens]
+Usage: chat-1b.sh [model.gguf] [temp] [max_tokens] [--dry-run]
 
 Starts NanoCamelid's Pi-local Llama 3.2 1B terminal chat. By default it runs a
 short chat smoke gate before launching the TUI.
@@ -22,6 +22,9 @@ Useful env:
   NANOCAMELID_CHAT_SMOKE_KIND    Smoke kind: chat, model, q8-chat, or q8-model; default chat
   NANOCAMELID_TEMP               Chat temperature, default 0.0
   NANOCAMELID_MAX_TOKENS         Max tokens per assistant turn, default 64
+
+Options:
+  --dry-run                      Print the resolved smoke/TUI launch plan without loading the model
 USAGE
 }
 
@@ -36,6 +39,28 @@ looks_like_gguf_path() {
     *) return 1 ;;
   esac
 }
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
+DRY_RUN=0
+POSITIONAL_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$arg")
+      ;;
+  esac
+done
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+  set -- "${POSITIONAL_ARGS[@]}"
+else
+  set --
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
@@ -69,6 +94,32 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   echo "Unknown smoke kind: $SMOKE_KIND" >&2
   echo "Expected model, chat, q8-model, or q8-chat." >&2
   exit 2
+fi
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "NanoCamelid Llama 3.2 1B chat launch dry run"
+  echo "model: $MODEL"
+  echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "temp: $TEMP"
+  echo "max_tokens: $MAX_TOKENS"
+  echo "smoke_enabled: $SMOKE_ENABLED"
+  echo "smoke_kind: $SMOKE_KIND"
+  echo "smoke_prompt: $SMOKE_PROMPT"
+  echo "smoke_tokens: $SMOKE_TOKENS"
+  if [[ "$SMOKE_ENABLED" != "0" ]]; then
+    printf 'smoke_command: nanocamelid smoke 1b %s %s %s %s\n' \
+      "$(shell_quote "$MODEL")" \
+      "$(shell_quote "$SMOKE_KIND")" \
+      "$(shell_quote "$SMOKE_PROMPT")" \
+      "$(shell_quote "$SMOKE_TOKENS")"
+  else
+    echo "smoke_command: skipped"
+  fi
+  printf 'tui_command: nanocamelid tui %s %s %s\n' \
+    "$(shell_quote "$MODEL")" \
+    "$(shell_quote "$TEMP")" \
+    "$(shell_quote "$MAX_TOKENS")"
+  exit 0
 fi
 
 if [[ ! -f "$MODEL" ]]; then
