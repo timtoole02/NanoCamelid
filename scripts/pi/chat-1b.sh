@@ -19,7 +19,7 @@ Useful env:
   NANOCAMELID_WORKSPACE          Pi workspace, default /mnt/nanocamelid
   CARGO_TARGET_DIR               Cargo output dir, default /mnt/nanocamelid/target
   NANOCAMELID_CHAT_SMOKE=0       Skip the pre-chat smoke gate
-  NANOCAMELID_CHAT_SMOKE_KIND    Smoke kind, default chat
+  NANOCAMELID_CHAT_SMOKE_KIND    Smoke kind: chat, model, q8-chat, or q8-model; default chat
   NANOCAMELID_TEMP               Chat temperature, default 0.0
   NANOCAMELID_MAX_TOKENS         Max tokens per assistant turn, default 64
 USAGE
@@ -55,6 +55,12 @@ SMOKE_PROMPT="${NANOCAMELID_CHAT_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_CHAT_SMOKE_TOKENS:-1}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
+
+if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q8-model" && "$SMOKE_KIND" != "q8-chat" ]]; then
+  echo "Unknown smoke kind: $SMOKE_KIND" >&2
+  echo "Expected model, chat, q8-model, or q8-chat." >&2
+  exit 2
+fi
 
 if [[ ! -f "$MODEL" ]]; then
   echo "Model not found: $MODEL" >&2
