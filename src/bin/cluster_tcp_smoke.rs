@@ -1,5 +1,6 @@
 use std::{
     env, io,
+    io::Write,
     net::{TcpListener, TcpStream},
     path::Path,
     process::ExitCode,
@@ -9,7 +10,7 @@ use std::{
 use nanocamelid::{
     cluster, gguf, inference,
     model::{self, DistributedLlamaWeights},
-    q8,
+    q8, tokenizer,
 };
 
 const CLUSTER_CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CLUSTER_CONTEXT_LIMIT";
@@ -67,6 +68,26 @@ fn run() -> Result<(), String> {
                 Path::new(&model_path),
                 &worker_addr,
                 token_id,
+                requested_split_layer,
+                max_tokens,
+            )
+        }
+        Some("master-generate") => {
+            let Some(model_path) = args.next() else {
+                print_usage();
+                return Err("missing master model path".to_owned());
+            };
+            let worker_addr = args.next().unwrap_or_else(|| "127.0.0.1:5005".to_owned());
+            let Some(prompt) = args.next() else {
+                print_usage();
+                return Err("missing prompt".to_owned());
+            };
+            let requested_split_layer = parse_optional_usize(args.next(), 0, "split_layer")?;
+            let max_tokens = parse_optional_usize(args.next(), 16, "max_tokens")?;
+            run_master_generate(
+                Path::new(&model_path),
+                &worker_addr,
+                &prompt,
                 requested_split_layer,
                 max_tokens,
             )
@@ -231,6 +252,177 @@ fn run_master_unchecked(
         max_tokens,
         false,
     )
+}
+
+fn run_master_generate(
+    model_path: &Path,
+    worker_addr: &str,
+    prompt: &str,
+    requested_split_layer: usize,
+    max_tokens: usize,
+) -> Result<(), String> {
+    let loaded = load_cluster_model(model_path, requested_split_layer)?;
+    let tokenizer = tokenizer::Tokenizer::from_gguf(&loaded.gguf)
+        .map_err(|err| format!("failed to load tokenizer: {err}"))?;
+    let prompt_tokens = tokenizer
+        .encode(prompt, true, true)
+        .map_err(|err| format!("failed to tokenize prompt: {err}"))?;
+    if prompt_tokens.is_empty() {
+        return Err("prompt tokenized to an empty sequence".to_owned());
+    }
+    if prompt_tokens.len() + max_tokens > loaded.config.context_length {
+        return Err(format!(
+            "prompt has {} tokens and max_tokens is {max_tokens}, exceeding context length {}",
+            prompt_tokens.len(),
+            loaded.config.context_length
+        ));
+    }
+
+    let node0 = model::LlamaWeights::load_distributed(
+        model_path,
+        &loaded.config,
+        &loaded.gguf,
+        0,
+        loaded.split_layer,
+    )
+    .map_err(|err| format!("failed to load master partial weights: {err}"))?;
+    let token_embeddings = node0
+        .token_embeddings
+        .as_ref()
+        .ok_or_else(|| "master did not load token embeddings".to_owned())?;
+
+    println!("NanoCamelid cluster TCP master generate");
+    println!("model: {}", model_path.display());
+    println!("worker_addr: {worker_addr}");
+    println!("prompt: {prompt:?}");
+    println!("prompt_tokens: {prompt_tokens:?}");
+    println!("max_tokens: {max_tokens}");
+    println!("layers: {}", loaded.config.block_count);
+    println!("split_layer: {}", loaded.split_layer);
+    println!("full_forward_check: false");
+
+    let options = runtime_options();
+    let mut node0_cache = inference::LlamaKvCache::new(
+        loaded.config.block_count,
+        loaded.config.context_length,
+        loaded.config.kv_width,
+    );
+    let mut node0_ws = inference::LlamaWorkspace::new(&loaded.config);
+    let mut stream = TcpStream::connect(worker_addr)
+        .map_err(|err| format!("failed to connect to worker {worker_addr}: {err}"))?;
+    stream
+        .set_nodelay(true)
+        .map_err(|err| format!("failed to set TCP_NODELAY: {err}"))?;
+
+    let started_prefill = Instant::now();
+    let mut last_feedback = None;
+    for (pos, &token) in prompt_tokens.iter().enumerate() {
+        run_master_half_token(
+            token as usize,
+            pos,
+            MasterHalfState {
+                config: &loaded.config,
+                node0: &node0,
+                token_embeddings,
+                cache: &mut node0_cache,
+                ws: &mut node0_ws,
+                options,
+            },
+        )?;
+        cluster::send_activation_packet(
+            &mut stream,
+            pos as u32,
+            (pos + 1) as u32,
+            &node0_ws.hidden,
+        )
+        .map_err(|err| format!("failed to send prompt activation packet: {err}"))?;
+        last_feedback = Some(
+            cluster::recv_token_feedback(&mut stream)
+                .map_err(|err| format!("failed to receive prompt token feedback: {err}"))?,
+        );
+    }
+
+    println!(
+        "prompt_ingest_seconds: {:.3}",
+        started_prefill.elapsed().as_secs_f64()
+    );
+    println!("\nGenerating response:\n");
+
+    let mut generated_tokens = Vec::new();
+    let mut last_printed_len = 0;
+    let mut next_token = last_feedback
+        .ok_or_else(|| "worker did not return logits for prompt".to_owned())?
+        .token_id as usize;
+    let mut pos = prompt_tokens.len();
+    let started_generation = Instant::now();
+    let mut master_stage_total = Duration::ZERO;
+    let mut tcp_round_trip_total = Duration::ZERO;
+
+    while generated_tokens.len() < max_tokens {
+        if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length {
+            break;
+        }
+
+        generated_tokens.push(next_token as u32);
+        stream_generated_text(&tokenizer, &generated_tokens, &mut last_printed_len)?;
+
+        if generated_tokens.len() >= max_tokens {
+            break;
+        }
+
+        let master_start = Instant::now();
+        run_master_half_token(
+            next_token,
+            pos,
+            MasterHalfState {
+                config: &loaded.config,
+                node0: &node0,
+                token_embeddings,
+                cache: &mut node0_cache,
+                ws: &mut node0_ws,
+                options,
+            },
+        )?;
+        master_stage_total += master_start.elapsed();
+
+        let round_trip_start = Instant::now();
+        cluster::send_activation_packet(
+            &mut stream,
+            pos as u32,
+            (pos + 1) as u32,
+            &node0_ws.hidden,
+        )
+        .map_err(|err| format!("failed to send decode activation packet: {err}"))?;
+        let feedback = cluster::recv_token_feedback(&mut stream)
+            .map_err(|err| format!("failed to receive decode token feedback: {err}"))?;
+        tcp_round_trip_total += round_trip_start.elapsed();
+
+        next_token = feedback.token_id as usize;
+        pos += 1;
+    }
+
+    let elapsed = started_generation.elapsed().as_secs_f64();
+    println!();
+    println!();
+    println!("generated_tokens: {generated_tokens:?}");
+    println!("generated_token_count: {}", generated_tokens.len());
+    println!("generation_seconds: {elapsed:.3}");
+    if !generated_tokens.is_empty() {
+        println!(
+            "cluster_tokens_per_sec: {:.3}",
+            generated_tokens.len() as f64 / elapsed
+        );
+    }
+    println!(
+        "cluster_master_stage_total_ms: {:.3}",
+        master_stage_total.as_secs_f64() * 1000.0
+    );
+    println!(
+        "cluster_tcp_round_trip_total_ms: {:.3}",
+        tcp_round_trip_total.as_secs_f64() * 1000.0
+    );
+    println!("result: PASS_GENERATE_UNCHECKED");
+    Ok(())
 }
 
 fn run_master_session(
@@ -428,6 +620,55 @@ fn run_master_session(
     Ok(())
 }
 
+struct MasterHalfState<'a> {
+    config: &'a model::LlamaModelConfig,
+    node0: &'a DistributedLlamaWeights,
+    token_embeddings: &'a [f32],
+    cache: &'a mut inference::LlamaKvCache,
+    ws: &'a mut inference::LlamaWorkspace,
+    options: inference::LlamaRuntimeOptions,
+}
+
+fn run_master_half_token(
+    token_id: usize,
+    pos: usize,
+    state: MasterHalfState<'_>,
+) -> Result<(), String> {
+    inference::embed_token(token_id, state.config, state.token_embeddings, state.ws);
+    run_distributed_range(
+        state.node0,
+        pos,
+        state.config,
+        state.cache,
+        state.ws,
+        state.options,
+    )
+}
+
+fn stream_generated_text(
+    tokenizer: &tokenizer::Tokenizer,
+    generated_tokens: &[u32],
+    last_printed_len: &mut usize,
+) -> Result<(), String> {
+    let full_text = tokenizer
+        .decode(generated_tokens, true)
+        .map_err(|err| format!("failed to decode generated tokens: {err}"))?;
+    if full_text.len() > *last_printed_len {
+        print!("{}", &full_text[*last_printed_len..]);
+        io::stdout()
+            .flush()
+            .map_err(|err| format!("failed to flush stdout: {err}"))?;
+        *last_printed_len = full_text.len();
+    }
+    Ok(())
+}
+
+fn is_stop_token(tokenizer: &tokenizer::Tokenizer, token_id: u32) -> bool {
+    Some(token_id) == tokenizer.special.eos
+        || Some(token_id) == tokenizer.special.eot
+        || Some(token_id) == tokenizer.special.eom
+}
+
 struct LoadedClusterModel {
     gguf: gguf::GgufFile,
     config: model::LlamaModelConfig,
@@ -539,6 +780,9 @@ fn print_usage() {
     );
     println!(
         "  cargo run --release --bin cluster_tcp_smoke -- master-unchecked <model.gguf> [worker_addr] [token_id] [split_layer] [max_tokens]"
+    );
+    println!(
+        "  cargo run --release --bin cluster_tcp_smoke -- master-generate <model.gguf> [worker_addr] <prompt> [split_layer] [max_tokens]"
     );
     println!();
     println!("Environment:");
