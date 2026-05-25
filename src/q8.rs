@@ -1321,8 +1321,8 @@ pub fn dot_i8_scalar(lhs: &[i8], rhs: &[i8]) -> i32 {
 pub fn dot_i8_with_selector(lhs: &[i8], rhs: &[i8], selector: Q8DotKernelSelector) -> i32 {
     match selector.selected {
         Q8DotKernel::Scalar => dot_i8_scalar(lhs, rhs),
-        Q8DotKernel::Neon => dot_i8_neon(lhs, rhs),
-        Q8DotKernel::Sdot => dot_i8_sdot(lhs, rhs),
+        Q8DotKernel::Neon => dot_i8_neon_selected(lhs, rhs),
+        Q8DotKernel::Sdot => dot_i8_sdot_selected(lhs, rhs),
     }
 }
 
@@ -1957,9 +1957,9 @@ mod tests {
         Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector,
         QK_K_BLOCK_SIZE, RuntimeFeatures, bench_dot_runs, decode_q8_0_blocks, dot_i8_neon,
         dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
-        dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector,
-        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32,
-        fast_f32_to_f16,
+        dot_i8_with_selector, dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar,
+        dot_q4_0_q8_0_with_selector, dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32,
+        fast_f16_to_f32, fast_f32_to_f16,
     };
 
     #[test]
@@ -1994,6 +1994,27 @@ mod tests {
 
         assert_eq!(dot_i8_neon_32_selected(&lhs, &rhs), scalar);
         assert_eq!(dot_i8_sdot_32_selected(&lhs, &rhs), scalar);
+    }
+
+    #[test]
+    fn selected_q8_kernels_match_scalar_without_public_wrapper_fallback() {
+        let lhs: Vec<i8> = (0..257).map(|idx| ((idx * 17) % 127) as i8 - 63).collect();
+        let rhs: Vec<i8> = (0..257).map(|idx| ((idx * 19) % 127) as i8 - 63).collect();
+        let scalar = dot_i8_scalar(&lhs, &rhs);
+
+        for kernel in [Q8DotKernel::Scalar, Q8DotKernel::Neon, Q8DotKernel::Sdot] {
+            let selected = dot_i8_with_selector(
+                &lhs,
+                &rhs,
+                Q8DotKernelSelector {
+                    requested: Some(kernel),
+                    selected: kernel,
+                    fallback_reason: None,
+                },
+            );
+
+            assert_eq!(selected, scalar, "{kernel:?} selected path diverged");
+        }
     }
 
     #[test]
