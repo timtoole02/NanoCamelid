@@ -439,13 +439,97 @@ fn quantize_q8_block_with_max_abs(
 }
 
 #[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn quantize_q8_block_neon(src_ptr: *const f32, dst_ptr: *mut i8, inv_scale: f32) {
+    use std::arch::aarch64::{
+        vcombine_s8, vcombine_s16, vcvtnq_s32_f32, vdupq_n_f32, vld1q_f32, vmulq_f32, vqmovn_s16,
+        vqmovn_s32, vst1q_s8,
+    };
+
+    unsafe {
+        let inv_scale_vec = vdupq_n_f32(inv_scale);
+
+        // Process first 16 elements
+        let f0 = vld1q_f32(src_ptr);
+        let f1 = vld1q_f32(src_ptr.add(4));
+        let f2 = vld1q_f32(src_ptr.add(8));
+        let f3 = vld1q_f32(src_ptr.add(12));
+
+        let m0 = vmulq_f32(f0, inv_scale_vec);
+        let m1 = vmulq_f32(f1, inv_scale_vec);
+        let m2 = vmulq_f32(f2, inv_scale_vec);
+        let m3 = vmulq_f32(f3, inv_scale_vec);
+
+        let s0 = vcvtnq_s32_f32(m0);
+        let s1 = vcvtnq_s32_f32(m1);
+        let s2 = vcvtnq_s32_f32(m2);
+        let s3 = vcvtnq_s32_f32(m3);
+
+        let h0 = vqmovn_s32(s0);
+        let h1 = vqmovn_s32(s1);
+        let h2 = vqmovn_s32(s2);
+        let h3 = vqmovn_s32(s3);
+
+        let s16_0 = vcombine_s16(h0, h1);
+        let s16_1 = vcombine_s16(h2, h3);
+
+        let b0 = vqmovn_s16(s16_0);
+        let b1 = vqmovn_s16(s16_1);
+
+        let b_low = vcombine_s8(b0, b1);
+        vst1q_s8(dst_ptr, b_low);
+
+        // Process second 16 elements (to make 32 total for the block)
+        let f4 = vld1q_f32(src_ptr.add(16));
+        let f5 = vld1q_f32(src_ptr.add(20));
+        let f6 = vld1q_f32(src_ptr.add(24));
+        let f7 = vld1q_f32(src_ptr.add(28));
+
+        let m4 = vmulq_f32(f4, inv_scale_vec);
+        let m5 = vmulq_f32(f5, inv_scale_vec);
+        let m6 = vmulq_f32(f6, inv_scale_vec);
+        let m7 = vmulq_f32(f7, inv_scale_vec);
+
+        let s4 = vcvtnq_s32_f32(m4);
+        let s5 = vcvtnq_s32_f32(m5);
+        let s6 = vcvtnq_s32_f32(m6);
+        let s7 = vcvtnq_s32_f32(m7);
+
+        let h4 = vqmovn_s32(s4);
+        let h5 = vqmovn_s32(s5);
+        let h6 = vqmovn_s32(s6);
+        let h7 = vqmovn_s32(s7);
+
+        let s16_2 = vcombine_s16(h4, h5);
+        let s16_3 = vcombine_s16(h6, h7);
+
+        let b2 = vqmovn_s16(s16_2);
+        let b3 = vqmovn_s16(s16_3);
+
+        let b_high = vcombine_s8(b2, b3);
+        vst1q_s8(dst_ptr.add(16), b_high);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 unsafe fn quantize_f32_to_q8_0_neon_max(x: &[f32], x_i8: &mut [i8], x_scales: &mut [f32]) {
     let num_blocks = x.len() / 32;
     for (b, scale_out) in x_scales.iter_mut().enumerate().take(num_blocks) {
         let offset = b * 32;
         let chunk = &x[offset..offset + 32];
         let max_abs = unsafe { max_abs_32_neon(chunk.as_ptr()) };
-        quantize_q8_block_with_max_abs(chunk, &mut x_i8[offset..offset + 32], scale_out, max_abs);
+
+        let scale = max_abs / 127.0;
+        *scale_out = scale;
+
+        if scale > 0.0 {
+            let inv_scale = 1.0 / scale;
+            unsafe {
+                quantize_q8_block_neon(chunk.as_ptr(), x_i8.as_mut_ptr().add(offset), inv_scale);
+            }
+        } else {
+            x_i8[offset..offset + 32].fill(0);
+        }
     }
 }
 
