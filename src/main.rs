@@ -753,10 +753,10 @@ fn print_ready_usage() {
     println!();
     println!("Usage:");
     println!(
-        "  nanocamelid ready 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat]"
+        "  nanocamelid ready 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat]"
     );
     println!(
-        "  nanocamelid ready 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat]"
+        "  nanocamelid ready 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat]"
     );
     println!();
     println!(
@@ -765,6 +765,7 @@ fn print_ready_usage() {
     println!();
     println!("Options:");
     println!("  --no-chat, --smoke-only                  Stop after inspect and smoke");
+    println!("  --chat                                   Force the direct chat turn");
     println!();
     println!("Env:");
     println!("  {SMOKE_MODEL_GGUF_ENV}                    Override the 1B readiness GGUF path");
@@ -4131,6 +4132,25 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.smoke.prompt, "Hello");
         assert_eq!(parsed.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
         assert_eq!(parsed.chat_enabled_override, Some(false));
+    }
+
+    #[test]
+    fn ready_1b_args_accept_chat_flag_before_kind() {
+        let parsed = parse_ready_1b_args_with_env(
+            &["--chat".to_owned(), "model".to_owned(), "Hello".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("ready chat override args should parse");
+
+        assert_eq!(parsed.smoke.kind, SmokeKind::Q8Model);
+        assert_eq!(
+            parsed.smoke.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(parsed.smoke.prompt, "Hello");
+        assert_eq!(parsed.chat_enabled_override, Some(true));
     }
 
     #[test]
