@@ -276,6 +276,14 @@ fn main() -> ExitCode {
                     match parse_smoke_1b_args(&args[2..]) {
                         Ok(parsed) => {
                             let model_path = Path::new(&parsed.model_path);
+                            if parsed.dry_run {
+                                print_smoke_dry_run(
+                                    "NanoCamelid Llama 3.2 1B smoke dry run",
+                                    model_path,
+                                    &parsed,
+                                );
+                                return ExitCode::SUCCESS;
+                            }
                             if !model_path.is_file() {
                                 eprintln!("{}", llama32_1b_model_not_found_message(model_path));
                                 return ExitCode::from(2);
@@ -300,6 +308,14 @@ fn main() -> ExitCode {
                     match parse_smoke_3b_args(&args[2..]) {
                         Ok(parsed) => {
                             let model_path = Path::new(&parsed.model_path);
+                            if parsed.dry_run {
+                                print_smoke_dry_run(
+                                    "NanoCamelid Llama 3.2 3B smoke dry run",
+                                    model_path,
+                                    &parsed,
+                                );
+                                return ExitCode::SUCCESS;
+                            }
                             if !model_path.is_file() {
                                 eprintln!("{}", llama32_3b_model_not_found_message(model_path));
                                 return ExitCode::from(2);
@@ -608,9 +624,9 @@ fn print_usage() {
     println!(
         "                                            Compare scalar vs selected Q8 model logits through the tokenizer chat template"
     );
-    println!("  smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
+    println!("  smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]");
     println!("                                            Run the default Llama 3.2 1B smoke path");
-    println!("  smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
+    println!("  smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]");
     println!("                                            Run the default Llama 3.2 3B smoke path");
     println!("  help [command]                            Show top-level or subcommand help");
     println!();
@@ -871,15 +887,19 @@ fn print_smoke_usage() {
     println!("Usage:");
     println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-chat <model.gguf> [prompt] [max_tokens]");
-    println!("  nanocamelid smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
-    println!("  nanocamelid smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens]");
+    println!(
+        "  nanocamelid smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
+    );
+    println!(
+        "  nanocamelid smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
+    );
     println!("  nanocamelid smoke q8-model [prompt] [max_tokens]  with NANOCAMELID_SMOKE_GGUF set");
     println!("  nanocamelid smoke q8-chat [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set");
     println!(
-        "  nanocamelid smoke 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens]"
+        "  nanocamelid smoke 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
     );
     println!(
-        "  nanocamelid smoke 3b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens]"
+        "  nanocamelid smoke 3b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
     );
     println!();
     println!("Args:");
@@ -905,6 +925,11 @@ fn print_smoke_usage() {
     );
     println!(
         "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
+    );
+    println!();
+    println!("Options:");
+    println!(
+        "  --dry-run                                Print the resolved 1b/3b smoke plan without loading the model"
     );
     println!();
     println!(
@@ -994,6 +1019,7 @@ struct Smoke1BArgs {
     model_path: String,
     prompt: String,
     max_tokens: usize,
+    dry_run: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1258,6 +1284,7 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
         model_path,
         prompt: smoke_prompt,
         max_tokens: smoke_tokens,
+        dry_run: false,
     };
     Ok(Ready1BArgs {
         smoke,
@@ -1290,16 +1317,25 @@ fn parse_smoke_1b_args_with_env_and_defaults(
     q4_exists: bool,
     defaults: SmokeDefaults,
 ) -> Result<Smoke1BArgs, &'static str> {
-    let first_looks_like_model = args
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => positionals.push(arg.clone()),
+        }
+    }
+
+    let first_looks_like_model = positionals
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
-    let (model_path, mut option_idx) = match (args.first(), env_model_path) {
+    let (model_path, mut option_idx) = match (positionals.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => (path.clone(), 1),
         (_, Some(path)) => (path, 0),
         _ => (default_llama32_1b_model_path(workspace, q4_exists), 0),
     };
 
-    let kind = match args.get(option_idx).map(String::as_str) {
+    let kind = match positionals.get(option_idx).map(String::as_str) {
         Some(value) if SmokeKind::looks_like_arg(value) => {
             option_idx += 1;
             SmokeKind::from_arg(value)
@@ -1307,11 +1343,11 @@ fn parse_smoke_1b_args_with_env_and_defaults(
         }
         _ => defaults.kind,
     };
-    let prompt = args
+    let prompt = positionals
         .get(option_idx)
         .cloned()
         .unwrap_or_else(|| defaults.prompt.clone());
-    let max_tokens = args
+    let max_tokens = positionals
         .get(option_idx + 1)
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(defaults.max_tokens);
@@ -1321,6 +1357,7 @@ fn parse_smoke_1b_args_with_env_and_defaults(
         model_path,
         prompt,
         max_tokens,
+        dry_run,
     })
 }
 
@@ -1358,16 +1395,25 @@ fn parse_smoke_3b_args_with_env(
     env_model_path: Option<String>,
     workspace: &str,
 ) -> Result<Smoke1BArgs, &'static str> {
-    let first_looks_like_model = args
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => positionals.push(arg.clone()),
+        }
+    }
+
+    let first_looks_like_model = positionals
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
-    let (model_path, mut option_idx) = match (args.first(), env_model_path) {
+    let (model_path, mut option_idx) = match (positionals.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => (path.clone(), 1),
         (_, Some(path)) => (path, 0),
         _ => (default_llama32_3b_model_path(workspace), 0),
     };
 
-    let kind = match args.get(option_idx).map(String::as_str) {
+    let kind = match positionals.get(option_idx).map(String::as_str) {
         Some(value) if SmokeKind::looks_like_arg(value) => {
             option_idx += 1;
             SmokeKind::from_arg(value)
@@ -1375,11 +1421,11 @@ fn parse_smoke_3b_args_with_env(
         }
         _ => SmokeKind::Q8Chat,
     };
-    let prompt = args
+    let prompt = positionals
         .get(option_idx)
         .cloned()
         .unwrap_or_else(|| DEFAULT_1B_SMOKE_PROMPT.to_owned());
-    let max_tokens = args
+    let max_tokens = positionals
         .get(option_idx + 1)
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
@@ -1389,6 +1435,7 @@ fn parse_smoke_3b_args_with_env(
         model_path,
         prompt,
         max_tokens,
+        dry_run,
     })
 }
 
@@ -2291,6 +2338,15 @@ fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode
             ExitCode::FAILURE
         }
     }
+}
+
+fn print_smoke_dry_run(title: &str, model_path: &Path, parsed: &Smoke1BArgs) {
+    println!("{title}");
+    println!("model: {}", model_path.display());
+    println!("model_exists: {}", model_path.is_file());
+    println!("smoke_kind: {}", parsed.kind.label());
+    println!("smoke_prompt: {}", parsed.prompt);
+    println!("smoke_tokens: {}", parsed.max_tokens);
 }
 
 fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
@@ -4325,6 +4381,29 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn smoke_1b_args_accept_dry_run_without_consuming_positionals() {
+        let parsed = parse_smoke_1b_args_with_env(
+            &[
+                "--dry-run".to_owned(),
+                "/models/custom.GGUF".to_owned(),
+                "model".to_owned(),
+                "Hello".to_owned(),
+                "2".to_owned(),
+            ],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("dry-run smoke args should parse");
+
+        assert!(parsed.dry_run);
+        assert_eq!(parsed.kind, SmokeKind::Q8Model);
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, 2);
+    }
+
+    #[test]
     fn ready_1b_args_accept_no_chat_flag_after_chat_args() {
         let parsed = parse_ready_1b_args_with_env(
             &[
@@ -4557,6 +4636,29 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.model_path, "/models/custom-3b.gguf");
         assert_eq!(parsed.prompt, "Hello");
         assert_eq!(parsed.max_tokens, 2);
+    }
+
+    #[test]
+    fn smoke_3b_args_accept_dry_run_without_model_file() {
+        let parsed = parse_smoke_3b_args_with_env(
+            &[
+                "--dry-run".to_owned(),
+                "chat".to_owned(),
+                "Hello".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+        )
+        .expect("dry-run 3B smoke args should parse");
+
+        assert!(parsed.dry_run);
+        assert_eq!(parsed.kind, SmokeKind::Q8Chat);
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
     }
 
     #[test]

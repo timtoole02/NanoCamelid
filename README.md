@@ -400,11 +400,13 @@ exits. Its model-selection precedence is a leading `.gguf` argument,
 Pi-local Q8_0. By default it runs the real instruct prompt path with `chat`, the
 prompt `Say hello in one sentence.`, and an 8-token response budget. Optional
 arguments let you override the model path, smoke kind, prompt, and token budget
-directly:
+directly. Add `--dry-run` to print the resolved smoke plan without loading the
+model:
 
 ```bash
 ./scripts/pi/smoke-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ./scripts/pi/smoke-1b.sh chat "Say hello in one sentence." 8
+./scripts/pi/smoke-1b.sh --dry-run
 ./scripts/pi/smoke-1b.sh model "Hello" 1
 ./scripts/pi/smoke-3b.sh chat "Say hello in one sentence." 4
 ```

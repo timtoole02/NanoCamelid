@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: smoke-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens]
+Usage: smoke-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]
 
 Runs NanoCamelid's Pi-local Llama 3.2 1B smoke validation.
 
@@ -21,12 +21,31 @@ Useful env:
   NANOCAMELID_SMOKE_KIND    Default smoke kind, default chat
   NANOCAMELID_SMOKE_PROMPT  Default prompt
   NANOCAMELID_SMOKE_TOKENS  Default generated token count
+  --dry-run                 Print the resolved smoke plan without loading the model
 USAGE
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
+fi
+
+DRY_RUN=0
+POSITIONAL_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$arg")
+      ;;
+  esac
+done
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+  set -- "${POSITIONAL_ARGS[@]}"
+else
+  set --
 fi
 
 looks_like_gguf_path() {
@@ -69,13 +88,9 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
-if [[ ! -f "$MODEL" ]]; then
-  echo "Model not found: $MODEL" >&2
-  echo "Set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
-  exit 2
-fi
-
-if [[ -x "$BINARY" ]]; then
+if [[ "$DRY_RUN" == "1" ]] && command -v cargo >/dev/null 2>&1; then
+  launcher_mode="cargo"
+elif [[ -x "$BINARY" ]]; then
   launcher_mode="binary"
 elif command -v cargo >/dev/null 2>&1; then
   launcher_mode="cargo"
@@ -95,6 +110,17 @@ run_nanocamelid() {
   export CARGO_TARGET_DIR="$TARGET_DIR"
   cargo run --release -- "$@"
 }
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --dry-run
+  exit 0
+fi
+
+if [[ ! -f "$MODEL" ]]; then
+  echo "Model not found: $MODEL" >&2
+  echo "Set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
+  exit 2
+fi
 
 echo "Running $SMOKE_KIND against $MODEL"
 run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"

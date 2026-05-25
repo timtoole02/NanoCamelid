@@ -6,6 +6,23 @@ WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 MODEL="${NANOCAMELID_SMOKE_GGUF:-${NANOCAMELID_MODEL_GGUF:-$WORKSPACE/models/Llama-3.2-3B-Instruct-Q4_0.gguf}}"
+DRY_RUN=0
+POSITIONAL_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$arg")
+      ;;
+  esac
+done
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+  set -- "${POSITIONAL_ARGS[@]}"
+else
+  set --
+fi
 SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-chat}}"
 SMOKE_PROMPT="${2:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${3:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
@@ -19,13 +36,9 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
-if [[ ! -f "$MODEL" ]]; then
-  echo "Model not found: $MODEL" >&2
-  echo "Set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, or place the 3B Q4_0 GGUF at the default path." >&2
-  exit 2
-fi
-
-if [[ -x "$BINARY" ]]; then
+if [[ "$DRY_RUN" == "1" ]] && command -v cargo >/dev/null 2>&1; then
+  launcher_mode="cargo"
+elif [[ -x "$BINARY" ]]; then
   launcher_mode="binary"
 elif command -v cargo >/dev/null 2>&1; then
   launcher_mode="cargo"
@@ -45,6 +58,17 @@ run_nanocamelid() {
   export CARGO_TARGET_DIR="$TARGET_DIR"
   cargo run --release -- "$@"
 }
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  run_nanocamelid smoke 3b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --dry-run
+  exit 0
+fi
+
+if [[ ! -f "$MODEL" ]]; then
+  echo "Model not found: $MODEL" >&2
+  echo "Set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, or place the 3B Q4_0 GGUF at the default path." >&2
+  exit 2
+fi
 
 echo "Running $SMOKE_KIND against $MODEL"
 run_nanocamelid smoke 3b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
