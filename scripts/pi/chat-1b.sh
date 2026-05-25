@@ -2,6 +2,34 @@
 # Start NanoCamelid's terminal chat against the default Pi-local 1B model.
 set -euo pipefail
 
+usage() {
+  cat <<'USAGE'
+Usage: chat-1b.sh [model.gguf] [temp] [max_tokens]
+
+Starts NanoCamelid's Pi-local Llama 3.2 1B terminal chat. By default it runs a
+short chat smoke gate before launching the TUI.
+
+Model resolution:
+  1. explicit model.gguf argument
+  2. NANOCAMELID_MODEL_GGUF
+  3. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf
+  4. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf
+
+Useful env:
+  NANOCAMELID_WORKSPACE          Pi workspace, default /mnt/nanocamelid
+  CARGO_TARGET_DIR               Cargo output dir, default /mnt/nanocamelid/target
+  NANOCAMELID_CHAT_SMOKE=0       Skip the pre-chat smoke gate
+  NANOCAMELID_CHAT_SMOKE_KIND    Smoke kind, default chat
+  NANOCAMELID_TEMP               Chat temperature, default 0.0
+  NANOCAMELID_MAX_TOKENS         Max tokens per assistant turn, default 64
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"

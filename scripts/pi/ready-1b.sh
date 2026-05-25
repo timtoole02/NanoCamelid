@@ -2,6 +2,38 @@
 # Run the default Pi-local 1B readiness gate: inspect, smoke, then one chat turn.
 set -euo pipefail
 
+usage() {
+  cat <<'USAGE'
+Usage: ready-1b.sh [model.gguf] [chat_prompt] [chat_tokens]
+
+Runs NanoCamelid's Pi-local Llama 3.2 1B readiness gate:
+  1. inspect the selected GGUF
+  2. run scalar-vs-selected smoke validation
+  3. run one direct chat turn
+
+Model resolution:
+  1. explicit model.gguf argument
+  2. NANOCAMELID_SMOKE_GGUF
+  3. NANOCAMELID_MODEL_GGUF
+  4. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf
+  5. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf
+
+Useful env:
+  NANOCAMELID_WORKSPACE            Pi workspace, default /mnt/nanocamelid
+  CARGO_TARGET_DIR                 Cargo output dir, default /mnt/nanocamelid/target
+  NANOCAMELID_READY_SMOKE_KIND     Smoke kind, default chat
+  NANOCAMELID_READY_SMOKE_PROMPT   Smoke prompt
+  NANOCAMELID_READY_SMOKE_TOKENS   Smoke generated token count
+  NANOCAMELID_READY_PROMPT         Direct chat prompt
+  NANOCAMELID_READY_TOKENS         Direct chat generated token count
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"

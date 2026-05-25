@@ -2,6 +2,33 @@
 # Run NanoCamelid's default Pi-local 1B smoke validation.
 set -euo pipefail
 
+usage() {
+  cat <<'USAGE'
+Usage: smoke-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens]
+
+Runs NanoCamelid's Pi-local Llama 3.2 1B smoke validation.
+
+Model resolution:
+  1. explicit model.gguf argument
+  2. NANOCAMELID_SMOKE_GGUF
+  3. NANOCAMELID_MODEL_GGUF
+  4. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf
+  5. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf
+
+Useful env:
+  NANOCAMELID_WORKSPACE     Pi workspace, default /mnt/nanocamelid
+  CARGO_TARGET_DIR          Cargo output dir, default /mnt/nanocamelid/target
+  NANOCAMELID_SMOKE_KIND    Default smoke kind, default chat
+  NANOCAMELID_SMOKE_PROMPT  Default prompt
+  NANOCAMELID_SMOKE_TOKENS  Default generated token count
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
