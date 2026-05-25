@@ -561,6 +561,7 @@ fn print_bench_usage() {
     println!(
         "  NANOCAMELID_ATTENTION_HEAD_PARALLEL       Enable experimental head-parallel attention"
     );
+    println!("  NANOCAMELID_KV_CACHE_F16                  Store KV cache entries as f16");
     println!(
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
     );

@@ -1556,6 +1556,38 @@ pub fn fast_f16_to_f32(bits: u16) -> f32 {
     }
 }
 
+#[inline(always)]
+pub fn fast_f32_to_f16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let fraction = bits & 0x007f_ffff;
+
+    if exponent == 0 {
+        sign
+    } else if exponent == 0xff {
+        if fraction == 0 {
+            sign | 0x7c00
+        } else {
+            sign | 0x7c00 | ((fraction >> 13) as u16) | 1
+        }
+    } else {
+        let half_exponent = exponent - 127 + 15;
+        if half_exponent >= 0x1f {
+            sign | 0x7c00
+        } else if half_exponent <= 0 {
+            if half_exponent < -10 {
+                sign
+            } else {
+                let mantissa = (fraction | 0x0080_0000) >> (14 - half_exponent);
+                sign | mantissa as u16
+            }
+        } else {
+            sign | ((half_exponent as u16) << 10) | ((fraction >> 13) as u16)
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 unsafe fn dot_i8_neon_aarch64(lhs: &[i8], rhs: &[i8]) -> i32 {
     use std::arch::aarch64::{
@@ -1906,6 +1938,7 @@ mod tests {
         dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
         dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector,
         dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32,
+        fast_f32_to_f16,
     };
 
     #[test]
@@ -2289,6 +2322,27 @@ mod tests {
                 "bits {bits:#06x}"
             );
         }
+    }
+
+    #[test]
+    fn fast_f32_to_f16_covers_representative_values() {
+        let cases = [
+            (0.0, 0x0000),
+            (-0.0, 0x8000),
+            (1.0, 0x3c00),
+            (-1.0, 0xbc00),
+            (0.5, 0x3800),
+            (2.0, 0x4000),
+            (65504.0, 0x7bff),
+            (f32::INFINITY, 0x7c00),
+            (f32::NEG_INFINITY, 0xfc00),
+        ];
+
+        for (value, expected_bits) in cases {
+            assert_eq!(fast_f32_to_f16(value), expected_bits, "value {value}");
+        }
+        assert_eq!(fast_f32_to_f16(f32::NAN) & 0x7c00, 0x7c00);
+        assert_ne!(fast_f32_to_f16(f32::NAN) & 0x03ff, 0);
     }
 
     #[test]

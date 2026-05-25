@@ -257,6 +257,10 @@ Useful environment controls:
 - `NANOCAMELID_ATTENTION_HEAD_PARALLEL=1`: enable experimental Rayon
   head-parallel attention. This uses per-head score scratch space and is kept
   opt-in until long-context measurements justify the extra parallel scheduling.
+- `NANOCAMELID_KV_CACHE_F16=1`: store KV-cache entries as f16 and decode them
+  during attention. This halves KV-cache storage and bandwidth for cached keys
+  and values, but it is lossy and remains opt-in until real-model parity and
+  long-context speed evidence justify broader use.
 
 The swizzled Q4_0 1x4 path is an opt-in performance path. It has shown a real
 Pi 2 short-chat win with smoke parity, but it remains explicit until broader
@@ -266,6 +270,10 @@ The page-aligned Q4_0 1x4 path is narrower: the Pi 2 layout microbenchmark
 showed a small gain over contiguous swizzled storage, but it duplicates the
 swizzled matrix chunks and should be treated as a measurement switch until
 real-model runs justify making it broader.
+
+The f16 KV-cache path is also opt-in. It intentionally compares against an
+explicitly decoded f16 reference rather than the full-f32 cache, because
+half-precision cache storage is a lossy runtime mode.
 
 ## Tested Models
 
@@ -302,6 +310,11 @@ Current Pi 2 evidence, measured on local release builds:
   versus contiguous swizzled storage. The same Qwen prompt stayed essentially
   flat end-to-end, so this remains opt-in because the win is small and requires
   duplicate swizzled chunks.
+- Experimental f16 KV-cache storage preserved the Qwen2.5-Coder-7B-Instruct
+  Q4_0 4-token smoke output with `max_logit_delta: 0.00000000`, but the short
+  16-token Rust prompt was slightly slower than f32 cache (`1.83 tok/sec` vs
+  `1.88 tok/sec`). Treat it as a memory-pressure option until longer-context
+  runs prove a speed win.
 - mmap-backed source reads improve the warm Qwen2.5-Coder-7B-Instruct Q4_0
   load path to `2.63s`, but they do not make large models instant. Strand 14B
   Q6_K still takes about `47s` to load because the current runtime still

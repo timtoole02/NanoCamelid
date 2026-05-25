@@ -10,6 +10,7 @@ pub const MATMUL_MIN_ROWS_ENV: &str = "NANOCAMELID_MATMUL_MIN_ROWS";
 pub const Q4_1X4_SDOT_ENV: &str = "NANOCAMELID_Q4_1X4_SDOT";
 pub const Q6K_SDOT_ENV: &str = "NANOCAMELID_Q6K_SDOT";
 pub const ATTENTION_HEAD_PARALLEL_ENV: &str = "NANOCAMELID_ATTENTION_HEAD_PARALLEL";
+pub const KV_CACHE_F16_ENV: &str = "NANOCAMELID_KV_CACHE_F16";
 const DEFAULT_MATMUL_MIN_ROWS: usize = 128;
 
 fn matmul_min_rows() -> usize {
@@ -57,6 +58,16 @@ fn attention_head_parallel_enabled() -> bool {
     })
 }
 
+fn kv_cache_f16_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(KV_CACHE_F16_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
 fn for_each_matmul_row<F>(out: &mut [f32], compute_row: F)
 where
     F: Fn(usize, &mut f32) + Sync,
@@ -95,9 +106,25 @@ pub struct BatchMatmulShape {
     pub cols: usize,
 }
 
+#[derive(Clone, Copy)]
+pub enum KvCacheSlice<'a> {
+    F32(&'a [f32]),
+    F16(&'a [u16]),
+}
+
+enum LlamaKvCacheStorage {
+    F32 {
+        k_cache: Vec<f32>,
+        v_cache: Vec<f32>,
+    },
+    F16 {
+        k_cache: Vec<u16>,
+        v_cache: Vec<u16>,
+    },
+}
+
 pub struct LlamaKvCache {
-    pub k_cache: Vec<f32>, // block_count * context_length * kv_width
-    pub v_cache: Vec<f32>, // block_count * context_length * kv_width
+    storage: LlamaKvCacheStorage,
     pub kv_width: usize,
     pub max_seq_len: usize,
 }
@@ -105,9 +132,19 @@ pub struct LlamaKvCache {
 impl LlamaKvCache {
     pub fn new(block_count: usize, max_seq_len: usize, kv_width: usize) -> Self {
         let size = block_count * max_seq_len * kv_width;
+        let storage = if kv_cache_f16_enabled() {
+            LlamaKvCacheStorage::F16 {
+                k_cache: vec![0; size],
+                v_cache: vec![0; size],
+            }
+        } else {
+            LlamaKvCacheStorage::F32 {
+                k_cache: vec![0.0; size],
+                v_cache: vec![0.0; size],
+            }
+        };
         Self {
-            k_cache: vec![0.0; size],
-            v_cache: vec![0.0; size],
+            storage,
             kv_width,
             max_seq_len,
         }
@@ -118,18 +155,36 @@ impl LlamaKvCache {
         let pos_offset = pos * self.kv_width;
         let start = layer_offset + pos_offset;
 
-        self.k_cache[start..start + self.kv_width].copy_from_slice(k);
-        self.v_cache[start..start + self.kv_width].copy_from_slice(v);
+        match &mut self.storage {
+            LlamaKvCacheStorage::F32 { k_cache, v_cache } => {
+                k_cache[start..start + self.kv_width].copy_from_slice(k);
+                v_cache[start..start + self.kv_width].copy_from_slice(v);
+            }
+            LlamaKvCacheStorage::F16 { k_cache, v_cache } => {
+                for idx in 0..self.kv_width {
+                    k_cache[start + idx] = crate::q8::fast_f32_to_f16(k[idx]);
+                    v_cache[start + idx] = crate::q8::fast_f32_to_f16(v[idx]);
+                }
+            }
+        }
     }
 
-    pub fn get_k_cache(&self, layer: usize) -> &[f32] {
+    pub fn get_k_cache(&self, layer: usize) -> KvCacheSlice<'_> {
         let layer_offset = layer * self.max_seq_len * self.kv_width;
-        &self.k_cache[layer_offset..layer_offset + self.max_seq_len * self.kv_width]
+        let range = layer_offset..layer_offset + self.max_seq_len * self.kv_width;
+        match &self.storage {
+            LlamaKvCacheStorage::F32 { k_cache, .. } => KvCacheSlice::F32(&k_cache[range]),
+            LlamaKvCacheStorage::F16 { k_cache, .. } => KvCacheSlice::F16(&k_cache[range]),
+        }
     }
 
-    pub fn get_v_cache(&self, layer: usize) -> &[f32] {
+    pub fn get_v_cache(&self, layer: usize) -> KvCacheSlice<'_> {
         let layer_offset = layer * self.max_seq_len * self.kv_width;
-        &self.v_cache[layer_offset..layer_offset + self.max_seq_len * self.kv_width]
+        let range = layer_offset..layer_offset + self.max_seq_len * self.kv_width;
+        match &self.storage {
+            LlamaKvCacheStorage::F32 { v_cache, .. } => KvCacheSlice::F32(&v_cache[range]),
+            LlamaKvCacheStorage::F16 { v_cache, .. } => KvCacheSlice::F16(&v_cache[range]),
+        }
     }
 }
 
@@ -1842,8 +1897,8 @@ fn add_residual_batch(values: &mut [f32], residual: &[f32]) {
 
 struct AttentionInput<'a> {
     q: &'a [f32],
-    k_cache: &'a [f32],
-    v_cache: &'a [f32],
+    k_cache: KvCacheSlice<'a>,
+    v_cache: KvCacheSlice<'a>,
     pos: usize,
     head_count: usize,
     kv_head_count: usize,
@@ -1894,17 +1949,102 @@ fn apply_attention_head(
 ) {
     let kv_h = head_idx / kv_mul;
     let q_head = &input.q[head_idx * input.head_dim..(head_idx + 1) * input.head_dim];
+
+    match (input.k_cache, input.v_cache) {
+        (KvCacheSlice::F32(k_cache), KvCacheSlice::F32(v_cache)) => {
+            for (p, score) in scores.iter_mut().enumerate().take(input.pos + 1) {
+                let k_head = &k_cache[p * input.cache_kv_width + kv_h * input.head_dim
+                    ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
+                *score = dot_f32(q_head, k_head) * input.scale;
+            }
+            softmax(&mut scores[0..=input.pos]);
+
+            for (p, &score) in scores.iter().enumerate().take(input.pos + 1) {
+                let v_head = &v_cache[p * input.cache_kv_width + kv_h * input.head_dim
+                    ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
+                add_weighted_f32(out_head, v_head, score);
+            }
+        }
+        (KvCacheSlice::F16(k_cache), KvCacheSlice::F16(v_cache)) => {
+            apply_attention_head_f16(out_head, scores, input, kv_h, q_head, k_cache, v_cache);
+        }
+        _ => unreachable!("KV cache key and value storage kinds must match"),
+    }
+}
+
+fn apply_attention_head_f16(
+    out_head: &mut [f32],
+    scores: &mut [f32],
+    input: &AttentionInput<'_>,
+    kv_h: usize,
+    q_head: &[f32],
+    k_cache: &[u16],
+    v_cache: &[u16],
+) {
+    const MAX_STACK_HEAD_DIM: usize = 256;
+    if input.head_dim <= MAX_STACK_HEAD_DIM {
+        let mut k_head_f32 = [0.0; MAX_STACK_HEAD_DIM];
+        let mut v_head_f32 = [0.0; MAX_STACK_HEAD_DIM];
+        apply_attention_head_f16_with_buffers(
+            out_head,
+            scores,
+            input,
+            kv_h,
+            q_head,
+            k_cache,
+            v_cache,
+            &mut k_head_f32[..input.head_dim],
+            &mut v_head_f32[..input.head_dim],
+        );
+    } else {
+        let mut k_head_f32 = vec![0.0; input.head_dim];
+        let mut v_head_f32 = vec![0.0; input.head_dim];
+        apply_attention_head_f16_with_buffers(
+            out_head,
+            scores,
+            input,
+            kv_h,
+            q_head,
+            k_cache,
+            v_cache,
+            &mut k_head_f32,
+            &mut v_head_f32,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_attention_head_f16_with_buffers(
+    out_head: &mut [f32],
+    scores: &mut [f32],
+    input: &AttentionInput<'_>,
+    kv_h: usize,
+    q_head: &[f32],
+    k_cache: &[u16],
+    v_cache: &[u16],
+    k_head_f32: &mut [f32],
+    v_head_f32: &mut [f32],
+) {
     for (p, score) in scores.iter_mut().enumerate().take(input.pos + 1) {
-        let k_head = &input.k_cache[p * input.cache_kv_width + kv_h * input.head_dim
+        let k_head = &k_cache[p * input.cache_kv_width + kv_h * input.head_dim
             ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
-        *score = dot_f32(q_head, k_head) * input.scale;
+        decode_f16_head(k_head, k_head_f32);
+        *score = dot_f32(q_head, k_head_f32) * input.scale;
     }
     softmax(&mut scores[0..=input.pos]);
 
     for (p, &score) in scores.iter().enumerate().take(input.pos + 1) {
-        let v_head = &input.v_cache[p * input.cache_kv_width + kv_h * input.head_dim
+        let v_head = &v_cache[p * input.cache_kv_width + kv_h * input.head_dim
             ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
-        add_weighted_f32(out_head, v_head, score);
+        decode_f16_head(v_head, v_head_f32);
+        add_weighted_f32(out_head, v_head_f32, score);
+    }
+}
+
+fn decode_f16_head(src: &[u16], dst: &mut [f32]) {
+    debug_assert_eq!(src.len(), dst.len());
+    for (out, &bits) in dst.iter_mut().zip(src) {
+        *out = crate::q8::fast_f16_to_f32(bits);
     }
 }
 
@@ -2194,11 +2334,11 @@ fn rand_simple() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AttentionInput, BatchMatmulShape, RopeScaling, add_weighted_f32, add_weighted_f32_scalar,
-        apply_attention_heads, apply_rope, dot_f32, dot_f32_scalar, fused_silu_mul, matmul_q4_0,
-        matmul_q4_0_batch, matmul_q4_0_swizzled_1x4, matmul_q6_k, matmul_q6_k_batch, matmul_q8_0,
-        matmul_q8_0_batch, quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, rms_norm,
-        rms_norm_batch, silu,
+        AttentionInput, BatchMatmulShape, KvCacheSlice, RopeScaling, add_weighted_f32,
+        add_weighted_f32_scalar, apply_attention_heads, apply_rope, dot_f32, dot_f32_scalar,
+        fused_silu_mul, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4, matmul_q6_k,
+        matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, quantize_f32_to_q8_0,
+        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, silu,
     };
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
@@ -2297,8 +2437,8 @@ mod tests {
             &mut serial_scores,
             AttentionInput {
                 q: &q,
-                k_cache: &k_cache,
-                v_cache: &v_cache,
+                k_cache: KvCacheSlice::F32(&k_cache),
+                v_cache: KvCacheSlice::F32(&v_cache),
                 pos,
                 head_count,
                 kv_head_count,
@@ -2317,8 +2457,8 @@ mod tests {
             &mut parallel_scores,
             AttentionInput {
                 q: &q,
-                k_cache: &k_cache,
-                v_cache: &v_cache,
+                k_cache: KvCacheSlice::F32(&k_cache),
+                v_cache: KvCacheSlice::F32(&v_cache),
                 pos,
                 head_count,
                 kv_head_count,
@@ -2351,6 +2491,81 @@ mod tests {
 
         let mut candidate = vec![0.0; gate.len()];
         fused_silu_mul(&mut candidate, &gate, &up);
+
+        for (idx, (&candidate, &expected)) in candidate.iter().zip(&expected).enumerate() {
+            assert!(
+                (candidate - expected).abs() < 1e-6,
+                "idx {idx} candidate {candidate} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn f16_attention_matches_explicitly_decoded_cache() {
+        let head_count = 4;
+        let kv_head_count = 2;
+        let head_dim = 8;
+        let context_length = 5;
+        let cache_kv_width = kv_head_count * head_dim;
+        let pos = 4;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let q: Vec<f32> = (0..head_count * head_dim)
+            .map(|idx| idx as f32 * 0.017 - 0.25)
+            .collect();
+        let k_cache_f16: Vec<u16> = (0..context_length * cache_kv_width)
+            .map(|idx| crate::q8::fast_f32_to_f16(0.5 - idx as f32 * 0.009))
+            .collect();
+        let v_cache_f16: Vec<u16> = (0..context_length * cache_kv_width)
+            .map(|idx| crate::q8::fast_f32_to_f16(idx as f32 * 0.013 - 0.4))
+            .collect();
+        let k_cache_decoded: Vec<f32> = k_cache_f16
+            .iter()
+            .map(|&bits| crate::q8::fast_f16_to_f32(bits))
+            .collect();
+        let v_cache_decoded: Vec<f32> = v_cache_f16
+            .iter()
+            .map(|&bits| crate::q8::fast_f16_to_f32(bits))
+            .collect();
+
+        let mut expected = vec![0.0; head_count * head_dim];
+        let mut expected_scores = vec![0.0; context_length];
+        apply_attention_heads(
+            &mut expected,
+            &mut expected_scores,
+            AttentionInput {
+                q: &q,
+                k_cache: KvCacheSlice::F32(&k_cache_decoded),
+                v_cache: KvCacheSlice::F32(&v_cache_decoded),
+                pos,
+                head_count,
+                kv_head_count,
+                head_dim,
+                cache_kv_width,
+                context_length,
+                scale,
+            },
+            false,
+        );
+
+        let mut candidate = vec![0.0; head_count * head_dim];
+        let mut candidate_scores = vec![0.0; head_count * context_length];
+        apply_attention_heads(
+            &mut candidate,
+            &mut candidate_scores,
+            AttentionInput {
+                q: &q,
+                k_cache: KvCacheSlice::F16(&k_cache_f16),
+                v_cache: KvCacheSlice::F16(&v_cache_f16),
+                pos,
+                head_count,
+                kv_head_count,
+                head_dim,
+                cache_kv_width,
+                context_length,
+                scale,
+            },
+            true,
+        );
 
         for (idx, (&candidate, &expected)) in candidate.iter().zip(&expected).enumerate() {
             assert!(
