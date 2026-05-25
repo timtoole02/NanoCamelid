@@ -88,6 +88,17 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
 
   default_q4_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
   default_q8_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+
+  if [ -n "$REMOTE_SMOKE_GGUF" ]; then
+    echo "==> Inspecting explicit 1B smoke model:"
+    cargo run --release -- inspect "$REMOTE_SMOKE_GGUF"
+  elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
+    echo "==> Inspecting default Pi-local 1B model:"
+    NANOCAMELID_WORKSPACE="$PI_WORKSPACE" cargo run --release -- inspect 1b
+  else
+    echo "==> Skipping 1B inspect; no explicit GGUF path was set and no default Pi-local 1B model was found."
+  fi
+
   case "$REMOTE_SMOKE_KIND" in
     chat) generic_smoke_kind="q8-chat" ;;
     model) generic_smoke_kind="q8-model" ;;
