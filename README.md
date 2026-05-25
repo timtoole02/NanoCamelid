@@ -20,13 +20,79 @@ evidence.
 - Long-context models can be smoke-tested with an explicit
   `NANOCAMELID_CONTEXT_LIMIT` cap to avoid allocating their full advertised KV
   cache.
-- Scalar reference paths remain in the test suite. Optimized kernels have to
-  prove parity before they are treated as production paths.
+- On AArch64 boards with dot-product support, NanoCamelid now auto-selects the
+  SDOT Q8 kernel, Q4_0 1x4 swizzled layout, Q4_0/Q6_K SDOT matmuls, and
+  head-parallel attention by default. Scalar and forced-kernel modes remain
+  available for comparison.
+- Scalar reference paths remain in the test suite. Optimized kernels are kept
+  tied to parity tests and Pi-side smoke evidence.
+
+## High-Performance Architecture
+
+NanoCamelid is tuned around the Raspberry Pi 5's Cortex-A76 cores rather than
+being a general desktop inference wrapper. The current fast path is built from a
+small set of explicit runtime choices:
+
+- **Auto-detected SDOT kernels.** When `NANOCAMELID_Q8_DOT_KERNEL` is unset,
+  the runtime probes CPU features and selects SDOT on AArch64 systems with
+  dot-product support, NEON when SDOT is unavailable, and scalar otherwise.
+- **Q4_0 1x4 swizzled storage.** Compatible Q4_0 matrices are swizzled at load
+  time so four adjacent rows can be streamed together in cache-friendly chunks.
+- **Q4_0 and Q6_K SDOT matmuls.** The ARM dot-product paths are enabled by
+  default on supported CPUs, with scalar references retained for tests and
+  diagnostics.
+- **Vectorized activation quantization.** AArch64 builds use NEON rounding and
+  saturating-narrowing instructions for Q8 activation blocks, avoiding the
+  scalar per-element round/clamp loop in the hot path.
+- **Head-parallel attention.** Attention heads can be evaluated across Rayon
+  workers using per-head scratch storage. This is most useful on longer prompts;
+  very short prompts are still dominated by matmul work.
+- **Governor telemetry.** `probe` and the TUI surface CPU governor information
+  and recommend the non-overclock `performance` governor when Linux reports
+  `ondemand`.
+
+The implementation uses stable Rust with targeted `unsafe` AArch64 intrinsics
+inside hot kernels. The goal is not a huge abstraction stack; it is an
+inspectable Pi runtime where each optimization has a fallback, a test, or a
+smoke path.
 
 ## Recent Pi Results
 
-Latest runtime evidence below was captured through `b467d2c`
-(`feat(runtime): allow capped smoke context`).
+Latest runtime evidence below was captured through `59e374d`
+(`perf(neon): vectorize activation Q8 block quantization using rounding and
+saturating narrowing instructions`).
+
+On the Pi 2 benchmark lane, the default Q8 dot benchmark now auto-selects SDOT
+with no speed environment variables set:
+
+- selected kernel: `sdot`
+- scalar median: about `3.18 ns/block`
+- NEON median: about `2.11 ns/block`
+- SDOT median: about `1.69 ns/block`
+- SDOT speedup: about `1.88x` over the scalar run in that benchmark sample and
+  about `1.25x` over NEON
+
+The isolated Q4 layout benchmark for a Qwen-sized shape also shows the memory
+layout win:
+
+- row-major Q4: `90.536ms`
+- swizzled 1x4 Q4: `70.648ms` (`1.28x`)
+- page-aligned swizzled 1x4: `68.337ms` (`1.32x` vs row-major, `1.034x` vs
+  contiguous swizzled)
+
+Page alignment remains opt-in because the incremental real-model gain has not
+justified the duplicate chunk storage.
+
+Llama 3.2 1B Instruct Q4_0 now passes the Pi-local chat smoke path and direct
+generation check with the default fast profile:
+
+- `smoke q8-chat` generated text: `"Hello!"`
+- `max_logit_delta: 0.00000000`
+- direct generation prompt: `Say hello in one sentence.`
+- model load: about `0.90s`
+- prompt ingest: about `0.38s`
+- generated text: `"Hello, how are you?" is`
+- throughput: `8` tokens in `1.91s` (`4.18 tok/sec`)
 
 On the Pi 2 benchmark lane, Qwen2.5-Coder-7B-Instruct Q4_0 currently validates
 through the smoke path with exact scalar-vs-selected logit parity:
@@ -46,13 +112,16 @@ Synthetic Q4 prefill tuning on the same Pi showed batch 32 slightly ahead in
 the isolated benchmark, but the real Qwen chat path favored batch 16, so `16` is
 the production default.
 
-Recent experiments that did not land:
+Recent experiments and narrow wins:
 
 - Register-accumulated attention was correct but did not improve the short Qwen
   decode run (`1.88 tok/sec` baseline vs `1.87 tok/sec` experiment).
-- Fully vectorized activation quantization was correctness-safe but slightly
-  slower on the real 7B Q4 generate path (`4.05s` prefill and `1.34 tok/sec`
-  baseline vs `4.07s` and `1.33 tok/sec` experiment).
+- f16 KV-cache storage preserved short Qwen smoke output but did not improve the
+  short 16-token prompt (`1.83 tok/sec` vs `1.88 tok/sec` for f32 cache), so it
+  remains an opt-in memory-pressure mode.
+- Vectorized activation quantization is now landed after Pi-side smoke passed;
+  the short 1B run moved from `4.16` to `4.18 tok/sec`, which is a small
+  positive result but still within normal run noise.
 
 Strand Rust Coder 14B Q6_K now inspects and runs with a capped context on the
 Pi 2 benchmark lane. It is useful compatibility evidence for Qwen2 + Q6_K, but
@@ -64,6 +133,8 @@ it is not a practical Pi target yet:
 - metadata: Qwen2, 48 layers, 5120 hidden width, 32k advertised context
 - short run with `NANOCAMELID_CONTEXT_LIMIT=128`: load about `39-54s`, one-token
   prompt prefill about `6.6s`, 8-token generation `46.06s` (`0.17 tok/sec`)
+- Q6_K SDOT preserved the initial smoke output and reduced a capped one-token
+  Strand run from about `78s` to about `54s`.
 
 ## Runtime Design
 
@@ -76,8 +147,9 @@ NanoCamelid keeps the runtime small and explicit:
   avoiding one temporary file-read buffer per tensor while preserving owned
   runtime weights.
 - NEON/SDOT hot paths guarded by architecture checks and parity tests.
-- Opt-in experimental Q4_0 1x4 SDOT and swizzled storage paths for benchmark
-  comparison.
+- Default fast-path Q4_0/Q6_K SDOT, Q4_0 1x4 swizzled storage, Q8 SDOT
+  auto-selection, and head-parallel attention on supported Pi-class ARM64
+  hardware.
 - Repeatable smoke and benchmark commands instead of broad model-family claims.
 
 ## Requirements
@@ -226,13 +298,6 @@ cargo run --release -- bench q4-layout 32768 3584 3
 cargo run --release -- bench q4-prefill 128 16
 ```
 
-To include the default-off SDOT candidate in Q8 dot reports:
-
-```bash
-NANOCAMELID_Q8_DOT_SDOT=1 \
-cargo run --release -- bench q8-dot 1000 3
-```
-
 Each benchmark prints human-readable timing plus a JSON summary line. Treat
 results as specific to the exact Pi, model, build, and environment used.
 
@@ -247,26 +312,26 @@ Useful environment controls:
   NanoCamelid uses that isolated set automatically.
 - `NANOCAMELID_MATMUL_MIN_ROWS`: row-count threshold before matmuls enter Rayon.
 - `NANOCAMELID_Q8_DOT_KERNEL=scalar|neon|sdot`: force the selected Q8 kernel.
-- `NANOCAMELID_Q8_DOT_SDOT=1`: enable SDOT candidate benchmarking.
-- `NANOCAMELID_Q4_1X4_SDOT=1`: enable the experimental Q4_0 1x4 SDOT path.
-- `NANOCAMELID_Q4_SWIZZLE_1X4=1`: load compatible Q4_0 tensors in the swizzled
-  1x4 runtime layout.
+- `NANOCAMELID_Q8_DOT_SDOT=0`: disable SDOT candidate selection for comparison.
+- `NANOCAMELID_Q4_1X4_SDOT=0`: disable the Q4_0 1x4 SDOT path for comparison.
+- `NANOCAMELID_Q4_SWIZZLE_1X4=0`: disable compatible Q4_0 tensor swizzling and
+  use the row-major Q4 path for comparison.
 - `NANOCAMELID_Q4_PAGE_ALIGN_1X4=1`: when the swizzled Q4_0 path is enabled,
   also keep an opt-in page-aligned copy of each 1x4 row chunk. This costs extra
   memory and is not the default.
-- `NANOCAMELID_Q6K_SDOT=1`: enable the experimental AArch64 SDOT path for
-  Q6_K-by-Q8 matmuls when the CPU reports dot-product support.
-- `NANOCAMELID_ATTENTION_HEAD_PARALLEL=1`: enable experimental Rayon
-  head-parallel attention. This uses per-head score scratch space and is kept
-  opt-in until long-context measurements justify the extra parallel scheduling.
+- `NANOCAMELID_Q6K_SDOT=0`: disable the AArch64 SDOT path for Q6_K-by-Q8
+  matmuls when comparing against the scalar route.
+- `NANOCAMELID_ATTENTION_HEAD_PARALLEL=0`: disable Rayon head-parallel
+  attention for comparison. This uses per-head score scratch space and is most
+  visible on longer prompts.
 - `NANOCAMELID_KV_CACHE_F16=1`: store KV-cache entries as f16 and decode them
   during attention. This halves KV-cache storage and bandwidth for cached keys
   and values, but it is lossy and remains opt-in until real-model parity and
   long-context speed evidence justify broader use.
 
-The swizzled Q4_0 1x4 path is an opt-in performance path. It has shown a real
-Pi 2 short-chat win with smoke parity, but it remains explicit until broader
-prompts and models confirm the shape.
+The swizzled Q4_0 1x4 path and SDOT kernels are the default fast profile on
+supported Pi-class ARM64 hosts. The environment variables above are primarily
+for diagnostics and before/after benchmark runs.
 
 The page-aligned Q4_0 1x4 path is narrower: the Pi 2 layout microbenchmark
 showed a small gain over contiguous swizzled storage, but it duplicates the
@@ -293,8 +358,12 @@ hardware with the current GGUF path. They are not broad family claims.
 
 Current Pi 2 evidence, measured on local release builds:
 
-- Llama 3.2 1B Instruct Q4_0 short chat: about `4.07-4.09 tok/sec`.
+- Llama 3.2 1B Instruct Q4_0 short generation, default fast profile:
+  `4.18 tok/sec`.
 - Llama 3.2 1B Instruct Q8_0 short chat: about `3.63 tok/sec`.
+- Q8 dot microbenchmark, default-selected SDOT: about `1.69 ns/block`.
+- Q4 layout microbenchmark: row-major `90.536ms`, swizzled 1x4 `70.648ms`,
+  page-aligned swizzled `68.337ms`.
 - Qwen2.5-Coder-7B-Instruct Q4_0 smoke: exact logit parity,
   `max_logit_delta: 0.00000000`.
 - Qwen2.5-Coder-7B-Instruct Q4_0 direct generation, short Rust ownership
@@ -323,6 +392,9 @@ Current Pi 2 evidence, measured on local release builds:
   decodes/copies quantized blocks and materializes embedding vectors.
 - Q8 SDOT single-block microkernel: split accumulators moved the Pi 2 SDOT
   median from about `1.683 ns/block` to about `1.679 ns/block`.
+- Vectorized NEON activation quantization preserved the 1B smoke path and moved
+  a short default 1B run from `4.16` to `4.18 tok/sec`. Treat this as a safe
+  kernel cleanup, not a proven end-to-end breakthrough.
 
 The Q4_0 1B path is faster than Q8_0 on the same prompt, but the measured
 end-to-end gain is still far below the theoretical memory-traffic ceiling. The
@@ -387,12 +459,16 @@ in the scripts for development workflows.
 
 - Host feature probing is available.
 - GGUF metadata and tensor layout inspection are available.
-- Q8_0 scalar, NEON, and default-off SDOT dot-product paths are available.
+- Q8_0 scalar, NEON, and auto-selected SDOT dot-product paths are available.
 - Q4_0 loading and Q4_0 weight x Q8_0 activation matmul paths are available.
 - Single-turn chat prompt rendering is available for recognized instruct templates.
 - Interactive terminal chat is available with model/kernel, token, TTFT, and throughput telemetry.
 - The TUI can switch GGUFs at runtime with `/model <path>`.
-- The Pi 1B chat launcher defaults to the SDOT Q8 dot-product path when available and preserves scalar-vs-selected-kernel parity through the smoke gate.
+- The default Pi fast profile enables SDOT, Q4 swizzling, Q4/Q6 SDOT matmuls,
+  head-parallel attention, and NEON activation quantization when the host
+  supports them.
+- The Pi 1B chat launcher preserves scalar-vs-selected-kernel parity through
+  the smoke gate.
 - Q8_0 and Q4_0 model smoke validation is available for the tested GGUF rows above.
 - Broader model support and performance claims require Pi-local artifacts and row-specific validation.
 
