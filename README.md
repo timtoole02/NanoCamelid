@@ -344,7 +344,7 @@ turn:
 
 ```bash
 ./scripts/pi/ready-1b.sh
-NANOCAMELID_READY_CHAT=0 ./scripts/pi/ready-1b.sh
+./scripts/pi/ready-1b.sh --no-chat
 ```
 
 The same gate is available through the CLI when you are already using the
@@ -408,14 +408,14 @@ argument overrides the model path. An optional leading `chat`, `model`,
 `q8-chat`, or `q8-model` argument selects the smoke gate kind. The remaining
 optional arguments override the final direct-chat prompt and token budget; when
 omitted, direct chat reuses the selected smoke prompt and token budget. Set
-`NANOCAMELID_READY_CHAT=0` to stop after inspect and smoke when you only need
-the readiness gate:
+`--no-chat`, `--smoke-only`, or `NANOCAMELID_READY_CHAT=0` to stop after inspect
+and smoke when you only need the readiness gate:
 
 ```bash
 ./scripts/pi/ready-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf "Say hello in one sentence." 8
 ./scripts/pi/ready-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ./scripts/pi/ready-1b.sh "Say hello in one sentence." 8
-NANOCAMELID_READY_CHAT=0 ./scripts/pi/ready-1b.sh
+./scripts/pi/ready-1b.sh --smoke-only
 ```
 
 For faster local iteration, disable the preflight smoke gate explicitly:
