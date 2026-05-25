@@ -504,6 +504,117 @@ NANOCAMELID_SMOKE_TOKENS=1 \
 Deployment defaults to rsync snapshots. Advanced deployment modes are available
 in the scripts for development workflows.
 
+## Raspberry Pi Clustering
+
+NanoCamelid includes experimental pipeline-parallel cluster tools for splitting
+large dense models across multiple Raspberry Pi-class nodes. The cluster path is
+intended for smoke tests and runtime experiments, not polished interactive chat
+yet. Use the single-node `chat 1b` or `tui 1b` path for the current practical
+1B experience.
+
+Cluster assumptions:
+
+- Each Pi has the same NanoCamelid checkout and release build.
+- Each Pi can read the same GGUF path, either from copied local files or a shared
+  mount.
+- Nodes can reach each other over TCP on the chosen ports.
+- Large-context GGUFs should use `NANOCAMELID_CLUSTER_CONTEXT_LIMIT` until full
+  advertised-context memory behavior is validated.
+- Split layers must be inside the model layer range. Passing `0` to the
+  two-node worker/master tools means "use the midpoint."
+
+On each Pi, prepare the repo and build release binaries:
+
+```bash
+cd /mnt/nanocamelid/src/NanoCamelid
+export CARGO_TARGET_DIR=/mnt/nanocamelid/target
+cargo build --release --bins
+```
+
+Before using multiple Pis, validate that split execution matches full execution
+inside one process. This loads a full model plus two partial views and should end
+with `result: PASS`:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=4 \
+cargo run --release --bin cluster_split_smoke -- /path/to/model.gguf 1 0
+```
+
+Check network latency between Pis with the TCP benchmark. On the target worker:
+
+```bash
+cargo run --release --bin cluster_bench -- server 5005
+```
+
+On the client/master Pi:
+
+```bash
+cargo run --release --bin cluster_bench -- client <worker-ip> 5005 1000
+```
+
+For a two-Pi token-level smoke, start the upper-layer worker first. Bind to
+`0.0.0.0` so the master can connect from another Pi:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  worker /path/to/model.gguf 0.0.0.0:5005 0
+```
+
+Then run the master on the other Pi. `master` compares the worker result against
+a local full forward pass and fails if the split token diverges:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  master /path/to/model.gguf <worker-ip>:5005 1 0 2
+```
+
+For prompt text generation through the same two-node split, use
+`master-generate`:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  master-generate /path/to/model.gguf <worker-ip>:5005 "fn hello_world" 0 8
+```
+
+For a three-Pi pipeline, choose explicit layer ranges. For a 48-layer model,
+`0..16`, `16..32`, and `32..48` is the usual first split to try. Start the final
+worker first:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  worker /path/to/model.gguf 0.0.0.0:5007 32
+```
+
+Start the middle worker next. It accepts the master connection and forwards to
+the final worker:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  middle-worker /path/to/model.gguf 0.0.0.0:5006 <final-worker-ip>:5007 16 32
+```
+
+Run the master against the middle worker:
+
+```bash
+NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
+cargo run --release --bin cluster_tcp_smoke -- \
+  master-generate /path/to/model.gguf <middle-worker-ip>:5006 "fn hello_world" 16 8
+```
+
+Useful output to check:
+
+- `result: PASS` from `cluster_split_smoke`
+- `cluster_generated_tokens`, `cluster_generated_text`, and
+  `cluster_tokens_per_sec` from `master-generate`
+- `worker_generated_tokens` from the final worker
+- `middle_feedback_tokens` from a middle worker
+- `cluster_tcp_round_trip_total_ms` when comparing network overhead
+
 ## Project Status
 
 - Host feature probing is available.
