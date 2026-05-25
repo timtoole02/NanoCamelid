@@ -2426,8 +2426,7 @@ where
                 generated_tokens.len()
             ));
         }
-        if Some(scalar_next as u32) == tokenizer.special.eos
-            || Some(scalar_next as u32) == tokenizer.special.eot
+        if is_generation_stop_token(&tokenizer.special, scalar_next as u32)
             || pos >= config.context_length
         {
             break;
@@ -2508,6 +2507,10 @@ fn print_q8_smoke_report(title: &str, model_path: &Path, report: &Q8ModelSmokeRe
     println!("generated_tokens: {:?}", report.generated_tokens);
     println!("generated_text: {:?}", report.generated_text);
     println!("status: ok");
+}
+
+fn is_generation_stop_token(special: &tokenizer::SpecialTokens, token_id: u32) -> bool {
+    special.eog.contains(&token_id)
 }
 
 fn rope_scaling_from_gguf(gguf: &gguf::GgufFile) -> inference::RopeScaling {
@@ -2971,8 +2974,7 @@ fn generate_chat_turn(
     let mut ttft_secs = None;
     loop {
         let next_token = inference::sample_logits(&session.ws.logits, temp);
-        if Some(next_token as u32) == env.tokenizer.special.eos
-            || Some(next_token as u32) == env.tokenizer.special.eot
+        if is_generation_stop_token(&env.tokenizer.special, next_token as u32)
             || session.pos >= env.config.context_length
             || generated_tokens.len() >= max_tokens
         {
@@ -3268,8 +3270,7 @@ where
     loop {
         let next_token = inference::sample_logits(&ws.logits, temp);
 
-        if Some(next_token as u32) == tokenizer.special.eos
-            || Some(next_token as u32) == tokenizer.special.eot
+        if is_generation_stop_token(&tokenizer.special, next_token as u32)
             || pos >= config.context_length
             || generated_tokens.len() >= max_tokens
         {
@@ -3466,16 +3467,16 @@ mod tests {
 
     use nanocamelid::gguf::{GgufFile, GgufMetadataValue, GgufTensorDescriptor, GgufTensorType};
     use nanocamelid::q8;
-    use nanocamelid::tokenizer::TokenizerModel;
+    use nanocamelid::tokenizer::{SpecialTokens, TokenizerModel};
 
     use super::{
         DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
         LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, SmokeDefaults,
         SmokeKind, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
-        help_topic_for_args, help_topic_named, inspect_runtime_summary, is_help_flag,
-        llama32_1b_model_not_found_message, llama32_3b_model_not_found_message, parse_cpu_list,
-        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
+        is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
+        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
         parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_smoke_1b_args_with_env, parse_smoke_3b_args_with_env, parse_smoke_args_with_env,
         parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
@@ -3617,6 +3618,22 @@ flags\t\t: sse4_2 avx2
         assert_eq!(shared_token_prefix_len(&[1, 2, 3], &[1, 2, 3, 4, 5]), 3);
         assert_eq!(shared_token_prefix_len(&[1, 2, 9], &[1, 2, 3, 4]), 2);
         assert_eq!(shared_token_prefix_len(&[8, 2], &[1, 2]), 0);
+    }
+
+    #[test]
+    fn generation_stop_token_uses_all_eog_tokens() {
+        let special = SpecialTokens {
+            eos: Some(1),
+            eot: Some(2),
+            eom: Some(3),
+            eog: [1, 2, 3].into_iter().collect(),
+            ..SpecialTokens::default()
+        };
+
+        assert!(is_generation_stop_token(&special, 1));
+        assert!(is_generation_stop_token(&special, 2));
+        assert!(is_generation_stop_token(&special, 3));
+        assert!(!is_generation_stop_token(&special, 4));
     }
 
     #[test]
