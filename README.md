@@ -289,8 +289,6 @@ Current Pi 2 evidence, measured on local release builds:
   (`0.17 tok/sec`).
 - Experimental Q6_K SDOT on Pi 2 preserved the Strand 14B one-token smoke output
   and reduced a capped one-token wall-clock run from `78s` to `54s`.
-- Experimental head-parallel attention preserved Qwen2.5-Coder-7B-Instruct Q4_0
-  smoke parity and reduced one 229-token prefill run from `34.48s` to `32.08s`.
 - mmap-backed source reads improve the warm Qwen2.5-Coder-7B-Instruct Q4_0
   load path to `2.63s`, but they do not make large models instant. Strand 14B
   Q6_K still takes about `47s` to load because the current runtime still
