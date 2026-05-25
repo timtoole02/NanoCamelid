@@ -60,7 +60,7 @@ fn main() -> ExitCode {
                 print_help(HelpTopic::Inspect);
                 return ExitCode::SUCCESS;
             }
-            match resolve_model_path_arg(args.get(1), default_model_path_from_env()) {
+            match resolve_inspect_model_path_arg(args.get(1)) {
                 Some(path) => inspect_gguf(Path::new(&path)),
                 None => {
                     eprintln!("missing GGUF path; pass one or set {DEFAULT_MODEL_GGUF_ENV}");
@@ -445,6 +445,7 @@ fn print_inspect_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid inspect <model.gguf>");
+    println!("  nanocamelid inspect 1b                     inspect the default Llama 3.2 1B path");
     println!("  nanocamelid inspect                        with NANOCAMELID_MODEL_GGUF set");
     println!();
     println!(
@@ -876,6 +877,37 @@ fn parse_smoke_args_with_env(
 
 fn looks_like_gguf_path(value: &str) -> bool {
     value.ends_with(".gguf") || value.ends_with(".gguf/")
+}
+
+fn is_llama32_1b_alias(value: &str) -> bool {
+    matches!(value, "1b" | "llama32-1b" | "llama-3.2-1b")
+}
+
+fn resolve_inspect_model_path_arg(path: Option<&String>) -> Option<String> {
+    match path.map(String::as_str) {
+        Some(alias) if is_llama32_1b_alias(alias) => {
+            Some(resolve_llama32_1b_model_path(smoke_model_path_from_env()))
+        }
+        _ => resolve_model_path_arg(path, default_model_path_from_env()),
+    }
+}
+
+fn resolve_llama32_1b_model_path(env_model_path: Option<String>) -> String {
+    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+    let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+    resolve_llama32_1b_model_path_with_workspace(
+        env_model_path,
+        &workspace,
+        Path::new(&q4_path).is_file(),
+    )
+}
+
+fn resolve_llama32_1b_model_path_with_workspace(
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+) -> String {
+    env_model_path.unwrap_or_else(|| default_llama32_1b_model_path(workspace, q4_exists))
 }
 
 fn default_llama32_1b_model_path(workspace: &str, q4_exists: bool) -> String {
@@ -2871,7 +2903,8 @@ mod tests {
         cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_help_flag,
         parse_cpu_list, parse_generate_args_with_env, parse_smoke_1b_args_with_env,
-        parse_smoke_args_with_env, parse_tui_args_with_env, resolve_model_path_arg,
+        parse_smoke_args_with_env, parse_tui_args_with_env,
+        resolve_llama32_1b_model_path_with_workspace, resolve_model_path_arg,
         runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
     };
 
@@ -3195,6 +3228,30 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(
             default_llama32_1b_model_path("/mnt/nanocamelid", false),
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+    }
+
+    #[test]
+    fn resolve_1b_model_path_prefers_env_before_pi_default() {
+        assert_eq!(
+            resolve_llama32_1b_model_path_with_workspace(
+                Some("/models/env-1b.gguf".to_owned()),
+                "/mnt/nanocamelid",
+                true,
+            ),
+            "/models/env-1b.gguf"
+        );
+    }
+
+    #[test]
+    fn resolve_1b_model_path_uses_workspace_default_without_env() {
+        assert_eq!(
+            resolve_llama32_1b_model_path_with_workspace(None, "/mnt/nanocamelid", true),
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(
+            resolve_llama32_1b_model_path_with_workspace(None, "/mnt/nanocamelid", false),
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
         );
     }

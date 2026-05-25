@@ -31,6 +31,17 @@ evidence.
   supported rows from likely-compatible candidates and blocked runtime families
   such as Mixtral/MoE.
 
+Quick 1B readiness check on a Pi workspace:
+
+```bash
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
+./scripts/pi/smoke-1b.sh
+```
+
+`inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
+first, then the Pi-local `Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback
+under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
+
 ## High-Performance Architecture
 
 NanoCamelid is tuned around the Raspberry Pi 5's Cortex-A76 cores rather than
