@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: ready-1b.sh [model.gguf] [chat_prompt] [chat_tokens]
+Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [chat_prompt] [chat_tokens]
 
 Runs NanoCamelid's Pi-local Llama 3.2 1B readiness gate:
   1. inspect the selected GGUF
@@ -55,6 +55,12 @@ if [[ "${1:-}" == *.gguf ]]; then
   shift
 fi
 SMOKE_KIND="${NANOCAMELID_READY_SMOKE_KIND:-${NANOCAMELID_SMOKE_KIND:-chat}}"
+case "${1:-}" in
+chat | model | q8-chat | q8-model)
+  SMOKE_KIND="$1"
+  shift
+  ;;
+esac
 SMOKE_PROMPT="${NANOCAMELID_READY_SMOKE_PROMPT:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${NANOCAMELID_READY_SMOKE_TOKENS:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
 CHAT_PROMPT="${1:-${NANOCAMELID_READY_PROMPT:-$SMOKE_PROMPT}}"
