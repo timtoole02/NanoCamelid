@@ -40,6 +40,7 @@ SSH_KEY="${2:-${NANOCAMELID_SSH_KEY:-}}"
 PI_USER="${3:-${NANOCAMELID_PI_USER:-$USER}}"
 DEPLOY_MODE="${4:-${NANOCAMELID_DEPLOY_MODE:-git-ff}}"
 PI_WORKSPACE="${NANOCAMELID_REMOTE_WORKSPACE:-/mnt/nanocamelid}"
+PI_TARGET_DIR="/mnt/nanocamelid/target"
 PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
 REMOTE_SMOKE_ENABLED="${NANOCAMELID_REMOTE_SMOKE:-1}"
 REMOTE_SMOKE_GGUF="${NANOCAMELID_REMOTE_SMOKE_GGUF:-}"
@@ -81,7 +82,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "deploy_mode: $DEPLOY_MODE"
   echo "remote_workspace: $PI_WORKSPACE"
   echo "remote_repo: $PI_REPO"
-  echo "cargo_target_dir: $PI_WORKSPACE/target"
+  echo "cargo_target_dir: $PI_TARGET_DIR"
   echo "remote_smoke_enabled: $REMOTE_SMOKE_ENABLED"
   echo "remote_smoke_kind: $REMOTE_SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
@@ -126,6 +127,7 @@ echo "Deploying latest changes first..."
 
 echo "Building NanoCamelid on ${PI_USER}@${PI_HOST}..."
 printf -v REMOTE_PI_WORKSPACE '%q' "$PI_WORKSPACE"
+printf -v REMOTE_PI_TARGET_DIR '%q' "$PI_TARGET_DIR"
 printf -v REMOTE_PI_REPO '%q' "$PI_REPO"
 printf -v REMOTE_SMOKE_ENABLED_ARG '%q' "$REMOTE_SMOKE_ENABLED"
 printf -v REMOTE_SMOKE_GGUF_ARG '%q' "$REMOTE_SMOKE_GGUF"
@@ -137,7 +139,7 @@ printf -v READY_PROMPT_ARG '%q' "$READY_PROMPT"
 printf -v READY_TOKENS_ARG '%q' "$READY_TOKENS"
 printf -v READY_TEMP_ARG '%q' "$READY_TEMP"
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
-  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG bash" << 'EOF'
+  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG bash" << 'EOF'
   # Export Cargo path to make sure cargo commands work in non-interactive shells
   export PATH="$HOME/.cargo/bin:$PATH"
   if [ -f "$HOME/.cargo/env" ]; then
@@ -148,7 +150,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
   if [ -f "$PI_WORKSPACE/env.sh" ]; then
     source "$PI_WORKSPACE/env.sh"
   fi
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/nanocamelid/target}"
+  export CARGO_TARGET_DIR="${PI_TARGET_DIR:-/mnt/nanocamelid/target}"
   mkdir -p "$CARGO_TARGET_DIR"
 
   cd "$PI_REPO"
@@ -160,7 +162,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     if [ -f "$PI_WORKSPACE/env.sh" ]; then
       source "$PI_WORKSPACE/env.sh"
     fi
-    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/nanocamelid/target}"
+    export CARGO_TARGET_DIR="${PI_TARGET_DIR:-/mnt/nanocamelid/target}"
   fi
 
   echo "==> Cargo target dir: $CARGO_TARGET_DIR"
