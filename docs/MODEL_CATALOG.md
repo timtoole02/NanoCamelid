@@ -21,6 +21,7 @@ These rows have been loaded and generated on Raspberry Pi-class ARM64 hardware.
 | DeepSeek-R1-Distill-Qwen 1.5B | `ggml-org/DeepSeek-R1-Distill-Qwen-1.5B-Q4_0-GGUF`, `deepseek-r1-distill-qwen-1.5b-q4_0.gguf` | `qwen2` | Supported | `ready`; 8-token smoke at about `13.25 tok/sec` |
 | Llama 3.2 1B Instruct | `Llama-3.2-1B-Instruct-Q4_0.gguf` | `llama` | Supported | README-documented Pi chat/generate smoke at about `4.18 tok/sec` |
 | Llama 3.2 1B Instruct | `Llama-3.2-1B-Instruct-Q8_0.gguf` | `llama` | Supported baseline | Existing Q8_0 smoke row; useful for correctness checks |
+| Llama 3.2 3B Instruct | `Llama-3.2-3B-Instruct-Q4_0.gguf` | `llama` | Supported | `ready`; Llama 3 chat renderer; smoke chat generated `"Hello!"` with exact scalar-vs-selected logit parity; direct generation at about `2.22 tok/sec` |
 | Mistral 7B Instruct v0.1 | `TheBloke/Mistral-7B-Instruct-v0.1-GGUF`, `mistral-7b-instruct-v0.1.Q4_0.gguf` | reports `llama` in tested GGUF | Supported for tested row | `ready`; 4-token smoke at about `3.68 tok/sec` |
 | Qwen2.5-Coder 7B Instruct | Q4_0 GGUF row | `qwen2` | Supported smoke row | README-documented scalar-vs-selected logit parity and `"Hello"` smoke output |
 | Strand Rust Coder 14B | `Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF`, `Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf` | `qwen2` | Supported but slow | README-documented capped-context smoke, about `0.17 tok/sec` |

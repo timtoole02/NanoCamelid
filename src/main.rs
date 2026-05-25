@@ -19,6 +19,7 @@ const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
 const DEFAULT_PI_WORKSPACE: &str = "/mnt/nanocamelid";
 const LLAMA32_1B_Q4_MODEL: &str = "Llama-3.2-1B-Instruct-Q4_0.gguf";
 const LLAMA32_1B_Q8_MODEL: &str = "Llama-3.2-1B-Instruct-Q8_0.gguf";
+const LLAMA32_3B_Q4_MODEL: &str = "Llama-3.2-3B-Instruct-Q4_0.gguf";
 const DEFAULT_1B_SMOKE_PROMPT: &str = "Say hello in one sentence.";
 const DEFAULT_1B_SMOKE_TOKENS: usize = 8;
 const PERFORMANCE_GOVERNOR_COMMAND: &str =
@@ -242,6 +243,33 @@ fn main() -> ExitCode {
                         }
                     }
                 }
+                Some("3b" | "llama32-3b" | "llama-3.2-3b") => {
+                    match parse_smoke_3b_args(&args[2..]) {
+                        Ok(parsed) => {
+                            let model_path = Path::new(&parsed.model_path);
+                            if !model_path.is_file() {
+                                eprintln!(
+                                    "3B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_3B_Q4_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
+                                    model_path.display()
+                                );
+                                return ExitCode::from(2);
+                            }
+                            match parsed.kind {
+                                SmokeKind::Q8Model => {
+                                    smoke_q8_model(model_path, &parsed.prompt, parsed.max_tokens)
+                                }
+                                SmokeKind::Q8Chat => {
+                                    smoke_q8_chat(model_path, &parsed.prompt, parsed.max_tokens)
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("{err}");
+                            print_help(HelpTopic::Smoke);
+                            ExitCode::from(2)
+                        }
+                    }
+                }
                 Some(other) => {
                     eprintln!("unknown smoke: {other}");
                     print_help(HelpTopic::Smoke);
@@ -404,18 +432,22 @@ fn print_usage() {
         "  inspect <model.gguf>                      Inspect GGUF metadata and tensor layouts"
     );
     println!("  inspect 1b                                Inspect the default Llama 3.2 1B path");
+    println!("  inspect 3b                                Inspect the default Llama 3.2 3B path");
     println!("  generate <model.gguf> <prompt> [temp] [max_tokens]");
     println!("  generate 1b <prompt> [temp] [max_tokens]");
+    println!("  generate 3b <prompt> [temp] [max_tokens]");
     println!(
         "                                            Generate text from prompt on Raspberry Pi 5"
     );
     println!("  chat <model.gguf> <prompt> [temp] [max_tokens]");
     println!("  chat 1b <prompt> [temp] [max_tokens]");
+    println!("  chat 3b <prompt> [temp] [max_tokens]");
     println!(
         "                                            Render a single-turn chat prompt before generation"
     );
     println!("  tui <model.gguf> [temp] [max_tokens]");
     println!("  tui 1b [temp] [max_tokens]");
+    println!("  tui 3b [temp] [max_tokens]");
     println!("                                            Open an interactive terminal chat");
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
@@ -450,6 +482,7 @@ fn print_inspect_usage() {
     println!("Usage:");
     println!("  nanocamelid inspect <model.gguf>");
     println!("  nanocamelid inspect 1b                     inspect the default Llama 3.2 1B path");
+    println!("  nanocamelid inspect 3b                     inspect the default Llama 3.2 3B path");
     println!("  nanocamelid inspect                        with NANOCAMELID_MODEL_GGUF set");
     println!();
     println!(
@@ -468,6 +501,7 @@ fn print_generate_usage() {
     println!("Usage:");
     println!("  nanocamelid generate <model.gguf> <prompt> [temp] [max_tokens]");
     println!("  nanocamelid generate 1b <prompt> [temp] [max_tokens]");
+    println!("  nanocamelid generate 3b <prompt> [temp] [max_tokens]");
     println!(
         "  nanocamelid generate <prompt> [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set"
     );
@@ -485,7 +519,7 @@ fn print_generate_usage() {
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect and generate"
     );
     println!(
-        "  {WORKSPACE_ENV}                         Pi workspace for the 1b alias; default {DEFAULT_PI_WORKSPACE}"
+        "  {WORKSPACE_ENV}                         Pi workspace for the 1b/3b aliases; default {DEFAULT_PI_WORKSPACE}"
     );
     println!(
         "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
@@ -495,7 +529,7 @@ fn print_generate_usage() {
     );
     println!();
     println!(
-        "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path or a 1b alias."
+        "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path or a 1b/3b alias."
     );
 }
 
@@ -505,6 +539,7 @@ fn print_chat_usage() {
     println!("Usage:");
     println!("  nanocamelid chat <model.gguf> <prompt> [temp] [max_tokens]");
     println!("  nanocamelid chat 1b <prompt> [temp] [max_tokens]");
+    println!("  nanocamelid chat 3b <prompt> [temp] [max_tokens]");
     println!("  nanocamelid chat <prompt> [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set");
     println!();
     println!("Args:");
@@ -520,7 +555,7 @@ fn print_chat_usage() {
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, and chat"
     );
     println!(
-        "  {WORKSPACE_ENV}                         Pi workspace for the 1b alias; default {DEFAULT_PI_WORKSPACE}"
+        "  {WORKSPACE_ENV}                         Pi workspace for the 1b/3b aliases; default {DEFAULT_PI_WORKSPACE}"
     );
     println!(
         "  {PREFILL_BATCH_ENV}                         Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}, set 1 for single-token prefill"
@@ -540,6 +575,7 @@ fn print_tui_usage() {
     println!("Usage:");
     println!("  nanocamelid tui <model.gguf> [temp] [max_tokens]");
     println!("  nanocamelid tui 1b [temp] [max_tokens]");
+    println!("  nanocamelid tui 3b [temp] [max_tokens]");
     println!("  nanocamelid tui [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set");
     println!();
     println!("Args:");
@@ -554,7 +590,7 @@ fn print_tui_usage() {
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, chat, and tui"
     );
     println!(
-        "  {WORKSPACE_ENV}                         Pi workspace for the 1b alias; default {DEFAULT_PI_WORKSPACE}"
+        "  {WORKSPACE_ENV}                         Pi workspace for the 1b/3b aliases; default {DEFAULT_PI_WORKSPACE}"
     );
     println!(
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
@@ -631,9 +667,11 @@ fn print_smoke_usage() {
     println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-chat <model.gguf> [prompt] [max_tokens]");
     println!("  nanocamelid smoke 1b [chat|model] [prompt] [max_tokens]");
+    println!("  nanocamelid smoke 3b [chat|model] [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-model [prompt] [max_tokens]  with NANOCAMELID_SMOKE_GGUF set");
     println!("  nanocamelid smoke q8-chat [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set");
     println!("  nanocamelid smoke 1b <model.gguf> [chat|model] [prompt] [max_tokens]");
+    println!("  nanocamelid smoke 3b <model.gguf> [chat|model] [prompt] [max_tokens]");
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
@@ -648,7 +686,7 @@ fn print_smoke_usage() {
         "  {DEFAULT_MODEL_GGUF_ENV}                    Shared default GGUF path for inspect/generate/smoke"
     );
     println!(
-        "  {WORKSPACE_ENV}                         Pi workspace for smoke 1b defaults; default {DEFAULT_PI_WORKSPACE}"
+        "  {WORKSPACE_ENV}                         Pi workspace for smoke 1b/3b defaults; default {DEFAULT_PI_WORKSPACE}"
     );
     println!(
         "  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot kernel selection"
@@ -669,6 +707,9 @@ fn print_smoke_usage() {
     );
     println!(
         "`1b` defaults to chat, prompt {DEFAULT_1B_SMOKE_PROMPT:?}, and {DEFAULT_1B_SMOKE_TOKENS} tokens. It prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then Q8_0. The legacy q8-chat and q8-model aliases are still accepted."
+    );
+    println!(
+        "`3b` defaults to chat, prompt {DEFAULT_1B_SMOKE_PROMPT:?}, and {DEFAULT_1B_SMOKE_TOKENS} tokens. It expects the Pi-local Q4_0 Llama 3.2 3B GGUF."
     );
 }
 
@@ -838,11 +879,16 @@ fn parse_model_path_position(
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
     let first_is_1b_alias = args.first().is_some_and(|value| is_llama32_1b_alias(value));
+    let first_is_3b_alias = args.first().is_some_and(|value| is_llama32_3b_alias(value));
 
     match (args.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => Ok((path.clone(), 1)),
         (Some(_), env_model_path) if first_is_1b_alias => Ok((
             resolve_llama32_1b_model_path_with_workspace(env_model_path, workspace, q4_exists),
+            1,
+        )),
+        (Some(_), env_model_path) if first_is_3b_alias => Ok((
+            resolve_llama32_3b_model_path_with_workspace(env_model_path, workspace),
             1,
         )),
         (Some(path), None) => Ok((path.clone(), 1)),
@@ -869,6 +915,11 @@ fn parse_smoke_1b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
     parse_smoke_1b_args_with_env(args, smoke_model_path_from_env(), &workspace, q4_exists)
 }
 
+fn parse_smoke_3b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
+    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+    parse_smoke_3b_args_with_env(args, smoke_model_path_from_env(), &workspace)
+}
+
 fn parse_smoke_1b_args_with_env(
     args: &[String],
     env_model_path: Option<String>,
@@ -889,6 +940,45 @@ fn parse_smoke_1b_args_with_env(
             option_idx += 1;
             SmokeKind::from_arg(value)
                 .ok_or("unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model")?
+        }
+        _ => SmokeKind::Q8Chat,
+    };
+    let prompt = args
+        .get(option_idx)
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_1B_SMOKE_PROMPT.to_owned());
+    let max_tokens = args
+        .get(option_idx + 1)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
+
+    Ok(Smoke1BArgs {
+        kind,
+        model_path,
+        prompt,
+        max_tokens,
+    })
+}
+
+fn parse_smoke_3b_args_with_env(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+) -> Result<Smoke1BArgs, &'static str> {
+    let first_looks_like_model = args
+        .first()
+        .is_some_and(|value| looks_like_gguf_path(value));
+    let (model_path, mut option_idx) = match (args.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
+        (_, Some(path)) => (path, 0),
+        _ => (default_llama32_3b_model_path(workspace), 0),
+    };
+
+    let kind = match args.get(option_idx).map(String::as_str) {
+        Some(value) if SmokeKind::looks_like_arg(value) => {
+            option_idx += 1;
+            SmokeKind::from_arg(value)
+                .ok_or("unknown 3B smoke kind; expected chat, model, q8-chat, or q8-model")?
         }
         _ => SmokeKind::Q8Chat,
     };
@@ -952,10 +1042,17 @@ fn is_llama32_1b_alias(value: &str) -> bool {
     matches!(value, "1b" | "llama32-1b" | "llama-3.2-1b")
 }
 
+fn is_llama32_3b_alias(value: &str) -> bool {
+    matches!(value, "3b" | "llama32-3b" | "llama-3.2-3b")
+}
+
 fn resolve_inspect_model_path_arg(path: Option<&String>) -> Option<String> {
     match path.map(String::as_str) {
         Some(alias) if is_llama32_1b_alias(alias) => {
             Some(resolve_llama32_1b_model_path(smoke_model_path_from_env()))
+        }
+        Some(alias) if is_llama32_3b_alias(alias) => {
+            Some(resolve_llama32_3b_model_path(smoke_model_path_from_env()))
         }
         _ => resolve_model_path_arg(path, default_model_path_from_env()),
     }
@@ -986,6 +1083,22 @@ fn default_llama32_1b_model_path(workspace: &str, q4_exists: bool) -> String {
         LLAMA32_1B_Q8_MODEL
     };
     llama32_1b_model_path(workspace, model_name)
+}
+
+fn resolve_llama32_3b_model_path(env_model_path: Option<String>) -> String {
+    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+    resolve_llama32_3b_model_path_with_workspace(env_model_path, &workspace)
+}
+
+fn resolve_llama32_3b_model_path_with_workspace(
+    env_model_path: Option<String>,
+    workspace: &str,
+) -> String {
+    env_model_path.unwrap_or_else(|| default_llama32_3b_model_path(workspace))
+}
+
+fn default_llama32_3b_model_path(workspace: &str) -> String {
+    llama32_1b_model_path(workspace, LLAMA32_3B_Q4_MODEL)
 }
 
 fn llama32_1b_model_path(workspace: &str, model_name: &str) -> String {
@@ -2968,14 +3081,15 @@ mod tests {
 
     use super::{
         DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
-        LLAMA32_1B_Q8_MODEL, PERFORMANCE_GOVERNOR_COMMAND, SmokeKind, cpu_features,
-        cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path, device_model,
-        help_topic_for_args, help_topic_named, inspect_runtime_summary, is_help_flag,
-        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
-        parse_smoke_1b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
+        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, SmokeKind,
+        cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
+        default_llama32_3b_model_path, device_model, help_topic_for_args, help_topic_named,
+        inspect_runtime_summary, is_help_flag, parse_cpu_list, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_workspace, parse_smoke_1b_args_with_env,
+        parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
         parse_tui_args_with_env_and_workspace, resolve_llama32_1b_model_path_with_workspace,
-        resolve_model_path_arg, runtime_options_from_gguf, shared_token_prefix_len,
-        validate_generation_budget,
+        resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
+        runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
     };
 
     #[test]
@@ -3202,6 +3316,30 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn generate_args_accept_3b_alias() {
+        let parsed = parse_generate_args_with_env_and_workspace(
+            &[
+                "llama32-3b".to_owned(),
+                "Say hello".to_owned(),
+                "0.0".to_owned(),
+                "8".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("3B alias should parse");
+
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.prompt, "Say hello");
+        assert_eq!(parsed.temp, 0.0);
+        assert_eq!(parsed.max_tokens, 8);
+    }
+
+    #[test]
     fn generate_args_1b_alias_honors_env_model_override() {
         let parsed = parse_generate_args_with_env_and_workspace(
             &["llama-3.2-1b".to_owned(), "Say hello".to_owned()],
@@ -3212,6 +3350,20 @@ flags\t\t: sse4_2 avx2
         .expect("1B alias with env override should parse");
 
         assert_eq!(parsed.model_path, "/models/custom-1b.gguf");
+        assert_eq!(parsed.prompt, "Say hello");
+    }
+
+    #[test]
+    fn generate_args_3b_alias_honors_env_model_override() {
+        let parsed = parse_generate_args_with_env_and_workspace(
+            &["llama-3.2-3b".to_owned(), "Say hello".to_owned()],
+            Some("/models/custom-3b.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("3B alias with env override should parse");
+
+        assert_eq!(parsed.model_path, "/models/custom-3b.gguf");
         assert_eq!(parsed.prompt, "Say hello");
     }
 
@@ -3272,6 +3424,24 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(parsed.temp, 0.1);
+        assert_eq!(parsed.max_tokens, 64);
+    }
+
+    #[test]
+    fn tui_args_accept_3b_alias() {
+        let parsed = parse_tui_args_with_env_and_workspace(
+            &["llama32-3b".to_owned(), "0.1".to_owned(), "64".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("3B TUI alias should parse");
+
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
         );
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
@@ -3359,6 +3529,14 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn default_3b_smoke_path_uses_q4_model() {
+        assert_eq!(
+            default_llama32_3b_model_path("/mnt/nanocamelid"),
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
+        );
+    }
+
+    #[test]
     fn resolve_1b_model_path_prefers_env_before_pi_default() {
         assert_eq!(
             resolve_llama32_1b_model_path_with_workspace(
@@ -3379,6 +3557,25 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             resolve_llama32_1b_model_path_with_workspace(None, "/mnt/nanocamelid", false),
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+    }
+
+    #[test]
+    fn resolve_3b_model_path_prefers_env_before_pi_default() {
+        assert_eq!(
+            resolve_llama32_3b_model_path_with_workspace(
+                Some("/models/env-3b.gguf".to_owned()),
+                "/mnt/nanocamelid",
+            ),
+            "/models/env-3b.gguf"
+        );
+    }
+
+    #[test]
+    fn resolve_3b_model_path_uses_workspace_default_without_env() {
+        assert_eq!(
+            resolve_llama32_3b_model_path_with_workspace(None, "/mnt/nanocamelid"),
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
         );
     }
 
@@ -3410,6 +3607,24 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, 2);
+    }
+
+    #[test]
+    fn smoke_3b_args_accept_kind_prompt_and_tokens() {
+        let parsed = parse_smoke_3b_args_with_env(
+            &["model".to_owned(), "Hello".to_owned(), "2".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+        )
+        .expect("custom 3B smoke args should parse");
+
+        assert_eq!(parsed.kind, SmokeKind::Q8Model);
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
         );
         assert_eq!(parsed.prompt, "Hello");
         assert_eq!(parsed.max_tokens, 2);
@@ -3478,6 +3693,51 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             err,
             "unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model"
+        );
+    }
+
+    #[test]
+    fn smoke_3b_args_default_to_chat_prompt_and_pi_model() {
+        let parsed = parse_smoke_3b_args_with_env(&[], None, "/mnt/nanocamelid")
+            .expect("default 3B smoke args should parse");
+
+        assert_eq!(parsed.kind, SmokeKind::Q8Chat);
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.prompt, DEFAULT_1B_SMOKE_PROMPT);
+        assert_eq!(parsed.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
+    }
+
+    #[test]
+    fn smoke_3b_args_prefer_explicit_gguf_over_env_and_defaults() {
+        let parsed = parse_smoke_3b_args_with_env(
+            &[
+                "/models/custom-3b.gguf".to_owned(),
+                "q8-model".to_owned(),
+                "Hello".to_owned(),
+                "2".to_owned(),
+            ],
+            Some("/models/env-3b.gguf".to_owned()),
+            "/mnt/nanocamelid",
+        )
+        .expect("explicit 3B smoke model should parse");
+
+        assert_eq!(parsed.kind, SmokeKind::Q8Model);
+        assert_eq!(parsed.model_path, "/models/custom-3b.gguf");
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, 2);
+    }
+
+    #[test]
+    fn smoke_3b_args_reject_unknown_q8_kind() {
+        let err = parse_smoke_3b_args_with_env(&["q8-broken".to_owned()], None, "/mnt/nanocamelid")
+            .expect_err("unknown q8 kind should fail");
+
+        assert_eq!(
+            err,
+            "unknown 3B smoke kind; expected chat, model, q8-chat, or q8-model"
         );
     }
 

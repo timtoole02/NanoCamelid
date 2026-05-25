@@ -37,6 +37,8 @@ Quick 1B readiness check on a Pi workspace:
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 ./scripts/pi/smoke-1b.sh
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- chat 1b "Say hello in one sentence." 0 8
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 3b
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 3b chat "Say hello in one sentence." 4
 ```
 
 `inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
@@ -45,6 +47,8 @@ under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override.
+The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
+resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 
 ## High-Performance Architecture
 
@@ -112,6 +116,19 @@ generation check with the default fast profile:
 - prompt ingest: about `0.38s`
 - generated text: `"Hello, how are you?" is`
 - throughput: `8` tokens in `1.91s` (`4.18 tok/sec`)
+
+Llama 3.2 3B Instruct Q4_0 is also supported as a Pi-local single-node row:
+
+- `inspect 3b` reports `readiness: ready` and `tensor_layouts: ok`
+- tokenizer: `llama3_instruct`
+- `smoke 3b chat` generated text: `"Hello!"`
+- `max_logit_delta: 0.00000000`
+- direct generation prompt: `Say hello in one sentence.`
+- model load: about `1.45s`
+- prompt ingest: about `1.43s`
+- generated text: `I'd like to introduce you to`
+- direct generation throughput: `8` tokens in `3.60s` (`2.22 tok/sec`)
+- chat smoke throughput: `2` tokens in `1.02s` (`1.96 tok/sec`)
 
 On the Pi 2 benchmark lane, Qwen2.5-Coder-7B-Instruct Q4_0 currently validates
 through the smoke path with exact scalar-vs-selected logit parity:
@@ -408,6 +425,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | DeepSeek-R1-Distill-Qwen 1.5B | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `13.25 tok/sec`. |
 | Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat at about `4.18 tok/sec`. |
 | Llama 3.2 1B Instruct | Q8_0 | Working baseline | Baseline path for Q8 validation and Q4 comparison; short chat evidence is about `3.63 tok/sec`. |
+| Llama 3.2 3B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity; direct generation runs at about `2.22 tok/sec`. |
 | Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
 | Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
@@ -425,6 +443,8 @@ Current Pi 2 evidence, measured on local release builds:
 - Llama 3.2 1B Instruct Q4_0 short generation, default fast profile:
   `4.18 tok/sec`.
 - Llama 3.2 1B Instruct Q8_0 short chat: about `3.63 tok/sec`.
+- Llama 3.2 3B Instruct Q4_0 direct generation: about `2.22 tok/sec`;
+  chat smoke generated `"Hello!"` with `max_logit_delta: 0.00000000`.
 - Q8 dot microbenchmark, default-selected SDOT: about `1.69 ns/block`.
 - Q4 layout microbenchmark: row-major `90.536ms`, swizzled 1x4 `70.648ms`,
   page-aligned swizzled `68.337ms`.
