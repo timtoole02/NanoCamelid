@@ -34,7 +34,7 @@ fn q4_1x4_sdot_enabled() -> bool {
         env::var(Q4_1X4_SDOT_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
-            .unwrap_or(false)
+            .unwrap_or(true)
     })
 }
 
@@ -44,7 +44,7 @@ fn q6_k_sdot_enabled() -> bool {
         env::var(Q6K_SDOT_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
-            .unwrap_or(false)
+            .unwrap_or(true)
     })
 }
 
@@ -54,7 +54,7 @@ fn attention_head_parallel_enabled() -> bool {
         env::var(ATTENTION_HEAD_PARALLEL_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
-            .unwrap_or(false)
+            .unwrap_or(true)
     })
 }
 

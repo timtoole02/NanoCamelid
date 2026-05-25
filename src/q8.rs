@@ -1231,7 +1231,28 @@ impl Q8DotKernelSelector {
         sdot_candidate_enabled: bool,
     ) -> Self {
         match requested {
-            None | Some(Q8DotKernel::Scalar) => Self {
+            None => {
+                if features.dotprod && sdot_candidate_enabled {
+                    Self {
+                        requested: None,
+                        selected: Q8DotKernel::Sdot,
+                        fallback_reason: None,
+                    }
+                } else if features.neon {
+                    Self {
+                        requested: None,
+                        selected: Q8DotKernel::Neon,
+                        fallback_reason: None,
+                    }
+                } else {
+                    Self {
+                        requested: None,
+                        selected: Q8DotKernel::Scalar,
+                        fallback_reason: None,
+                    }
+                }
+            }
+            Some(Q8DotKernel::Scalar) => Self {
                 requested,
                 selected: Q8DotKernel::Scalar,
                 fallback_reason: None,
@@ -1332,7 +1353,7 @@ pub fn neon_available() -> bool {
 pub fn sdot_candidate_requested() -> bool {
     env::var(SDOT_CANDIDATE_ENV)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 pub fn sdot_candidate_enabled() -> bool {
@@ -1976,7 +1997,7 @@ mod tests {
     }
 
     #[test]
-    fn q8_kernel_selector_defaults_to_scalar() {
+    fn q8_kernel_selector_auto_detects_neon() {
         let selector = Q8DotKernelSelector::for_request(
             None,
             RuntimeFeatures {
@@ -1984,6 +2005,36 @@ mod tests {
                 dotprod: true,
             },
             false,
+        );
+
+        assert_eq!(selector.selected, Q8DotKernel::Neon);
+        assert_eq!(selector.fallback_reason, None);
+    }
+
+    #[test]
+    fn q8_kernel_selector_auto_detects_sdot() {
+        let selector = Q8DotKernelSelector::for_request(
+            None,
+            RuntimeFeatures {
+                neon: true,
+                dotprod: true,
+            },
+            true,
+        );
+
+        assert_eq!(selector.selected, Q8DotKernel::Sdot);
+        assert_eq!(selector.fallback_reason, None);
+    }
+
+    #[test]
+    fn q8_kernel_selector_auto_detects_scalar_when_no_simd() {
+        let selector = Q8DotKernelSelector::for_request(
+            None,
+            RuntimeFeatures {
+                neon: false,
+                dotprod: false,
+            },
+            true,
         );
 
         assert_eq!(selector.selected, Q8DotKernel::Scalar);
@@ -2282,7 +2333,7 @@ mod tests {
             dot_q8_0_rows_i32(&mut cursor, &lhs_reader, 1, &rhs_reader, 0, selector)
                 .expect("row dot");
 
-        assert_eq!(scalar_default.kernel_selector.selected, Q8DotKernel::Scalar);
+        assert_eq!(scalar_default.kernel_selector.selected, Q8DotKernel::Sdot);
         assert_eq!(scalar_default.selected, scalar_default.scalar);
 
         for kernel in [Q8DotKernel::Neon, Q8DotKernel::Sdot] {

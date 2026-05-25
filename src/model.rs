@@ -609,7 +609,7 @@ fn q4_swizzle_1x4_enabled() -> bool {
         env::var(Q4_SWIZZLE_1X4_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
-            .unwrap_or(false)
+            .unwrap_or(true)
     })
 }
 
