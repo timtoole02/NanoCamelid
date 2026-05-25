@@ -1400,7 +1400,10 @@ fn parse_smoke_args_with_env(
 }
 
 fn looks_like_gguf_path(value: &str) -> bool {
-    value.ends_with(".gguf") || value.ends_with(".gguf/")
+    value
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+        .ends_with(".gguf")
 }
 
 fn is_llama32_1b_alias(value: &str) -> bool {
@@ -3522,15 +3525,15 @@ mod tests {
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
         is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
-        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
-        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
-        parse_smoke_1b_args_with_env, parse_smoke_3b_args_with_env, parse_smoke_args_with_env,
-        parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
-        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
-        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
-        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        resolve_model_path_arg, runtime_options_from_gguf, shared_token_prefix_len,
-        validate_generation_budget,
+        looks_like_gguf_path, parse_cpu_list, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
+        parse_ready_1b_args_with_env_and_smoke_defaults, parse_smoke_1b_args_with_env,
+        parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
+        parse_tui_args_with_env_and_workspace, ready_chat_enabled_from_env_value,
+        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
+        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
+        resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
+        runtime_options_from_gguf, shared_token_prefix_len, validate_generation_budget,
     };
 
     #[test]
@@ -3792,6 +3795,19 @@ flags\t\t: sse4_2 avx2
         assert!(is_help_flag("-h"));
         assert!(is_help_flag("--help"));
         assert!(!is_help_flag("help"));
+    }
+
+    #[test]
+    fn gguf_path_detection_accepts_uppercase_extensions() {
+        assert!(looks_like_gguf_path(
+            "/models/Llama-3.2-1B-Instruct.Q4_0.GGUF"
+        ));
+        assert!(looks_like_gguf_path(
+            "/models/Llama-3.2-1B-Instruct.Q4_0.GgUf/"
+        ));
+        assert!(!looks_like_gguf_path(
+            "/models/Llama-3.2-1B-Instruct.gguf.tmp"
+        ));
     }
 
     #[test]
@@ -4229,7 +4245,7 @@ flags\t\t: sse4_2 avx2
     fn smoke_1b_args_prefer_explicit_gguf_over_env_and_defaults() {
         let parsed = parse_smoke_1b_args_with_env(
             &[
-                "/models/custom.gguf".to_owned(),
+                "/models/custom.GGUF".to_owned(),
                 "q8-chat".to_owned(),
                 "Say hi".to_owned(),
                 "4".to_owned(),
@@ -4241,7 +4257,7 @@ flags\t\t: sse4_2 avx2
         .expect("explicit 1B smoke model should parse");
 
         assert_eq!(parsed.kind, SmokeKind::Q8Chat);
-        assert_eq!(parsed.model_path, "/models/custom.gguf");
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
         assert_eq!(parsed.prompt, "Say hi");
         assert_eq!(parsed.max_tokens, 4);
     }
@@ -4264,7 +4280,7 @@ flags\t\t: sse4_2 avx2
     fn ready_1b_args_accept_no_chat_flag_after_chat_args() {
         let parsed = parse_ready_1b_args_with_env(
             &[
-                "/models/custom.gguf".to_owned(),
+                "/models/custom.GGUF".to_owned(),
                 "chat".to_owned(),
                 "Say hi".to_owned(),
                 "4".to_owned(),
@@ -4277,7 +4293,7 @@ flags\t\t: sse4_2 avx2
         .expect("ready args should parse");
 
         assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
-        assert_eq!(parsed.smoke.model_path, "/models/custom.gguf");
+        assert_eq!(parsed.smoke.model_path, "/models/custom.GGUF");
         assert_eq!(parsed.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
         assert_eq!(parsed.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
         assert_eq!(parsed.chat_enabled_override, Some(false));

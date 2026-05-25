@@ -30,6 +30,13 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+looks_like_gguf_path() {
+  case "${1:-}" in
+    *.[gG][gG][uU][fF] | *.[gG][gG][uU][fF]/) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
@@ -42,7 +49,7 @@ elif [[ -f "$Q4_MODEL" ]]; then
 else
   MODEL="$Q8_MODEL"
 fi
-if [[ "${1:-}" == *.gguf ]]; then
+if looks_like_gguf_path "${1:-}"; then
   MODEL="$1"
   shift
 fi
