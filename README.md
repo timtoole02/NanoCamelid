@@ -389,10 +389,19 @@ hardware with the current GGUF path. They are not broad family claims.
 
 | Model | GGUF quant | Status | Notes |
 | --- | --- | --- | --- |
-| Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat. |
-| Llama 3.2 1B Instruct | Q8_0 | Working | Baseline path for Q8 validation and Q4 comparison. |
+| Qwen2.5 0.5B Instruct | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `33.31 tok/sec`. |
+| Qwen2.5-Coder 0.5B Instruct | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `33.28 tok/sec`. |
+| DeepSeek-R1-Distill-Qwen 1.5B | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `13.25 tok/sec`. |
+| Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat at about `4.18 tok/sec`. |
+| Llama 3.2 1B Instruct | Q8_0 | Working baseline | Baseline path for Q8 validation and Q4 comparison; short chat evidence is about `3.63 tok/sec`. |
+| Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
-| Strand Rust Coder 14B v1 | Q6_K | Experimental | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
+| Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
+| Qwen2.5-Coder 32B Instruct | Q4_0 | Cluster smoke only | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec`; this is not a single-Pi claim. |
+| Llama 3 70B Instruct | Q4_0 | Token-level cluster smoke only | Three-Pi token-level smoke generated two tokens at about `0.17 tok/sec`; full prompt-level chat still needs tokenizer support for the tested GGUF. |
+
+See [`docs/MODEL_CATALOG.md`](docs/MODEL_CATALOG.md) for likely-compatible
+rows to test next and model families that are intentionally not claimable yet.
 
 ## Pi Performance Snapshot
 
