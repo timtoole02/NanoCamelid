@@ -1,4 +1,6 @@
-use crate::model::{LlamaModelConfig, LlamaWeights, PageAlignedQ4_0Swizzled1x4, QuantizedMatrix};
+use crate::model::{
+    LlamaLayerWeights, LlamaModelConfig, LlamaWeights, PageAlignedQ4_0Swizzled1x4, QuantizedMatrix,
+};
 use crate::q8::{
     Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
     QK_K_BLOCK_SIZE,
@@ -2141,14 +2143,48 @@ fn forward_pass_inner<'a>(
     ws: &'a mut LlamaWorkspace,
     options: LlamaRuntimeOptions,
 ) -> &'a [f32] {
-    // 1. Embedding lookup
+    embed_token(token_id, config, &weights.token_embeddings, ws);
+
+    run_layer_range(0, &weights.layers, pos, config, cache, ws, options);
+
+    if !options.compute_logits {
+        return &ws.logits;
+    }
+
+    compute_logits_from_hidden(
+        config,
+        &weights.token_embeddings,
+        &weights.output_norm,
+        weights.output_projection.as_ref(),
+        ws,
+        options,
+    )
+}
+
+pub fn embed_token(
+    token_id: usize,
+    config: &LlamaModelConfig,
+    token_embeddings: &[f32],
+    ws: &mut LlamaWorkspace,
+) {
     let emb_start = token_id * config.embedding_length;
     ws.hidden
-        .copy_from_slice(&weights.token_embeddings[emb_start..emb_start + config.embedding_length]);
+        .copy_from_slice(&token_embeddings[emb_start..emb_start + config.embedding_length]);
+}
 
-    // 2. Transformer layers
-    for layer_idx in 0..config.block_count {
-        let layer = &weights.layers[layer_idx];
+pub fn run_layer_range(
+    layer_start: usize,
+    layers: &[LlamaLayerWeights],
+    pos: usize,
+    config: &LlamaModelConfig,
+    cache: &mut LlamaKvCache,
+    ws: &mut LlamaWorkspace,
+    options: LlamaRuntimeOptions,
+) {
+    debug_assert!(layer_start + layers.len() <= config.block_count);
+
+    for (local_layer_idx, layer) in layers.iter().enumerate() {
+        let layer_idx = layer_start + local_layer_idx;
 
         // --- Attention block ---
         // Save residual
@@ -2325,21 +2361,24 @@ fn forward_pass_inner<'a>(
             ws.hidden[i] += ws.residual[i];
         }
     }
+}
 
-    if !options.compute_logits {
-        return &ws.logits;
-    }
-
-    // 3. Final RMSNorm
+pub fn compute_logits_from_hidden<'a>(
+    config: &LlamaModelConfig,
+    token_embeddings: &[f32],
+    output_norm: &[f32],
+    output_projection: Option<&QuantizedMatrix>,
+    ws: &'a mut LlamaWorkspace,
+    options: LlamaRuntimeOptions,
+) -> &'a [f32] {
     rms_norm(
         &mut ws.norm_x,
         &ws.hidden,
-        &weights.output_norm,
+        output_norm,
         config.rms_norm_epsilon,
     );
 
-    // 4. Logits Projection
-    if let Some(out_proj) = &weights.output_projection {
+    if let Some(out_proj) = output_projection {
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
         matmul_quantized(
             &mut ws.logits,
@@ -2355,7 +2394,7 @@ fn forward_pass_inner<'a>(
         matmul_f32(
             &mut ws.logits,
             &ws.norm_x,
-            &weights.token_embeddings,
+            token_embeddings,
             config.vocab_size,
             config.embedding_length,
         );
@@ -2420,10 +2459,11 @@ mod tests {
     use super::{
         AttentionInput, BatchMatmulShape, KvCacheSlice, RopeScaling, add_weighted_f32,
         add_weighted_f32_scalar, apply_attention_heads, apply_rope, dot_f32, dot_f32_scalar,
-        fused_silu_mul, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4, matmul_q6_k,
-        matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, quantize_f32_to_q8_0,
-        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, silu,
+        embed_token, fused_silu_mul, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4,
+        matmul_q6_k, matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, quantize_f32_to_q8_0,
+        quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch, run_layer_range, silu,
     };
+    use crate::model::{LlamaLayerWeights, LlamaModelConfig, LlamaWeights, QuantizedMatrix};
     use crate::q8::{
         Q4_0Block, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector,
         QK_K_BLOCK_SIZE, swizzle_q4_0_1x4,
@@ -2443,6 +2483,68 @@ mod tests {
             *value = ((seed + idx as i16 * 7) % 63 - 31) as i8;
         }
         Q8_0Block::from_parts(scale_bits, values)
+    }
+
+    fn zero_q8_matrix(rows: usize, cols: usize) -> QuantizedMatrix {
+        assert!(cols.is_multiple_of(Q8_BLOCK_SIZE));
+        QuantizedMatrix::Q8_0(vec![
+            Q8_0Block::from_parts(0, [0; Q8_BLOCK_SIZE]);
+            rows * (cols / Q8_BLOCK_SIZE)
+        ])
+    }
+
+    fn no_op_layer(config: &LlamaModelConfig) -> LlamaLayerWeights {
+        LlamaLayerWeights {
+            attention_norm: vec![1.0; config.embedding_length],
+            wq: zero_q8_matrix(config.embedding_length, config.embedding_length),
+            wk: zero_q8_matrix(config.kv_width, config.embedding_length),
+            wav: zero_q8_matrix(config.kv_width, config.embedding_length),
+            wq_bias: None,
+            wk_bias: None,
+            wav_bias: None,
+            wo: zero_q8_matrix(config.embedding_length, config.embedding_length),
+            ffn_norm: vec![1.0; config.embedding_length],
+            w1: zero_q8_matrix(config.feed_forward_length, config.embedding_length),
+            w3: zero_q8_matrix(config.feed_forward_length, config.embedding_length),
+            w2: zero_q8_matrix(config.embedding_length, config.feed_forward_length),
+        }
+    }
+
+    fn split_smoke_config() -> LlamaModelConfig {
+        LlamaModelConfig {
+            architecture: "llama".to_owned(),
+            metadata_prefix: "llama".to_owned(),
+            context_length: 4,
+            embedding_length: 32,
+            block_count: 2,
+            feed_forward_length: 32,
+            attention_head_count: 1,
+            attention_head_count_kv: 1,
+            rope_dimension_count: 32,
+            rope_freq_base: 10000.0,
+            rms_norm_epsilon: 1e-5,
+            vocab_size: 4,
+            head_dim: 32,
+            kv_width: 32,
+        }
+    }
+
+    fn split_smoke_weights(config: &LlamaModelConfig) -> LlamaWeights {
+        let mut token_embeddings = Vec::with_capacity(config.vocab_size * config.embedding_length);
+        for token_idx in 0..config.vocab_size {
+            for dim_idx in 0..config.embedding_length {
+                token_embeddings.push((token_idx as f32 + 1.0) * 0.01 + dim_idx as f32 * 0.001);
+            }
+        }
+
+        LlamaWeights {
+            token_embeddings,
+            output_norm: vec![1.0; config.embedding_length],
+            output_projection: None,
+            layers: (0..config.block_count)
+                .map(|_| no_op_layer(config))
+                .collect(),
+        }
     }
 
     fn q4_block(scale_bits: u16, seed: i16) -> Q4_0Block {
@@ -2560,6 +2662,64 @@ mod tests {
                 "idx {idx} candidate {candidate} expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn split_layer_execution_matches_full_forward_for_single_token() {
+        let config = split_smoke_config();
+        let weights = split_smoke_weights(&config);
+        let options = super::LlamaRuntimeOptions {
+            q8_selector: selector(Q8DotKernel::Scalar),
+            rope_scaling: RopeScaling::default(),
+            compute_logits: true,
+        };
+
+        let mut full_cache =
+            super::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+        let mut full_ws = super::LlamaWorkspace::new(&config);
+        super::forward_pass(
+            2,
+            0,
+            &config,
+            &weights,
+            &mut full_cache,
+            &mut full_ws,
+            options,
+        );
+
+        let mut split_cache =
+            super::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+        let mut split_ws = super::LlamaWorkspace::new(&config);
+        embed_token(2, &config, &weights.token_embeddings, &mut split_ws);
+        run_layer_range(
+            0,
+            &weights.layers[0..1],
+            0,
+            &config,
+            &mut split_cache,
+            &mut split_ws,
+            options,
+        );
+        run_layer_range(
+            1,
+            &weights.layers[1..2],
+            0,
+            &config,
+            &mut split_cache,
+            &mut split_ws,
+            options,
+        );
+        super::compute_logits_from_hidden(
+            &config,
+            &weights.token_embeddings,
+            &weights.output_norm,
+            weights.output_projection.as_ref(),
+            &mut split_ws,
+            options,
+        );
+
+        assert_eq!(split_ws.hidden, full_ws.hidden);
+        assert_eq!(split_ws.logits, full_ws.logits);
     }
 
     #[test]
