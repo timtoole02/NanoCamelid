@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [chat_prompt] [chat_tokens] [--no-chat|--smoke-only|--chat|--dry-run]
+Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]
 
 Runs NanoCamelid's Pi-local Llama 3.2 1B readiness gate:
   1. inspect the selected GGUF
@@ -28,7 +28,7 @@ Useful env:
   NANOCAMELID_READY_TOKENS         Direct chat generated token count
   NANOCAMELID_READY_TEMP           Direct chat temperature, default 0.0
   NANOCAMELID_READY_CHAT=0         Stop after inspect and smoke
-  --no-chat, --smoke-only          Stop after inspect and smoke
+  --no-chat, --smoke-only          Stop after inspect and smoke; positionals override the smoke prompt
   --chat                           Force the direct chat turn even when NANOCAMELID_READY_CHAT=0
   --dry-run                        Print the resolved readiness plan without loading the model
 USAGE
@@ -100,11 +100,21 @@ chat | model | q8-chat | q8-model)
 esac
 SMOKE_PROMPT="${NANOCAMELID_READY_SMOKE_PROMPT:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${NANOCAMELID_READY_SMOKE_TOKENS:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
-CHAT_PROMPT="${1:-${NANOCAMELID_READY_PROMPT:-$SMOKE_PROMPT}}"
-CHAT_TOKENS="${2:-${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}}"
 CHAT_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
 CHAT_ENABLED="${CHAT_ENABLED_OVERRIDE:-${NANOCAMELID_READY_CHAT:-1}}"
 CHAT_ENABLED_LOWER="$(printf '%s' "$CHAT_ENABLED" | tr '[:upper:]' '[:lower:]')"
+case "$CHAT_ENABLED_LOWER" in
+  0 | false | no)
+    SMOKE_PROMPT="${1:-$SMOKE_PROMPT}"
+    SMOKE_TOKENS="${2:-$SMOKE_TOKENS}"
+    CHAT_PROMPT="$SMOKE_PROMPT"
+    CHAT_TOKENS="$SMOKE_TOKENS"
+    ;;
+  *)
+    CHAT_PROMPT="${1:-${NANOCAMELID_READY_PROMPT:-$SMOKE_PROMPT}}"
+    CHAT_TOKENS="${2:-${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}}"
+    ;;
+esac
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"

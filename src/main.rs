@@ -780,12 +780,16 @@ fn print_ready_usage() {
     );
     println!();
     println!("Options:");
-    println!("  --no-chat, --smoke-only                  Stop after inspect and smoke");
+    println!(
+        "  --no-chat, --smoke-only                  Stop after inspect and smoke; positionals override the smoke prompt"
+    );
     println!("  --chat                                   Force the direct chat turn");
     println!(
         "  --dry-run                                Print the resolved readiness plan without loading the model"
     );
-    println!("  [prompt] [max_tokens]                    Override the final direct chat turn");
+    println!(
+        "  [prompt] [max_tokens]                    Override the final direct chat turn unless direct chat is disabled"
+    );
     println!();
     println!("Env:");
     println!("  {SMOKE_MODEL_GGUF_ENV:<38} Override the 1B readiness GGUF path");
@@ -1226,17 +1230,34 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
         _ => smoke_defaults.kind,
     };
 
-    let chat_prompt_override = smoke_args.get(option_idx).cloned();
-    let chat_tokens_override = smoke_args
+    let positional_prompt = smoke_args.get(option_idx).cloned();
+    let positional_tokens = smoke_args
         .get(option_idx + 1)
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|&value| value > 0);
+    let smoke_only = chat_enabled_override == Some(false);
+
+    let (smoke_prompt, smoke_tokens, chat_prompt_override, chat_tokens_override) = if smoke_only {
+        (
+            positional_prompt.unwrap_or_else(|| smoke_defaults.prompt.clone()),
+            positional_tokens.unwrap_or(smoke_defaults.max_tokens),
+            None,
+            None,
+        )
+    } else {
+        (
+            smoke_defaults.prompt,
+            smoke_defaults.max_tokens,
+            positional_prompt,
+            positional_tokens,
+        )
+    };
 
     let smoke = Smoke1BArgs {
         kind,
         model_path,
-        prompt: smoke_defaults.prompt,
-        max_tokens: smoke_defaults.max_tokens,
+        prompt: smoke_prompt,
+        max_tokens: smoke_tokens,
     };
     Ok(Ready1BArgs {
         smoke,
@@ -4321,11 +4342,11 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
         assert_eq!(parsed.smoke.model_path, "/models/custom.GGUF");
-        assert_eq!(parsed.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
-        assert_eq!(parsed.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
+        assert_eq!(parsed.smoke.prompt, "Say hi");
+        assert_eq!(parsed.smoke.max_tokens, 4);
         assert_eq!(parsed.chat_enabled_override, Some(false));
-        assert_eq!(parsed.chat_prompt_override, Some("Say hi".to_owned()));
-        assert_eq!(parsed.chat_tokens_override, Some(4));
+        assert_eq!(parsed.chat_prompt_override, None);
+        assert_eq!(parsed.chat_tokens_override, None);
     }
 
     #[test]
@@ -4335,6 +4356,7 @@ flags\t\t: sse4_2 avx2
                 "--smoke-only".to_owned(),
                 "model".to_owned(),
                 "Hello".to_owned(),
+                "2".to_owned(),
             ],
             None,
             "/mnt/nanocamelid",
@@ -4347,10 +4369,39 @@ flags\t\t: sse4_2 avx2
             parsed.smoke.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
         );
-        assert_eq!(parsed.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
-        assert_eq!(parsed.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
+        assert_eq!(parsed.smoke.prompt, "Hello");
+        assert_eq!(parsed.smoke.max_tokens, 2);
         assert_eq!(parsed.chat_enabled_override, Some(false));
-        assert_eq!(parsed.chat_prompt_override, Some("Hello".to_owned()));
+        assert_eq!(parsed.chat_prompt_override, None);
+        assert_eq!(parsed.chat_tokens_override, None);
+    }
+
+    #[test]
+    fn ready_1b_args_no_chat_uses_positionals_for_smoke_gate() {
+        let parsed = parse_ready_1b_args_with_env_and_smoke_defaults(
+            &[
+                "chat".to_owned(),
+                "Smoke this".to_owned(),
+                "3".to_owned(),
+                "--no-chat".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+            SmokeDefaults {
+                kind: SmokeKind::Q8Model,
+                prompt: "Default smoke".to_owned(),
+                max_tokens: 2,
+            },
+        )
+        .expect("no-chat ready args should parse");
+
+        assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
+        assert_eq!(parsed.smoke.prompt, "Smoke this");
+        assert_eq!(parsed.smoke.max_tokens, 3);
+        assert_eq!(parsed.chat_enabled_override, Some(false));
+        assert_eq!(parsed.chat_prompt_override, None);
+        assert_eq!(parsed.chat_tokens_override, None);
     }
 
     #[test]
@@ -4394,9 +4445,11 @@ flags\t\t: sse4_2 avx2
         assert!(parsed.dry_run);
         assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
         assert_eq!(parsed.smoke.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.smoke.prompt, "Say hi");
+        assert_eq!(parsed.smoke.max_tokens, 4);
         assert_eq!(parsed.chat_enabled_override, Some(false));
-        assert_eq!(parsed.chat_prompt_override, Some("Say hi".to_owned()));
-        assert_eq!(parsed.chat_tokens_override, Some(4));
+        assert_eq!(parsed.chat_prompt_override, None);
+        assert_eq!(parsed.chat_tokens_override, None);
     }
 
     #[test]
