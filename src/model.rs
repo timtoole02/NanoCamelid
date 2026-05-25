@@ -190,6 +190,21 @@ pub struct LlamaWeights {
     pub layers: Vec<LlamaLayerWeights>,
 }
 
+pub struct DistributedLlamaWeights {
+    pub token_embeddings: Option<Vec<f32>>,
+    pub output_norm: Option<Vec<f32>>,
+    pub output_projection: Option<QuantizedMatrix>,
+    pub layer_start: usize,
+    pub layer_end: usize,
+    pub layers: Vec<LlamaLayerWeights>,
+}
+
+impl DistributedLlamaWeights {
+    pub fn owns_layer(&self, layer_idx: usize) -> bool {
+        layer_idx >= self.layer_start && layer_idx < self.layer_end
+    }
+}
+
 pub enum QuantizedMatrix {
     Q8_0(Vec<Q8_0Block>),
     Q4_0(Vec<Q4_0Block>),
@@ -288,35 +303,7 @@ impl LlamaWeights {
 
         let mut layers = Vec::with_capacity(config.block_count);
         for i in 0..config.block_count {
-            let attention_norm =
-                load_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_norm.weight"))?;
-            let wq = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_q.weight"))?;
-            let wk = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_k.weight"))?;
-            let wav = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_v.weight"))?;
-            let wq_bias = load_optional_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_q.bias"))?;
-            let wk_bias = load_optional_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_k.bias"))?;
-            let wav_bias = load_optional_f32_or_f16(&mmap, gguf, &format!("blk.{i}.attn_v.bias"))?;
-            let wo = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.attn_output.weight"))?;
-
-            let ffn_norm = load_f32_or_f16(&mmap, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
-            let w1 = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
-            let w3 = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?;
-            let w2 = load_quantized_matrix(&mmap, gguf, &format!("blk.{i}.ffn_down.weight"))?;
-
-            layers.push(LlamaLayerWeights {
-                attention_norm,
-                wq,
-                wk,
-                wav,
-                wq_bias,
-                wk_bias,
-                wav_bias,
-                wo,
-                ffn_norm,
-                w1,
-                w3,
-                w2,
-            });
+            layers.push(load_layer_weights(&mmap, gguf, i)?);
         }
 
         Ok(Self {
@@ -326,6 +313,110 @@ impl LlamaWeights {
             layers,
         })
     }
+
+    pub fn load_distributed(
+        path: &Path,
+        config: &LlamaModelConfig,
+        gguf: &GgufFile,
+        start_layer: usize,
+        end_layer: usize,
+    ) -> Result<DistributedLlamaWeights, String> {
+        validate_model_tensors(gguf, config)?;
+        validate_distributed_layer_range(config, start_layer, end_layer)?;
+        let file = File::open(path).map_err(|e| e.to_string())?;
+        let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+
+        let is_first = start_layer == 0;
+        let is_last = end_layer == config.block_count;
+
+        let token_embeddings = if is_first {
+            Some(load_f32_or_f16(&mmap, gguf, "token_embd.weight")?)
+        } else {
+            None
+        };
+
+        let output_norm = if is_last {
+            Some(load_f32_or_f16(&mmap, gguf, "output_norm.weight")?)
+        } else {
+            None
+        };
+
+        let output_projection = if is_last && gguf.tensors.iter().any(|t| t.name == "output.weight")
+        {
+            Some(load_quantized_matrix(&mmap, gguf, "output.weight")?)
+        } else {
+            None
+        };
+
+        let mut layers = Vec::with_capacity(end_layer - start_layer);
+        for i in start_layer..end_layer {
+            layers.push(load_layer_weights(&mmap, gguf, i)?);
+        }
+
+        Ok(DistributedLlamaWeights {
+            token_embeddings,
+            output_norm,
+            output_projection,
+            layer_start: start_layer,
+            layer_end: end_layer,
+            layers,
+        })
+    }
+}
+
+fn load_layer_weights(
+    mmap: &Mmap,
+    gguf: &GgufFile,
+    layer_idx: usize,
+) -> Result<LlamaLayerWeights, String> {
+    let i = layer_idx;
+    let attention_norm = load_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_norm.weight"))?;
+    let wq = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_q.weight"))?;
+    let wk = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_k.weight"))?;
+    let wav = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_v.weight"))?;
+    let wq_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_q.bias"))?;
+    let wk_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_k.bias"))?;
+    let wav_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_v.bias"))?;
+    let wo = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_output.weight"))?;
+
+    let ffn_norm = load_f32_or_f16(mmap, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
+    let w1 = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
+    let w3 = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?;
+    let w2 = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_down.weight"))?;
+
+    Ok(LlamaLayerWeights {
+        attention_norm,
+        wq,
+        wk,
+        wav,
+        wq_bias,
+        wk_bias,
+        wav_bias,
+        wo,
+        ffn_norm,
+        w1,
+        w3,
+        w2,
+    })
+}
+
+fn validate_distributed_layer_range(
+    config: &LlamaModelConfig,
+    start_layer: usize,
+    end_layer: usize,
+) -> Result<(), String> {
+    if start_layer >= end_layer {
+        return Err(format!(
+            "distributed layer range must be non-empty, got {start_layer}..{end_layer}"
+        ));
+    }
+    if end_layer > config.block_count {
+        return Err(format!(
+            "distributed layer range {start_layer}..{end_layer} exceeds block count {}",
+            config.block_count
+        ));
+    }
+    Ok(())
 }
 
 pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Result<(), String> {
@@ -752,7 +843,10 @@ mod tests {
 
     use crate::gguf::{GgufFile, GgufMetadataValue, GgufTensorDescriptor, GgufTensorType};
 
-    use super::{LlamaModelConfig, validate_model_tensors};
+    use super::{
+        DistributedLlamaWeights, LlamaModelConfig, validate_distributed_layer_range,
+        validate_model_tensors,
+    };
 
     #[test]
     fn infers_vocab_size_from_transposed_token_embedding() {
@@ -851,6 +945,40 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("output.weight"));
         assert!(err.contains("expected_n_bytes=69632000"));
+    }
+
+    #[test]
+    fn validates_distributed_layer_ranges() {
+        let config = LlamaModelConfig {
+            block_count: 28,
+            ..base_config()
+        };
+
+        validate_distributed_layer_range(&config, 0, 14).expect("first half is valid");
+        validate_distributed_layer_range(&config, 14, 28).expect("second half is valid");
+
+        let err = validate_distributed_layer_range(&config, 4, 4).unwrap_err();
+        assert!(err.contains("non-empty"));
+
+        let err = validate_distributed_layer_range(&config, 20, 29).unwrap_err();
+        assert!(err.contains("exceeds block count 28"));
+    }
+
+    #[test]
+    fn distributed_weights_report_owned_layer_range() {
+        let weights = DistributedLlamaWeights {
+            token_embeddings: None,
+            output_norm: None,
+            output_projection: None,
+            layer_start: 7,
+            layer_end: 14,
+            layers: Vec::new(),
+        };
+
+        assert!(!weights.owns_layer(6));
+        assert!(weights.owns_layer(7));
+        assert!(weights.owns_layer(13));
+        assert!(!weights.owns_layer(14));
     }
 
     fn base_config() -> LlamaModelConfig {
