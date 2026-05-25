@@ -131,6 +131,19 @@ Llama 3.2 3B Instruct Q4_0 is also supported as a Pi-local single-node row:
   passed with `max_logit_delta: 0.00000000` and generated `"Hello!"`
 - capped 8096-context TUI launch: `./scripts/pi/chat-3b.sh` loaded with `ctx 8096`
 
+Small single-Pi Llama support now has row-level evidence for load, direct
+completion, chat completion, compact model parity, broader chat-template parity,
+metadata-backed Jinja template detection, template-shape rendering, unique chat
+perf/RSS sampling, and capped context packs. The perf/RSS samples below use a
+512-token runtime context cap for the unique direct/chat runs; the context pack
+checks run `smoke ... chat` at each listed cap.
+
+| Model row | Load + metadata/Jinja template | Completion | Chat completion perf/RSS | Compact parity | Broader chat parity | Checked context packs |
+| --- | --- | --- | --- | --- | --- | --- |
+| Llama 3.2 1B Instruct Q4_0 | `ready`; `tensor_layouts: ok`; `tokenizer_chat_template: true`; `llama3_instruct` | `generate` passed; 4 tokens at `4.71 tok/sec` | `chat` passed; 2 tokens at `3.58 tok/sec`; sampled HWM about `2.37 GiB` | `q8-model`: `max_logit_delta: 0.00000000`, status ok | `q8-chat`: renderer `llama3_instruct`, `max_logit_delta: 0.00000000`, status ok | `512`, `1024`, `2048`, `4096`, `8192`: all passed with exact parity |
+| Llama 3.2 1B Instruct Q8_0 | `ready`; `tensor_layouts: ok`; `tokenizer_chat_template: true`; `llama3_instruct` | `generate` passed; 4 tokens at `4.12 tok/sec` | `chat` passed; 2 tokens at `3.13 tok/sec`; sampled HWM about `3.31 GiB` | `q8-model`: `max_logit_delta: 0.00000000`, status ok | `q8-chat`: renderer `llama3_instruct`, `max_logit_delta: 0.00000000`, status ok | `512`, `1024`, `2048`, `4096`, `8192`: all passed with exact parity |
+| Llama 3.2 3B Instruct Q4_0 | `ready`; `tensor_layouts: ok`; `tokenizer_chat_template: true`; `llama3_instruct` | `generate` passed; 4 tokens at `2.71 tok/sec` | `chat` passed; 2 tokens at `2.04 tok/sec`; sampled HWM about `4.94 GiB` | `q8-model`: `max_logit_delta: 0.00000000`, status ok | `q8-chat`: renderer `llama3_instruct`, `max_logit_delta: 0.00000000`, status ok | `512`, `1024`, `2048`, `4096`, `8192`: all passed with exact parity |
+
 On the Pi 2 benchmark lane, Qwen2.5-Coder-7B-Instruct Q4_0 currently validates
 through the smoke path with exact scalar-vs-selected logit parity:
 
