@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [chat_prompt] [chat_tokens] [--no-chat|--smoke-only|--chat]
+Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [chat_prompt] [chat_tokens] [--no-chat|--smoke-only|--chat|--dry-run]
 
 Runs NanoCamelid's Pi-local Llama 3.2 1B readiness gate:
   1. inspect the selected GGUF
@@ -30,6 +30,7 @@ Useful env:
   NANOCAMELID_READY_CHAT=0         Stop after inspect and smoke
   --no-chat, --smoke-only          Stop after inspect and smoke
   --chat                           Force the direct chat turn even when NANOCAMELID_READY_CHAT=0
+  --dry-run                        Print the resolved readiness plan without loading the model
 USAGE
 }
 
@@ -46,6 +47,7 @@ looks_like_gguf_path() {
 }
 
 CHAT_ENABLED_OVERRIDE=""
+DRY_RUN=0
 POSITIONAL_ARGS=()
 for arg in "$@"; do
   case "$arg" in
@@ -55,12 +57,19 @@ for arg in "$@"; do
     --chat)
       CHAT_ENABLED_OVERRIDE="1"
       ;;
+    --dry-run)
+      DRY_RUN=1
+      ;;
     *)
       POSITIONAL_ARGS+=("$arg")
       ;;
   esac
 done
-set -- "${POSITIONAL_ARGS[@]}"
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+  set -- "${POSITIONAL_ARGS[@]}"
+else
+  set --
+fi
 
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$WORKSPACE/src/NanoCamelid}"
@@ -104,12 +113,6 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
-if [[ ! -f "$MODEL" ]]; then
-  echo "Model not found: $MODEL" >&2
-  echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
-  exit 2
-fi
-
 if [[ -x "$BINARY" ]]; then
   launcher_mode="binary"
 elif command -v cargo >/dev/null 2>&1; then
@@ -130,6 +133,31 @@ run_nanocamelid() {
   export CARGO_TARGET_DIR="$TARGET_DIR"
   cargo run --release -- "$@"
 }
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  READY_ARGS=(ready 1b "$MODEL" "$SMOKE_KIND" "$CHAT_PROMPT" "$CHAT_TOKENS" --dry-run)
+  case "$CHAT_ENABLED_LOWER" in
+    0 | false | no)
+      READY_ARGS+=(--no-chat)
+      ;;
+    *)
+      if [[ -n "$CHAT_ENABLED_OVERRIDE" ]]; then
+        READY_ARGS+=(--chat)
+      fi
+      ;;
+  esac
+  export NANOCAMELID_READY_SMOKE_PROMPT="$SMOKE_PROMPT"
+  export NANOCAMELID_READY_SMOKE_TOKENS="$SMOKE_TOKENS"
+  export NANOCAMELID_READY_TEMP="$CHAT_TEMP"
+  run_nanocamelid "${READY_ARGS[@]}"
+  exit 0
+fi
+
+if [[ ! -f "$MODEL" ]]; then
+  echo "Model not found: $MODEL" >&2
+  echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
+  exit 2
+fi
 
 echo "==> Inspecting 1B model: $MODEL"
 run_nanocamelid inspect "$MODEL"

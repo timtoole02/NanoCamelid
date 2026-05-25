@@ -345,6 +345,7 @@ turn:
 ```bash
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/ready-1b.sh --no-chat
+./scripts/pi/ready-1b.sh --dry-run
 ```
 
 The same gate is available through the CLI when you are already using the
@@ -358,10 +359,10 @@ nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in
 ```
 
 Use `--no-chat` or `--smoke-only` for the inspect plus smoke-only form when you
-want the CLI gate to validate the model path without launching the final direct
+want the gate to validate the model path without launching the final direct
 chat turn. Use `--dry-run` to print the resolved 1B model path, smoke settings,
 and direct-chat gate without loading the GGUF. For non-interactive automation,
-the CLI also honors
+the CLI and `ready-1b.sh` also honor
 `NANOCAMELID_READY_SMOKE_KIND`, `NANOCAMELID_READY_SMOKE_PROMPT`, and
 `NANOCAMELID_READY_SMOKE_TOKENS` as smoke defaults before the final direct chat
 turn.
