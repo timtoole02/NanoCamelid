@@ -125,7 +125,9 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
-if [[ -x "$BINARY" ]]; then
+if [[ "$DRY_RUN" == "1" ]] && command -v cargo >/dev/null 2>&1; then
+  launcher_mode="cargo"
+elif [[ -x "$BINARY" ]]; then
   launcher_mode="binary"
 elif command -v cargo >/dev/null 2>&1; then
   launcher_mode="cargo"

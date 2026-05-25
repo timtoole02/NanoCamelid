@@ -591,11 +591,11 @@ Build and test remotely:
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
-On a prepared Pi workspace, `remote_build.sh` now reuses the same default 1B
-model selection as `scripts/pi/smoke-1b.sh`: it prefers the Pi-local
-`Llama-3.2-1B-Instruct-Q4_0.gguf`, falls back to `...Q8_0.gguf`, and runs the
-real instruct/chat smoke by default. Disable that model-backed gate explicitly
-with:
+On a prepared Pi workspace, `remote_build.sh` now runs the same 1B readiness
+gate as `scripts/pi/ready-1b.sh`: it prefers the Pi-local
+`Llama-3.2-1B-Instruct-Q4_0.gguf`, falls back to `...Q8_0.gguf`, then runs
+inspect, scalar-vs-selected smoke validation, and one direct chat turn by
+default. Disable that model-backed gate explicitly with:
 
 ```bash
 NANOCAMELID_REMOTE_SMOKE=0 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
@@ -608,13 +608,19 @@ NANOCAMELID_REMOTE_SMOKE_GGUF=/path/on/pi/model.gguf \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
-To override the default chat smoke kind, prompt, or token budget:
+To override the default smoke kind, prompt, or token budget:
 
 ```bash
 NANOCAMELID_REMOTE_SMOKE_KIND=model \
 NANOCAMELID_SMOKE_PROMPT="Hello" \
 NANOCAMELID_SMOKE_TOKENS=1 \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
+```
+
+To keep the remote gate at inspect+smoke only:
+
+```bash
+NANOCAMELID_REMOTE_READY_CHAT=0 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
 Remote builds default to clean git fast-forward deployment so Pi-local edits are

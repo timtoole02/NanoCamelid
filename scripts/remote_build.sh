@@ -13,6 +13,10 @@ REMOTE_SMOKE_GGUF="${NANOCAMELID_REMOTE_SMOKE_GGUF:-}"
 REMOTE_SMOKE_KIND="${NANOCAMELID_REMOTE_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_SMOKE_TOKENS:-8}"
+READY_CHAT="${NANOCAMELID_REMOTE_READY_CHAT:-${NANOCAMELID_READY_CHAT:-1}}"
+READY_PROMPT="${NANOCAMELID_READY_PROMPT:-$SMOKE_PROMPT}"
+READY_TOKENS="${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}"
+READY_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
 
 if [[ -z "$PI_HOST" ]]; then
   echo "Usage: $0 <pi-ip-or-hostname> [ssh-key-path] [pi-username]" >&2
@@ -36,8 +40,12 @@ printf -v REMOTE_SMOKE_GGUF_ARG '%q' "$REMOTE_SMOKE_GGUF"
 printf -v REMOTE_SMOKE_KIND_ARG '%q' "$REMOTE_SMOKE_KIND"
 printf -v REMOTE_SMOKE_PROMPT_ARG '%q' "$SMOKE_PROMPT"
 printf -v REMOTE_SMOKE_TOKENS_ARG '%q' "$SMOKE_TOKENS"
+printf -v READY_CHAT_ARG '%q' "$READY_CHAT"
+printf -v READY_PROMPT_ARG '%q' "$READY_PROMPT"
+printf -v READY_TOKENS_ARG '%q' "$READY_TOKENS"
+printf -v READY_TEMP_ARG '%q' "$READY_TEMP"
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
-  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG bash" << 'EOF'
+  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG bash" << 'EOF'
   # Export Cargo path to make sure cargo commands work in non-interactive shells
   export PATH="$HOME/.cargo/bin:$PATH"
   if [ -f "$HOME/.cargo/env" ]; then
@@ -89,20 +97,8 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
   default_q4_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
   default_q8_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
 
-  if [ -n "$REMOTE_SMOKE_GGUF" ]; then
-    echo "==> Inspecting explicit 1B smoke model:"
-    cargo run --release -- inspect "$REMOTE_SMOKE_GGUF"
-  elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
-    echo "==> Inspecting default Pi-local 1B model:"
-    NANOCAMELID_WORKSPACE="$PI_WORKSPACE" cargo run --release -- inspect 1b
-  else
-    echo "==> Skipping 1B inspect; no explicit GGUF path was set and no default Pi-local 1B model was found."
-  fi
-
   case "$REMOTE_SMOKE_KIND" in
-    chat) generic_smoke_kind="q8-chat" ;;
-    model) generic_smoke_kind="q8-model" ;;
-    q8-chat|q8-model) generic_smoke_kind="$REMOTE_SMOKE_KIND" ;;
+    chat | model | q8-chat | q8-model) ;;
     *)
       echo "Unknown smoke kind: $REMOTE_SMOKE_KIND" >&2
       echo "Expected chat, model, q8-chat, or q8-model." >&2
@@ -111,21 +107,32 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
   esac
 
   if [ "$REMOTE_SMOKE_ENABLED" = "0" ]; then
-    echo "==> Skipping model-backed smoke; NANOCAMELID_REMOTE_SMOKE=0"
+    echo "==> Skipping model-backed 1B readiness; NANOCAMELID_REMOTE_SMOKE=0"
   elif [ -n "$REMOTE_SMOKE_GGUF" ]; then
-    echo "==> Running model-backed smoke: $REMOTE_SMOKE_KIND"
-    NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-neon}" \
-      NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}" \
-      cargo run --release -- smoke "$generic_smoke_kind" "$REMOTE_SMOKE_GGUF" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
-  elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
-    echo "==> Running default Pi-local 1B smoke: $REMOTE_SMOKE_KIND"
+    echo "==> Running explicit 1B readiness gate: $REMOTE_SMOKE_KIND"
     NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
       NANOCAMELID_REPO="$PI_REPO" \
-      NANOCAMELID_SMOKE_KIND="$REMOTE_SMOKE_KIND" \
-      NANOCAMELID_SMOKE_PROMPT="$SMOKE_PROMPT" \
-      NANOCAMELID_SMOKE_TOKENS="$SMOKE_TOKENS" \
-      ./scripts/pi/smoke-1b.sh
+      NANOCAMELID_READY_CHAT="$READY_CHAT" \
+      NANOCAMELID_READY_SMOKE_KIND="$REMOTE_SMOKE_KIND" \
+      NANOCAMELID_READY_SMOKE_PROMPT="$SMOKE_PROMPT" \
+      NANOCAMELID_READY_SMOKE_TOKENS="$SMOKE_TOKENS" \
+      NANOCAMELID_READY_PROMPT="$READY_PROMPT" \
+      NANOCAMELID_READY_TOKENS="$READY_TOKENS" \
+      NANOCAMELID_READY_TEMP="$READY_TEMP" \
+      ./scripts/pi/ready-1b.sh "$REMOTE_SMOKE_GGUF"
+  elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
+    echo "==> Running default Pi-local 1B readiness gate: $REMOTE_SMOKE_KIND"
+    NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
+      NANOCAMELID_REPO="$PI_REPO" \
+      NANOCAMELID_READY_CHAT="$READY_CHAT" \
+      NANOCAMELID_READY_SMOKE_KIND="$REMOTE_SMOKE_KIND" \
+      NANOCAMELID_READY_SMOKE_PROMPT="$SMOKE_PROMPT" \
+      NANOCAMELID_READY_SMOKE_TOKENS="$SMOKE_TOKENS" \
+      NANOCAMELID_READY_PROMPT="$READY_PROMPT" \
+      NANOCAMELID_READY_TOKENS="$READY_TOKENS" \
+      NANOCAMELID_READY_TEMP="$READY_TEMP" \
+      ./scripts/pi/ready-1b.sh
   else
-    echo "==> Skipping model-backed smoke; no explicit GGUF path was set and no default Pi-local 1B model was found."
+    echo "==> Skipping model-backed 1B readiness; no explicit GGUF path was set and no default Pi-local 1B model was found."
   fi
 EOF
