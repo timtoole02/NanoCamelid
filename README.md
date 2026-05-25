@@ -26,6 +26,10 @@ evidence.
   available for comparison.
 - Scalar reference paths remain in the test suite. Optimized kernels are kept
   tied to parity tests and Pi-side smoke evidence.
+- The working model catalog lives in
+  [`docs/MODEL_CATALOG.md`](docs/MODEL_CATALOG.md). It separates Pi-smoked
+  supported rows from likely-compatible candidates and blocked runtime families
+  such as Mixtral/MoE.
 
 ## High-Performance Architecture
 
@@ -135,6 +139,21 @@ it is not a practical Pi target yet:
   prompt prefill about `6.6s`, 8-token generation `46.06s` (`0.17 tok/sec`)
 - Q6_K SDOT preserved the initial smoke output and reduced a capped one-token
   Strand run from about `78s` to about `54s`.
+
+Additional small-model catalog rows now validate on the Pi smoke lane:
+
+- Qwen2.5 0.5B Instruct Q4_0: `ready`, 8-token generation at about
+  `33.31 tok/sec`
+- Qwen2.5-Coder 0.5B Instruct Q4_0: `ready`, 8-token generation at about
+  `33.28 tok/sec`
+- DeepSeek-R1-Distill-Qwen 1.5B Q4_0: `ready`, 8-token generation at about
+  `13.25 tok/sec`
+- Mistral 7B Instruct v0.1 Q4_0: `ready`, 4-token generation at about
+  `3.68 tok/sec`
+
+Mixtral is intentionally not listed as supported yet. It is a routed MoE model
+family and needs expert tensor loading, router logits, and expert FFN execution
+before NanoCamelid can claim it honestly.
 
 ## Runtime Design
 
