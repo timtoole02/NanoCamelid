@@ -62,7 +62,20 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             match resolve_inspect_model_path_arg(args.get(1)) {
-                Some(path) => inspect_gguf(Path::new(&path)),
+                Some(path) => {
+                    let model_path = Path::new(&path);
+                    match args.get(1).map(String::as_str) {
+                        Some(alias) if is_llama32_1b_alias(alias) && !model_path.is_file() => {
+                            eprintln!("{}", llama32_1b_model_not_found_message(model_path));
+                            ExitCode::from(2)
+                        }
+                        Some(alias) if is_llama32_3b_alias(alias) && !model_path.is_file() => {
+                            eprintln!("{}", llama32_3b_model_not_found_message(model_path));
+                            ExitCode::from(2)
+                        }
+                        _ => inspect_gguf(model_path),
+                    }
+                }
                 None => {
                     eprintln!("missing GGUF path; pass one or set {DEFAULT_MODEL_GGUF_ENV}");
                     print_help(HelpTopic::Inspect);
@@ -250,10 +263,7 @@ fn main() -> ExitCode {
                         Ok(parsed) => {
                             let model_path = Path::new(&parsed.model_path);
                             if !model_path.is_file() {
-                                eprintln!(
-                                    "1B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_1B_Q4_MODEL} or {LLAMA32_1B_Q8_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
-                                    model_path.display()
-                                );
+                                eprintln!("{}", llama32_1b_model_not_found_message(model_path));
                                 return ExitCode::from(2);
                             }
                             match parsed.kind {
@@ -277,10 +287,7 @@ fn main() -> ExitCode {
                         Ok(parsed) => {
                             let model_path = Path::new(&parsed.model_path);
                             if !model_path.is_file() {
-                                eprintln!(
-                                    "3B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_3B_Q4_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
-                                    model_path.display()
-                                );
+                                eprintln!("{}", llama32_3b_model_not_found_message(model_path));
                                 return ExitCode::from(2);
                             }
                             match parsed.kind {
@@ -528,6 +535,10 @@ fn print_inspect_usage() {
     println!("Env:");
     println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect and generate"
+    );
+    println!("  {SMOKE_MODEL_GGUF_ENV}                    Override the 1b/3b inspect aliases");
+    println!(
+        "  {WORKSPACE_ENV}                         Pi workspace for the 1b/3b aliases; default {DEFAULT_PI_WORKSPACE}"
     );
 }
 
@@ -1181,6 +1192,20 @@ fn smoke_model_path_from_env() -> Option<String> {
     env::var(SMOKE_MODEL_GGUF_ENV)
         .ok()
         .or_else(default_model_path_from_env)
+}
+
+fn llama32_1b_model_not_found_message(model_path: &Path) -> String {
+    format!(
+        "1B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_1B_Q4_MODEL} or {LLAMA32_1B_Q8_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
+        model_path.display()
+    )
+}
+
+fn llama32_3b_model_not_found_message(model_path: &Path) -> String {
+    format!(
+        "3B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_3B_Q4_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
+        model_path.display()
+    )
 }
 
 fn print_probe() {
@@ -1942,10 +1967,7 @@ fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode
 fn run_ready_1b(parsed: Smoke1BArgs) -> ExitCode {
     let model_path = Path::new(&parsed.model_path);
     if !model_path.is_file() {
-        eprintln!(
-            "1B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_1B_Q4_MODEL} or {LLAMA32_1B_Q8_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
-            model_path.display()
-        );
+        eprintln!("{}", llama32_1b_model_not_found_message(model_path));
         return ExitCode::from(2);
     }
 
@@ -3163,7 +3185,10 @@ fn runtime_dotprod() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
 
     use nanocamelid::gguf::{GgufFile, GgufMetadataValue, GgufTensorDescriptor, GgufTensorType};
     use nanocamelid::q8;
@@ -3174,7 +3199,8 @@ mod tests {
         LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, SmokeKind,
         cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
         default_llama32_3b_model_path, device_model, help_topic_for_args, help_topic_named,
-        inspect_runtime_summary, is_help_flag, parse_cpu_list, parse_generate_args_with_env,
+        inspect_runtime_summary, is_help_flag, llama32_1b_model_not_found_message,
+        llama32_3b_model_not_found_message, parse_cpu_list, parse_generate_args_with_env,
         parse_generate_args_with_env_and_workspace, parse_smoke_1b_args_with_env,
         parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
         parse_tui_args_with_env_and_workspace, resolve_llama32_1b_model_path_with_workspace,
@@ -3672,6 +3698,24 @@ flags\t\t: sse4_2 avx2
             resolve_llama32_3b_model_path_with_workspace(None, "/mnt/nanocamelid"),
             format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
         );
+    }
+
+    #[test]
+    fn llama32_missing_model_messages_include_actionable_defaults() {
+        let one_b = llama32_1b_model_not_found_message(Path::new(
+            "/mnt/nanocamelid/models/missing-1b.gguf",
+        ));
+        assert!(one_b.contains("1B model not found: /mnt/nanocamelid/models/missing-1b.gguf"));
+        assert!(one_b.contains(LLAMA32_1B_Q4_MODEL));
+        assert!(one_b.contains(LLAMA32_1B_Q8_MODEL));
+        assert!(one_b.contains("${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models"));
+
+        let three_b = llama32_3b_model_not_found_message(Path::new(
+            "/mnt/nanocamelid/models/missing-3b.gguf",
+        ));
+        assert!(three_b.contains("3B model not found: /mnt/nanocamelid/models/missing-3b.gguf"));
+        assert!(three_b.contains(LLAMA32_3B_Q4_MODEL));
+        assert!(three_b.contains("${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models"));
     }
 
     #[test]
