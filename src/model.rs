@@ -328,8 +328,9 @@ impl LlamaWeights {
 
         let is_first = start_layer == 0;
         let is_last = end_layer == config.block_count;
+        let has_output_projection = gguf.tensors.iter().any(|t| t.name == "output.weight");
 
-        let token_embeddings = if is_first {
+        let token_embeddings = if is_first || (is_last && !has_output_projection) {
             Some(load_f32_or_f16(&mmap, gguf, "token_embd.weight")?)
         } else {
             None
@@ -341,8 +342,7 @@ impl LlamaWeights {
             None
         };
 
-        let output_projection = if is_last && gguf.tensors.iter().any(|t| t.name == "output.weight")
-        {
+        let output_projection = if is_last && has_output_projection {
             Some(load_quantized_matrix(&mmap, gguf, "output.weight")?)
         } else {
             None
