@@ -602,6 +602,12 @@ Build and test remotely:
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
+Preview the resolved deploy/build/readiness plan without SSH:
+
+```bash
+./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user] git-ff --dry-run
+```
+
 On a prepared Pi workspace, `remote_build.sh` now runs the same 1B readiness
 gate as `scripts/pi/ready-1b.sh`: it prefers the Pi-local
 `Llama-3.2-1B-Instruct-Q4_0.gguf`, falls back to `...Q8_0.gguf`, then runs
