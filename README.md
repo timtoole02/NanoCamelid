@@ -59,6 +59,9 @@ checks without opening the GGUF, so it is safe before the model has been copied.
 `./scripts/pi/model-1b.sh --dry-run` prints the same 1B model resolution plan
 and shows whether the Q4_0, Q8_0, and selected GGUF files exist before you run
 the heavier smoke gate.
+`smoke 1b` now runs the strict Llama 3.2 1B shape audit before the
+scalar-vs-selected smoke validation; dry runs print `shape_audit: enabled` so
+automation can confirm the guard is in the plan without opening the GGUF.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override.

@@ -254,6 +254,7 @@ expect_output "smoke 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama
 expect_output "smoke 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b selected source" "selected_source: " cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- smoke 1b --dry-run
+expect_output "smoke 1b shape audit dry run" "shape_audit: enabled" cargo run -- smoke 1b --dry-run
 expect_failure "smoke 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- smoke 1b --dry-run
 expect_failure "smoke 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- smoke 1b --dry-run
 
@@ -298,6 +299,7 @@ expect_output "smoke-1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama
 expect_output "smoke-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b selected source" "selected_source: " ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/smoke-1b.sh --dry-run
+expect_output "smoke-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/smoke-1b.sh --dry-run
 expect_failure "smoke-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b prompt without explicit kind" "smoke_kind: chat" ./scripts/pi/smoke-1b.sh "Say hello in one sentence." 3 --dry-run
 expect_output "smoke-1b token override without explicit kind" "smoke_tokens: 3" ./scripts/pi/smoke-1b.sh "Say hello in one sentence." 3 --dry-run

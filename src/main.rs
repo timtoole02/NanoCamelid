@@ -294,18 +294,7 @@ fn main() -> ExitCode {
                                     &parsed,
                                 );
                             }
-                            if !model_path.is_file() {
-                                eprintln!("{}", llama32_1b_model_not_found_message(model_path));
-                                return ExitCode::from(2);
-                            }
-                            match parsed.kind {
-                                SmokeKind::Q8Model => {
-                                    smoke_q8_model(model_path, &parsed.prompt, parsed.max_tokens)
-                                }
-                                SmokeKind::Q8Chat => {
-                                    smoke_q8_chat(model_path, &parsed.prompt, parsed.max_tokens)
-                                }
-                            }
+                            run_smoke_1b_gate(model_path, &parsed)
                         }
                         Err(err) => {
                             eprintln!("{err}");
@@ -3207,6 +3196,9 @@ fn print_smoke_dry_run(
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
     println!("context_limit: {}", context_limit_plan_value());
+    if target == "1b" {
+        println!("shape_audit: enabled");
+    }
     println!("smoke_kind: {}", parsed.kind.label());
     println!("smoke_prompt: {}", parsed.prompt);
     println!("smoke_tokens: {}", parsed.max_tokens);
@@ -3421,6 +3413,25 @@ fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> 
         &parsed.prompt,
         &parsed.max_tokens.to_string(),
     ])
+}
+
+fn run_smoke_1b_gate(model_path: &Path, parsed: &Smoke1BArgs) -> ExitCode {
+    if !model_path.is_file() {
+        eprintln!("{}", llama32_1b_model_not_found_message(model_path));
+        return ExitCode::from(2);
+    }
+
+    println!("==> Auditing 1B model shape: {}", model_path.display());
+    let model_audit_code = audit_llama32_1b_model_shape(model_path);
+    if model_audit_code != ExitCode::SUCCESS {
+        return model_audit_code;
+    }
+
+    println!("==> Running 1B {} smoke gate", parsed.kind.label());
+    match parsed.kind {
+        SmokeKind::Q8Model => smoke_q8_model(model_path, &parsed.prompt, parsed.max_tokens),
+        SmokeKind::Q8Chat => smoke_q8_chat(model_path, &parsed.prompt, parsed.max_tokens),
+    }
 }
 
 fn context_limit_plan_value() -> String {
