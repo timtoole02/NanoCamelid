@@ -2647,6 +2647,15 @@ fn inspect_gguf(path: &Path) -> ExitCode {
                 Err(err) => println!("  tokenizer_error: {err}"),
             }
 
+            let shape = llama32_1b_shape_audit(&file);
+            println!(
+                "  llama32_1b_shape: {}",
+                if shape.ready { "ok" } else { "mismatch" }
+            );
+            if !shape.mismatches.is_empty() {
+                println!("  llama32_1b_mismatches: {}", shape.mismatches.join("; "));
+            }
+
             let rope_prefix = runtime
                 .model_config
                 .as_ref()
@@ -2739,6 +2748,87 @@ struct InspectTokenizerSummary {
     eos: Option<u32>,
     eot: Option<u32>,
     eom: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelShapeAudit {
+    label: &'static str,
+    ready: bool,
+    mismatches: Vec<String>,
+}
+
+fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
+    let mut mismatches = Vec::new();
+    match model::LlamaModelConfig::from_gguf(gguf) {
+        Ok(config) => {
+            check_shape_value(
+                &mut mismatches,
+                "architecture",
+                "llama",
+                config.architecture.as_str(),
+            );
+            check_shape_value(
+                &mut mismatches,
+                "context_length",
+                131_072,
+                config.context_length,
+            );
+            check_shape_value(
+                &mut mismatches,
+                "embedding_length",
+                2_048,
+                config.embedding_length,
+            );
+            check_shape_value(&mut mismatches, "block_count", 16, config.block_count);
+            check_shape_value(
+                &mut mismatches,
+                "feed_forward_length",
+                8_192,
+                config.feed_forward_length,
+            );
+            check_shape_value(
+                &mut mismatches,
+                "attention_head_count",
+                32,
+                config.attention_head_count,
+            );
+            check_shape_value(
+                &mut mismatches,
+                "attention_head_count_kv",
+                8,
+                config.attention_head_count_kv,
+            );
+            check_shape_value(
+                &mut mismatches,
+                "rope_dimension_count",
+                64,
+                config.rope_dimension_count,
+            );
+            check_shape_value(&mut mismatches, "vocab_size", 128_256, config.vocab_size);
+            if (config.rope_freq_base - 500_000.0).abs() > f32::EPSILON {
+                mismatches.push(format!(
+                    "rope_freq_base expected 500000 got {}",
+                    config.rope_freq_base
+                ));
+            }
+        }
+        Err(err) => mismatches.push(format!("config_error {err}")),
+    }
+
+    ModelShapeAudit {
+        label: "llama32_1b",
+        ready: mismatches.is_empty(),
+        mismatches,
+    }
+}
+
+fn check_shape_value<T>(mismatches: &mut Vec<String>, name: &str, expected: T, actual: T)
+where
+    T: std::fmt::Display + PartialEq,
+{
+    if actual != expected {
+        mismatches.push(format!("{name} expected {expected} got {actual}"));
+    }
 }
 
 fn inspect_runtime_summary(gguf: &gguf::GgufFile) -> InspectRuntimeSummary {
@@ -2871,11 +2961,30 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
     println!("selected_model: {}", parsed.model_path);
     println!("selected_exists: {}", model_path.is_file());
 
-    if model_path.is_file() || parsed.dry_run {
-        ExitCode::SUCCESS
-    } else {
+    if parsed.dry_run {
+        return ExitCode::SUCCESS;
+    }
+
+    if !model_path.is_file() {
         eprintln!("{}", llama32_1b_model_not_found_message(model_path));
-        ExitCode::from(2)
+        return ExitCode::from(2);
+    }
+
+    match gguf::read_file(model_path) {
+        Ok(file) => {
+            let shape = llama32_1b_shape_audit(&file);
+            println!("shape_check: {}", shape.label);
+            println!("shape_ready: {}", shape.ready);
+            if !shape.mismatches.is_empty() {
+                println!("shape_mismatches: {}", shape.mismatches.join("; "));
+                return ExitCode::from(2);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("1B model audit failed: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -4567,11 +4676,12 @@ mod tests {
         SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation,
         cpu_model, default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
-        is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
-        looks_like_gguf_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
-        parse_bench_q8_dot_args, parse_cpu_list, parse_generate_args_with_env,
-        parse_generate_args_with_env_and_workspace, parse_model_1b_args_with_path,
-        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
+        is_help_flag, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
+        llama32_3b_model_not_found_message, looks_like_gguf_path, parse_bench_q4_layout_args,
+        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
+        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        parse_model_1b_args_with_path, parse_ready_1b_args_with_env,
+        parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
@@ -6285,6 +6395,42 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn llama32_1b_shape_audit_accepts_expected_metadata() {
+        let fixture = llama32_1b_shape_fixture();
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert_eq!(audit.label, "llama32_1b");
+        assert!(audit.ready);
+        assert!(audit.mismatches.is_empty());
+    }
+
+    #[test]
+    fn llama32_1b_shape_audit_reports_shape_mismatches() {
+        let mut fixture = llama32_1b_shape_fixture();
+        fixture
+            .metadata
+            .insert("llama.block_count".to_owned(), GgufMetadataValue::U32(15));
+        fixture.metadata.insert(
+            "llama.vocab_size".to_owned(),
+            GgufMetadataValue::U32(32_000),
+        );
+
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert!(!audit.ready);
+        assert!(
+            audit
+                .mismatches
+                .contains(&"block_count expected 16 got 15".to_owned())
+        );
+        assert!(
+            audit
+                .mismatches
+                .contains(&"vocab_size expected 128256 got 32000".to_owned())
+        );
+    }
+
+    #[test]
     fn runtime_options_read_qwen2_rope_scaling_metadata() {
         let mut fixture = inspect_fixture(false);
         fixture.metadata.insert(
@@ -6541,6 +6687,53 @@ flags\t\t: sse4_2 avx2
             metadata,
             tensors,
         }
+    }
+
+    fn llama32_1b_shape_fixture() -> GgufFile {
+        let mut fixture = inspect_fixture(false);
+        fixture.metadata.insert(
+            "llama.context_length".to_owned(),
+            GgufMetadataValue::U32(131_072),
+        );
+        fixture.metadata.insert(
+            "llama.embedding_length".to_owned(),
+            GgufMetadataValue::U32(2_048),
+        );
+        fixture
+            .metadata
+            .insert("llama.block_count".to_owned(), GgufMetadataValue::U32(16));
+        fixture.metadata.insert(
+            "llama.feed_forward_length".to_owned(),
+            GgufMetadataValue::U32(8_192),
+        );
+        fixture.metadata.insert(
+            "llama.attention.head_count".to_owned(),
+            GgufMetadataValue::U32(32),
+        );
+        fixture.metadata.insert(
+            "llama.attention.head_count_kv".to_owned(),
+            GgufMetadataValue::U32(8),
+        );
+        fixture.metadata.insert(
+            "llama.rope.dimension_count".to_owned(),
+            GgufMetadataValue::U32(64),
+        );
+        fixture.metadata.insert(
+            "llama.rope.freq_base".to_owned(),
+            GgufMetadataValue::F32(500_000.0),
+        );
+        fixture.metadata.insert(
+            "llama.vocab_size".to_owned(),
+            GgufMetadataValue::U32(128_256),
+        );
+        if let Some(token_embd) = fixture
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.name == "token_embd.weight")
+        {
+            token_embd.dimensions = vec![2_048, 128_256];
+        }
+        fixture
     }
 
     fn tensor_desc(
