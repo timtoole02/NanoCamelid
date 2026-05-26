@@ -286,10 +286,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
     "$(shell_quote "$DEPLOY_MODE")"
   echo "remote_steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo check; cargo build --release; probe; bench q8-dot 1000 3"
   if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" ]]; then
+    echo "readiness_shape_audit: skipped"
     echo "readiness_command: skipped"
   elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
+    echo "readiness_shape_audit: enabled"
     print_readiness_command "$REMOTE_SMOKE_GGUF"
   else
+    echo "readiness_shape_audit: enabled"
     print_readiness_command
   fi
   if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" || -z "$REMOTE_CONTEXT_PACKS" ]]; then

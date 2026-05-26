@@ -3305,6 +3305,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         println!("model: {}", model_path.display());
         println!("model_exists: {}", model_path.is_file());
         println!("context_limit: {}", context_limit_plan_value());
+        println!("shape_audit: enabled");
         println!("smoke_kind: {}", smoke.kind.label());
         println!("smoke_prompt: {}", smoke.prompt);
         println!("smoke_tokens: {}", smoke.max_tokens);

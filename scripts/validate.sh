@@ -265,6 +265,7 @@ echo "==> Checking 1B readiness CLI dry run..."
 cargo run -- ready 1b --dry-run
 expect_output "ready 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" cargo run -- ready 1b --dry-run
 expect_output "ready 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- ready 1b --dry-run
+expect_output "ready 1b shape audit dry run" "shape_audit: enabled" cargo run -- ready 1b --dry-run
 expect_output "ready 1b probe command" "probe_command: nanocamelid probe" cargo run -- ready 1b --dry-run
 expect_output "ready 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- ready 1b --dry-run
 expect_output_order "ready 1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" cargo run -- ready 1b --dry-run
@@ -311,6 +312,7 @@ echo "==> Checking 1B Pi readiness launcher dry run..."
 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b probe command" "probe_command: nanocamelid probe" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
@@ -400,9 +402,11 @@ expect_failure "remote_build invalid readiness temperature" env NANOCAMELID_READ
 echo "==> Checking remote Pi build launcher ignores smoke env when remote smoke is disabled..."
 env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_SMOKE_TOKENS=bad NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_REMOTE_SMOKE_KIND=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build disabled smoke skips shape audit" "readiness_shape_audit: skipped" env NANOCAMELID_REMOTE_SMOKE=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher ignores direct chat env when readiness chat is disabled..."
 env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build shape audit dry run" "readiness_shape_audit: enabled" ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build no-chat readiness command" "readiness_command: NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_SMOKE_KIND=chat" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_no_output "remote_build no-chat omits direct chat token env" "NANOCAMELID_READY_TOKENS=0" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_no_output "remote_build no-chat omits direct chat temp env" "NANOCAMELID_READY_TEMP=bad" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
