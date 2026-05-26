@@ -37,6 +37,7 @@ evidence.
 Quick 1B readiness check on a Pi workspace:
 
 ```bash
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- model 1b --dry-run
 ./scripts/pi/model-1b.sh --dry-run
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/chat-1b.sh --dry-run
@@ -49,6 +50,9 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run --
 `inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
 first, then the Pi-local `Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback
 under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
+`model 1b --dry-run` prints the same selected source, Q4_0/Q8_0 default paths,
+and existence checks from the Rust CLI before the heavier inspect or smoke
+gates.
 `./scripts/pi/model-1b.sh --dry-run` prints the same 1B model resolution plan
 and shows whether the Q4_0, Q8_0, and selected GGUF files exist before you run
 the heavier smoke gate.

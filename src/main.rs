@@ -61,6 +61,35 @@ fn main() -> ExitCode {
             print_help(HelpTopic::TopLevel);
             ExitCode::from(2)
         }
+        Some("model") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Model);
+                return ExitCode::SUCCESS;
+            }
+
+            match args.get(1).map(String::as_str) {
+                Some(alias) if is_llama32_1b_alias(alias) => {
+                    match parse_model_1b_args(&args[2..]) {
+                        Ok(parsed) => run_model_1b_audit(parsed),
+                        Err(err) => {
+                            eprintln!("{err}");
+                            print_help(HelpTopic::Model);
+                            ExitCode::from(2)
+                        }
+                    }
+                }
+                Some(other) => {
+                    eprintln!("unknown model audit target: {other}");
+                    print_help(HelpTopic::Model);
+                    ExitCode::from(2)
+                }
+                None => {
+                    eprintln!("missing model audit target");
+                    print_help(HelpTopic::Model);
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("probe") => {
             if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
                 print_help(HelpTopic::Probe);
@@ -495,6 +524,7 @@ fn ready_chat_temp_from_env_value(value: Option<String>) -> Result<f32, &'static
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpTopic {
     TopLevel,
+    Model,
     Probe,
     Inspect,
     Generate,
@@ -509,6 +539,12 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
     match args.first().map(String::as_str) {
         Some("-h" | "--help") | Some("help") if args.len() == 1 => Some(HelpTopic::TopLevel),
         Some("help") => help_topic_named(args.get(1).map(String::as_str).unwrap_or_default()),
+        Some("model")
+            if args.get(1).is_some_and(|value| is_llama32_1b_alias(value))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Model)
+        }
         Some("inspect")
             if args
                 .get(1)
@@ -562,6 +598,7 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
 
 fn help_topic_named(name: &str) -> Option<HelpTopic> {
     match name {
+        "model" => Some(HelpTopic::Model),
         "probe" => Some(HelpTopic::Probe),
         "inspect" => Some(HelpTopic::Inspect),
         "generate" => Some(HelpTopic::Generate),
@@ -581,6 +618,7 @@ fn is_help_flag(value: &str) -> bool {
 fn print_help(topic: HelpTopic) {
     match topic {
         HelpTopic::TopLevel => print_usage(),
+        HelpTopic::Model => print_model_usage(),
         HelpTopic::Probe => print_probe_usage(),
         HelpTopic::Inspect => print_inspect_usage(),
         HelpTopic::Generate => print_generate_usage(),
@@ -601,6 +639,10 @@ fn print_usage() {
     println!("Commands:");
     println!(
         "  probe                                     Print host CPU and runtime feature information"
+    );
+    println!("  model 1b [model.gguf] [--dry-run]");
+    println!(
+        "                                            Audit the default Llama 3.2 1B model path"
     );
     println!(
         "  inspect <model.gguf>                      Inspect GGUF metadata and tensor layouts"
@@ -656,6 +698,30 @@ fn print_probe_usage() {
     println!(
         "Print host CPU model, feature flags, cpufreq telemetry, isolated CPUs, and runtime SIMD detection."
     );
+}
+
+fn print_model_usage() {
+    println!("NanoCamelid model");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid model 1b [model.gguf] [--dry-run]");
+    println!("  nanocamelid model llama32-1b [model.gguf] [--dry-run]");
+    println!();
+    println!(
+        "Audit the Llama 3.2 1B model selection plan and verify that the selected GGUF exists."
+    );
+    println!();
+    println!("Options:");
+    println!(
+        "  --dry-run                                Print the audit without failing when the selected model is missing"
+    );
+    println!();
+    println!("Env:");
+    println!("  {SMOKE_MODEL_GGUF_ENV:<38} Override the 1B model audit GGUF path");
+    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Shared default GGUF path for inspect/generate/smoke");
+    println!("  {WORKSPACE_ENV:<38} Pi workspace for 1B defaults; default {DEFAULT_PI_WORKSPACE}");
+    println!();
+    println!("`1b` prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then falls back to Q8_0.");
 }
 
 fn print_inspect_usage() {
@@ -1004,6 +1070,16 @@ struct SmokeQ8ModelArgs {
     max_tokens: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct Model1BAuditArgs {
+    workspace: String,
+    q4_model_path: String,
+    q8_model_path: String,
+    model_path: String,
+    model_source: &'static str,
+    dry_run: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmokeKind {
     Q8Model,
@@ -1231,6 +1307,78 @@ fn llama32_1b_workspace_defaults() -> (String, bool) {
     let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
     let q4_exists = Path::new(&q4_path).is_file();
     (workspace, q4_exists)
+}
+
+fn parse_model_1b_args(args: &[String]) -> Result<Model1BAuditArgs, &'static str> {
+    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+    let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+    parse_model_1b_args_with_env(
+        args,
+        model_1b_env_path_and_source(),
+        &workspace,
+        Path::new(&q4_path).is_file(),
+    )
+}
+
+#[cfg(test)]
+fn parse_model_1b_args_with_path(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<Model1BAuditArgs, &'static str> {
+    parse_model_1b_args_with_env(
+        args,
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
+        workspace,
+        q4_exists,
+    )
+}
+
+fn parse_model_1b_args_with_env(
+    args: &[String],
+    env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<Model1BAuditArgs, &'static str> {
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => positionals.push(arg.clone()),
+        }
+    }
+
+    reject_extra_positionals(&positionals, 1, "unexpected extra 1B model audit argument")?;
+
+    if let Some(model_path) = positionals.first()
+        && !looks_like_gguf_path(model_path)
+    {
+        return Err("1B model audit argument must be a .gguf path");
+    }
+
+    let q4_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q4_MODEL);
+    let q8_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q8_MODEL);
+    let (model_path, model_source) = if let Some(model_path) = positionals.first() {
+        (model_path.clone(), "explicit argument")
+    } else if let Some((model_path, source)) = env_model_path {
+        (model_path, source)
+    } else if q4_exists {
+        (q4_model_path.clone(), "workspace Q4_0 default")
+    } else {
+        (q8_model_path.clone(), "workspace Q8_0 fallback")
+    };
+
+    Ok(Model1BAuditArgs {
+        workspace: workspace.to_owned(),
+        q4_model_path,
+        q8_model_path,
+        model_path,
+        model_source,
+        dry_run,
+    })
 }
 
 fn parse_smoke_args(args: &[String]) -> Result<SmokeQ8ModelArgs, &'static str> {
@@ -1810,6 +1958,17 @@ fn smoke_model_path_from_env() -> Option<String> {
     env::var(SMOKE_MODEL_GGUF_ENV)
         .ok()
         .or_else(default_model_path_from_env)
+}
+
+fn model_1b_env_path_and_source() -> Option<(String, &'static str)> {
+    env::var(SMOKE_MODEL_GGUF_ENV)
+        .ok()
+        .map(|path| (path, SMOKE_MODEL_GGUF_ENV))
+        .or_else(|| {
+            env::var(DEFAULT_MODEL_GGUF_ENV)
+                .ok()
+                .map(|path| (path, DEFAULT_MODEL_GGUF_ENV))
+        })
 }
 
 fn llama32_1b_model_not_found_message(model_path: &Path) -> String {
@@ -2662,6 +2821,26 @@ fn print_smoke_dry_run(title: &str, target: &str, model_path: &Path, parsed: &Sm
         "smoke_command: {}",
         smoke_plan_command(target, model_path, parsed)
     );
+}
+
+fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
+    let model_path = Path::new(&parsed.model_path);
+    println!("NanoCamelid Llama 3.2 1B model audit");
+    println!("workspace: {}", parsed.workspace);
+    println!("q4_model: {}", parsed.q4_model_path);
+    println!("q4_exists: {}", Path::new(&parsed.q4_model_path).is_file());
+    println!("q8_model: {}", parsed.q8_model_path);
+    println!("q8_exists: {}", Path::new(&parsed.q8_model_path).is_file());
+    println!("selected_source: {}", parsed.model_source);
+    println!("selected_model: {}", parsed.model_path);
+    println!("selected_exists: {}", model_path.is_file());
+
+    if model_path.is_file() || parsed.dry_run {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("{}", llama32_1b_model_not_found_message(model_path));
+        ExitCode::from(2)
+    }
 }
 
 fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
@@ -4348,8 +4527,8 @@ mod tests {
         is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
         looks_like_gguf_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
         parse_bench_q8_dot_args, parse_cpu_list, parse_generate_args_with_env,
-        parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
-        parse_ready_1b_args_with_env_and_smoke_defaults,
+        parse_generate_args_with_env_and_workspace, parse_model_1b_args_with_path,
+        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
@@ -4602,6 +4781,7 @@ flags\t\t: sse4_2 avx2
 
     #[test]
     fn help_topic_named_maps_supported_commands() {
+        assert_eq!(help_topic_named("model"), Some(HelpTopic::Model));
         assert_eq!(help_topic_named("probe"), Some(HelpTopic::Probe));
         assert_eq!(help_topic_named("inspect"), Some(HelpTopic::Inspect));
         assert_eq!(help_topic_named("generate"), Some(HelpTopic::Generate));
@@ -4630,6 +4810,10 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "bench".to_owned()]),
             Some(HelpTopic::Bench)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "model".to_owned()]),
+            Some(HelpTopic::Model)
         );
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "smoke".to_owned()]),
@@ -4678,6 +4862,10 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["ready".to_owned(), "1b".to_owned(), "--help".to_owned()]),
             Some(HelpTopic::Ready)
+        );
+        assert_eq!(
+            help_topic_for_args(&["model".to_owned(), "1b".to_owned(), "--help".to_owned()]),
+            Some(HelpTopic::Model)
         );
         assert_eq!(
             help_topic_for_args(&[
@@ -5290,6 +5478,67 @@ flags\t\t: sse4_2 avx2
         assert!(three_b.contains("3B model not found: /mnt/nanocamelid/models/missing-3b.gguf"));
         assert!(three_b.contains(LLAMA32_3B_Q4_MODEL));
         assert!(three_b.contains("${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models"));
+    }
+
+    #[test]
+    fn model_1b_audit_defaults_to_q4_when_present() {
+        let parsed = parse_model_1b_args_with_path(&[], None, "/mnt/nanocamelid", true)
+            .expect("default model audit should parse");
+
+        assert_eq!(parsed.workspace, "/mnt/nanocamelid");
+        assert_eq!(
+            parsed.q4_model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(
+            parsed.q8_model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(parsed.model_path, parsed.q4_model_path);
+        assert_eq!(parsed.model_source, "workspace Q4_0 default");
+        assert!(!parsed.dry_run);
+    }
+
+    #[test]
+    fn model_1b_audit_falls_back_to_q8_and_accepts_dry_run() {
+        let parsed = parse_model_1b_args_with_path(
+            &["--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("dry-run model audit should parse");
+
+        assert_eq!(parsed.model_path, parsed.q8_model_path);
+        assert_eq!(parsed.model_source, "workspace Q8_0 fallback");
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn model_1b_audit_prefers_explicit_path_over_env_and_defaults() {
+        let parsed = parse_model_1b_args_with_path(
+            &["/models/custom.GGUF".to_owned()],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit model audit path should parse");
+
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.model_source, "explicit argument");
+    }
+
+    #[test]
+    fn model_1b_audit_rejects_non_gguf_path() {
+        let err = parse_model_1b_args_with_path(
+            &["not-a-model".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("non-GGUF model audit arg should fail");
+
+        assert_eq!(err, "1B model audit argument must be a .gguf path");
     }
 
     #[test]
