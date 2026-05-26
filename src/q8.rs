@@ -139,10 +139,25 @@ pub struct Q4KBlock {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q4KUnpacked {
+    scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE],
+    mins: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE],
+    values: [u8; QK_K_BLOCK_SIZE / 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Q5KBlock {
     scale_bits: u16,
     min_bits: u16,
     scales: [u8; 12],
+    high_bits: [u8; QK_K_BLOCK_SIZE / 8],
+    values: [u8; QK_K_BLOCK_SIZE / 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q5KUnpacked {
+    scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE],
+    mins: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE],
     high_bits: [u8; QK_K_BLOCK_SIZE / 8],
     values: [u8; QK_K_BLOCK_SIZE / 2],
 }
@@ -957,6 +972,29 @@ impl Q4KBlock {
         &self.values
     }
 
+    #[inline]
+    pub fn unpack(&self) -> Q4KUnpacked {
+        let d = self.scale_f32();
+        let d_min = self.min_f32();
+        let mut scales = [0.0_f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE];
+        let mut mins = [0.0_f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE];
+        for pair_idx in 0..4 {
+            let low_scale_idx = pair_idx * 2;
+            let high_scale_idx = low_scale_idx + 1;
+            let (low_scale, low_min) = q4_k_scale_min(low_scale_idx, &self.scales);
+            let (high_scale, high_min) = q4_k_scale_min(high_scale_idx, &self.scales);
+            scales[low_scale_idx] = d * low_scale as f32;
+            scales[high_scale_idx] = d * high_scale as f32;
+            mins[low_scale_idx] = d_min * low_min as f32;
+            mins[high_scale_idx] = d_min * high_min as f32;
+        }
+        Q4KUnpacked {
+            scales,
+            mins,
+            values: self.values,
+        }
+    }
+
     pub fn dequantize(&self, out: &mut [f32; QK_K_BLOCK_SIZE]) {
         let d = self.scale_f32();
         let d_min = self.min_f32();
@@ -1018,6 +1056,46 @@ impl Q4KBlock {
             sum += x_scales[pair_idx * 2]
                 * (low_scale * low_weighted_sum as f32 - low_min * low_activation_sum as f32);
             sum += x_scales[pair_idx * 2 + 1]
+                * (high_scale * high_weighted_sum as f32 - high_min * high_activation_sum as f32);
+        }
+
+        sum
+    }
+
+    pub fn dot_q8_scaled_preloaded(unpacked: &Q4KUnpacked, x_i8: &[i8], x_scales: &[f32]) -> f32 {
+        debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+        debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+
+        let mut sum = 0.0_f32;
+
+        for pair_idx in 0..4 {
+            let low_scale_idx = pair_idx * 2;
+            let high_scale_idx = low_scale_idx + 1;
+            let low_scale = unpacked.scales[low_scale_idx];
+            let high_scale = unpacked.scales[high_scale_idx];
+            let low_min = unpacked.mins[low_scale_idx];
+            let high_min = unpacked.mins[high_scale_idx];
+            let value_base = pair_idx * 32;
+            let x_base = pair_idx * 64;
+
+            let mut low_weighted_sum = 0_i32;
+            let mut low_activation_sum = 0_i32;
+            let mut high_weighted_sum = 0_i32;
+            let mut high_activation_sum = 0_i32;
+
+            for l in 0..32 {
+                let byte = unpacked.values[value_base + l];
+                let low_x = i32::from(x_i8[x_base + l]);
+                let high_x = i32::from(x_i8[x_base + 32 + l]);
+                low_weighted_sum += i32::from(byte & 0x0f) * low_x;
+                low_activation_sum += low_x;
+                high_weighted_sum += i32::from(byte >> 4) * high_x;
+                high_activation_sum += high_x;
+            }
+
+            sum += x_scales[low_scale_idx]
+                * (low_scale * low_weighted_sum as f32 - low_min * low_activation_sum as f32);
+            sum += x_scales[high_scale_idx]
                 * (high_scale * high_weighted_sum as f32 - high_min * high_activation_sum as f32);
         }
 
@@ -1087,6 +1165,30 @@ impl Q5KBlock {
 
     pub fn packed_values(&self) -> &[u8; QK_K_BLOCK_SIZE / 2] {
         &self.values
+    }
+
+    #[inline]
+    pub fn unpack(&self) -> Q5KUnpacked {
+        let d = self.scale_f32();
+        let d_min = self.min_f32();
+        let mut scales = [0.0_f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE];
+        let mut mins = [0.0_f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE];
+        for pair_idx in 0..4 {
+            let low_scale_idx = pair_idx * 2;
+            let high_scale_idx = low_scale_idx + 1;
+            let (low_scale, low_min) = q4_k_scale_min(low_scale_idx, &self.scales);
+            let (high_scale, high_min) = q4_k_scale_min(high_scale_idx, &self.scales);
+            scales[low_scale_idx] = d * low_scale as f32;
+            scales[high_scale_idx] = d * high_scale as f32;
+            mins[low_scale_idx] = d_min * low_min as f32;
+            mins[high_scale_idx] = d_min * high_min as f32;
+        }
+        Q5KUnpacked {
+            scales,
+            mins,
+            high_bits: self.high_bits,
+            values: self.values,
+        }
     }
 
     pub fn dequantize(&self, out: &mut [f32; QK_K_BLOCK_SIZE]) {
@@ -1164,6 +1266,54 @@ impl Q5KBlock {
             sum += x_scales[pair_idx * 2]
                 * (low_scale * low_weighted_sum as f32 - low_min * low_activation_sum as f32);
             sum += x_scales[pair_idx * 2 + 1]
+                * (high_scale * high_weighted_sum as f32 - high_min * high_activation_sum as f32);
+
+            u1 <<= 2;
+            u2 <<= 2;
+        }
+
+        sum
+    }
+
+    pub fn dot_q8_scaled_preloaded(unpacked: &Q5KUnpacked, x_i8: &[i8], x_scales: &[f32]) -> f32 {
+        debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+        debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+
+        let mut sum = 0.0_f32;
+        let mut u1 = 1_u8;
+        let mut u2 = 2_u8;
+
+        for pair_idx in 0..4 {
+            let low_scale_idx = pair_idx * 2;
+            let high_scale_idx = low_scale_idx + 1;
+            let low_scale = unpacked.scales[low_scale_idx];
+            let high_scale = unpacked.scales[high_scale_idx];
+            let low_min = unpacked.mins[low_scale_idx];
+            let high_min = unpacked.mins[high_scale_idx];
+            let value_base = pair_idx * 32;
+            let x_base = pair_idx * 64;
+
+            let mut low_weighted_sum = 0_i32;
+            let mut low_activation_sum = 0_i32;
+            let mut high_weighted_sum = 0_i32;
+            let mut high_activation_sum = 0_i32;
+
+            for l in 0..32 {
+                let byte = unpacked.values[value_base + l];
+                let qh = unpacked.high_bits[l];
+                let low = i32::from((byte & 0x0f) + if qh & u1 != 0 { 16 } else { 0 });
+                let high = i32::from((byte >> 4) + if qh & u2 != 0 { 16 } else { 0 });
+                let low_x = i32::from(x_i8[x_base + l]);
+                let high_x = i32::from(x_i8[x_base + 32 + l]);
+                low_weighted_sum += low * low_x;
+                low_activation_sum += low_x;
+                high_weighted_sum += high * high_x;
+                high_activation_sum += high_x;
+            }
+
+            sum += x_scales[low_scale_idx]
+                * (low_scale * low_weighted_sum as f32 - low_min * low_activation_sum as f32);
+            sum += x_scales[high_scale_idx]
                 * (high_scale * high_weighted_sum as f32 - high_min * high_activation_sum as f32);
 
             u1 <<= 2;
@@ -3019,14 +3169,14 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     use super::dot_q8_scaled_sdot_preloaded;
     use super::{
-        Q4_0_BLOCK_BYTES, Q4_0Block, Q4_1_BLOCK_BYTES, Q4_1Block, Q6_K_BLOCK_BYTES, Q6KBlock,
-        Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel,
-        Q8DotKernelSelector, QK_K_BLOCK_SIZE, RuntimeFeatures, bench_dot_runs, decode_q4_1_blocks,
-        decode_q8_0_blocks, dot_i8_neon, dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot,
-        dot_i8_sdot_32_selected, dot_i8_with_selector, dot_q4_0_q8_0_1x4_sdot_selected,
-        dot_q4_0_q8_0_scalar, dot_q4_0_q8_0_with_selector, dot_q4_1_q8_0_scalar,
-        dot_q8_0_blocks_scalar, dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32,
-        fast_f32_to_f16,
+        Q4_0_BLOCK_BYTES, Q4_0Block, Q4_1_BLOCK_BYTES, Q4_1Block, Q4KBlock, Q5KBlock,
+        Q6_K_BLOCK_BYTES, Q6KBlock, Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE,
+        Q8BlockError, Q8DotKernel, Q8DotKernelSelector, QK_K_BLOCK_SIZE, RuntimeFeatures,
+        bench_dot_runs, decode_q4_1_blocks, decode_q8_0_blocks, dot_i8_neon,
+        dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
+        dot_i8_with_selector, dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar,
+        dot_q4_0_q8_0_with_selector, dot_q4_1_q8_0_scalar, dot_q8_0_blocks_scalar,
+        dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32, fast_f32_to_f16,
     };
 
     #[test]
@@ -3353,6 +3503,50 @@ mod tests {
         assert_eq!(values[32], -14.0);
         assert_eq!(values[64], 1.0);
         assert_eq!(values[96], 16.0);
+    }
+
+    #[test]
+    fn q4_k_preloaded_dot_matches_scalar() {
+        let scales: [u8; 12] = core::array::from_fn(|idx| ((idx * 7 + 11) % 64) as u8);
+        let values: [u8; QK_K_BLOCK_SIZE / 2] = core::array::from_fn(|idx| {
+            let low = ((idx * 3 + 5) % 16) as u8;
+            let high = ((idx * 11 + 13) % 16) as u8;
+            low | (high << 4)
+        });
+        let block = Q4KBlock::from_parts(0x3c00, 0x3800, scales, values);
+        let x_i8: [i8; QK_K_BLOCK_SIZE] =
+            core::array::from_fn(|idx| ((idx * 13 + 17) % 127) as i8 - 63);
+        let x_scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE] =
+            core::array::from_fn(|idx| 0.015625 * (1 + (idx % 5)) as f32);
+
+        let scalar = block.dot_q8_scaled(&x_i8, &x_scales);
+        let unpacked = block.unpack();
+        let preloaded = Q4KBlock::dot_q8_scaled_preloaded(&unpacked, &x_i8, &x_scales);
+
+        assert_eq!(preloaded, scalar);
+    }
+
+    #[test]
+    fn q5_k_preloaded_dot_matches_scalar() {
+        let scales: [u8; 12] = core::array::from_fn(|idx| ((idx * 5 + 19) % 64) as u8);
+        let high_bits: [u8; QK_K_BLOCK_SIZE / 8] =
+            core::array::from_fn(|idx| ((idx * 17 + 23) % 256) as u8);
+        let values: [u8; QK_K_BLOCK_SIZE / 2] = core::array::from_fn(|idx| {
+            let low = ((idx * 7 + 3) % 16) as u8;
+            let high = ((idx * 9 + 15) % 16) as u8;
+            low | (high << 4)
+        });
+        let block = Q5KBlock::from_parts(0x3c00, 0x3800, scales, high_bits, values);
+        let x_i8: [i8; QK_K_BLOCK_SIZE] =
+            core::array::from_fn(|idx| ((idx * 13 + 17) % 127) as i8 - 63);
+        let x_scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE] =
+            core::array::from_fn(|idx| 0.015625 * (1 + (idx % 5)) as f32);
+
+        let scalar = block.dot_q8_scaled(&x_i8, &x_scales);
+        let unpacked = block.unpack();
+        let preloaded = Q5KBlock::dot_q8_scaled_preloaded(&unpacked, &x_i8, &x_scales);
+
+        assert_eq!(preloaded, scalar);
     }
 
     #[test]
