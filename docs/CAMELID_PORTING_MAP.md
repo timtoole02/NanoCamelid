@@ -56,16 +56,19 @@ Use these Camelid areas as the first reference points:
 
 NanoCamelid currently has:
 
-- host feature probe
-- GGUF metadata/tensor-type inspection
-- Q8 i8 dot scalar benchmark
-- ARM64 NEON benchmark path
-- default-off ARM64 SDOT benchmark path
-- repeated-run JSON benchmark output
-- reusable library modules for GGUF/Q8 code
-- Q8_0 block constants, 34-byte block decoding, f16 scale expansion, and scalar
-  scaled block-dot reference tests
+- host feature probe with CPU governor guidance
+- GGUF metadata and tensor-layout inspection
+- Llama, Qwen, Mistral, Gemma, SmolLM, and DeepSeek-R1-Qwen prompt rendering
+- dense Llama-style generation for the supported model rows in the model catalog
+- Q8_0 scalar, NEON, and SDOT block-dot paths
+- Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, and Q6_K runtime paths used
+  by the promoted rows
+- Pi readiness launchers for Llama 3.2 1B and 3B rows
+- repeated-run Q8 dot and Q4 prefill benchmarks
+- reusable library modules for GGUF, tokenizer, model loading, inference, and
+  quantized kernels
+- scalar reference tests plus selected-kernel parity checks
 
-The next durable slice should wire the Q8_0 block boundary into GGUF tensor
-descriptor reads, then add shape-specific scalar/NEON/SDOT parity tests before
-using an optimized kernel in a model path.
+The next durable slice should preserve the 1B readiness gate while improving
+one measured Pi bottleneck at a time. Prefer narrow changes that can be checked
+with `ready 1b`, the Q8/Q4 benchmarks, and Pi-local scalar-vs-selected parity.

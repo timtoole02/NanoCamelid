@@ -17,10 +17,16 @@ NanoCamelid is not a direct copy of Camelid. It is a Raspberry Pi focused extrac
 4. One-token inference: produce one deterministic token for a small model and compare against a known-good baseline.
 5. Tight loop benchmark: measure prompt ingestion, first token latency, and decode token latency on Pi 5.
 
+This vertical slice is no longer the active milestone. The current public
+baseline is the Llama 3.2 1B readiness path in the CLI and Pi scripts:
+`inspect 1b`, `smoke 1b`, `ready 1b`, and `scripts/pi/ready-1b.sh`.
+
 ## Runtime Direction
 
 - Prefer static, explicit ARM64 dispatch over broad runtime abstraction.
-- Keep Q8_0 as the first correctness target and add Q4_K_M only after the first row is stable.
+- Keep Q8_0 as the baseline correctness target, with Q4_0 as the practical
+  Llama 3.2 1B fast path. Additional quantized formats should advance only
+  through exact model-row smoke evidence.
 - Use packed runtime storage when it demonstrably saves memory bandwidth.
 - Gate specialized kernels behind feature checks and keep a scalar/reference path for tests.
 - Treat benchmark claims as unsupported until the command, model, hardware class, and result are reproducible.
@@ -32,10 +38,13 @@ NanoCamelid is not a direct copy of Camelid. It is a Raspberry Pi focused extrac
 - `cargo test`
 - `cargo run -- ready 1b --dry-run`
 - `./scripts/pi/model-1b.sh --dry-run`
+- `./scripts/pi/ready-1b.sh --dry-run`
 - `cargo run -- probe` on Raspberry Pi 5
 - `cargo run -- inspect <model.gguf>` against a local small-model GGUF
 - `cargo run --release -- bench q8-dot` on Raspberry Pi 5 for repeated scalar vs NEON Q8 dot timing and JSON output
-- `NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot` on Raspberry Pi 5 before retaining the default-off SDOT candidate; use the SDOT-vs-NEON ratios as the kernel decision signal
+- `NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot` on Raspberry Pi 5; use the SDOT-vs-NEON ratios as the kernel decision signal
+- `cargo run -- smoke 1b chat "Say hello in one sentence." 8` against a
+  Pi-local Llama 3.2 1B GGUF before refreshing 1B claims
 - Q8_0 block layout tests must keep 34-byte blocks, f16 scale expansion, signed
   i8 payload decoding, and scalar scaled-dot behavior stable
 - One exact model-row parity artifact before any support claim
