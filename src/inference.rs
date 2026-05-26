@@ -1486,24 +1486,57 @@ pub fn matmul_q6_k_batch(
     if q6_k_sdot_enabled() && std::arch::is_aarch64_feature_detected!("dotprod") {
         for_each_batch_matmul_row(rows, |r| {
             let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
-            for token_idx in 0..batch_size {
-                let x_offset = token_idx * cols;
-                let scale_offset = token_idx * q8_blocks_per_token;
-                let x_token = &x_i8[x_offset..x_offset + cols];
-                let x_token_scales = &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
-                let mut sum = 0.0_f32;
+            if batch_size <= MAX_STACK_BATCH_SUMS {
+                let mut sums = [0.0_f32; MAX_STACK_BATCH_SUMS];
+                let sums = &mut sums[..batch_size];
                 for (block_idx, w_block) in w_row.iter().enumerate() {
                     let x_block_start = block_idx * QK_K_BLOCK_SIZE;
                     let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
-                    sum += unsafe {
-                        w_block.dot_q8_scaled_sdot(
-                            &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                            &x_token_scales
-                                [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
-                        )
-                    };
+                    let unpacked = unsafe { w_block.unpack_aarch64() };
+                    for (token_idx, sum) in sums.iter_mut().enumerate() {
+                        let x_offset = token_idx * cols;
+                        let scale_offset = token_idx * q8_blocks_per_token;
+                        let x_token = &x_i8[x_offset..x_offset + cols];
+                        let x_token_scales =
+                            &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                        *sum += unsafe {
+                            crate::q8::dot_q8_scaled_sdot_preloaded(
+                                &unpacked,
+                                &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                            )
+                        };
+                    }
                 }
-                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+                for (token_idx, &sum) in sums.iter().enumerate() {
+                    unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+                }
+            } else {
+                let mut sums = vec![0.0_f32; batch_size];
+                for (block_idx, w_block) in w_row.iter().enumerate() {
+                    let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                    let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                    let unpacked = unsafe { w_block.unpack_aarch64() };
+                    for (token_idx, sum) in sums.iter_mut().enumerate() {
+                        let x_offset = token_idx * cols;
+                        let scale_offset = token_idx * q8_blocks_per_token;
+                        let x_token = &x_i8[x_offset..x_offset + cols];
+                        let x_token_scales =
+                            &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                        *sum += unsafe {
+                            crate::q8::dot_q8_scaled_sdot_preloaded(
+                                &unpacked,
+                                &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                            )
+                        };
+                    }
+                }
+                for (token_idx, &sum) in sums.iter().enumerate() {
+                    unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+                }
             }
         });
         return;
@@ -1511,21 +1544,49 @@ pub fn matmul_q6_k_batch(
 
     for_each_batch_matmul_row(rows, |r| {
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
-        for token_idx in 0..batch_size {
-            let x_offset = token_idx * cols;
-            let scale_offset = token_idx * q8_blocks_per_token;
-            let x_token = &x_i8[x_offset..x_offset + cols];
-            let x_token_scales = &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
-            let mut sum = 0.0_f32;
+        if batch_size <= MAX_STACK_BATCH_SUMS {
+            let mut sums = [0.0_f32; MAX_STACK_BATCH_SUMS];
+            let sums = &mut sums[..batch_size];
             for (block_idx, w_block) in w_row.iter().enumerate() {
                 let x_block_start = block_idx * QK_K_BLOCK_SIZE;
                 let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
-                sum += w_block.dot_q8_scaled(
-                    &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                    &x_token_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / 32)],
-                );
+                for (token_idx, sum) in sums.iter_mut().enumerate() {
+                    let x_offset = token_idx * cols;
+                    let scale_offset = token_idx * q8_blocks_per_token;
+                    let x_token = &x_i8[x_offset..x_offset + cols];
+                    let x_token_scales =
+                        &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                    *sum += w_block.dot_q8_scaled(
+                        &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                        &x_token_scales
+                            [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                    );
+                }
             }
-            unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            for (token_idx, &sum) in sums.iter().enumerate() {
+                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            }
+        } else {
+            let mut sums = vec![0.0_f32; batch_size];
+            for (block_idx, w_block) in w_row.iter().enumerate() {
+                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                for (token_idx, sum) in sums.iter_mut().enumerate() {
+                    let x_offset = token_idx * cols;
+                    let scale_offset = token_idx * q8_blocks_per_token;
+                    let x_token = &x_i8[x_offset..x_offset + cols];
+                    let x_token_scales =
+                        &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                    *sum += w_block.dot_q8_scaled(
+                        &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                        &x_token_scales
+                            [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                    );
+                }
+            }
+            for (token_idx, &sum) in sums.iter().enumerate() {
+                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            }
         }
     });
 }

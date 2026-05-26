@@ -1186,6 +1186,12 @@ fn q4_k_scale_min(idx: usize, scales: &[u8; 12]) -> (u8, u8) {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub struct Q6KUnpackedAarch64 {
+    pub w: [std::arch::aarch64::int8x16_t; 16],
+    pub weight_scales: [f32; 16],
+}
+
 impl Q6KBlock {
     pub fn from_bytes(bytes: &[u8; Q6_K_BLOCK_BYTES]) -> Self {
         let mut ql = [0_u8; 128];
@@ -1325,43 +1331,25 @@ impl Q6KBlock {
     /// must cover exactly one Q6_K block and its eight Q8 activation scales.
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    pub unsafe fn dot_q8_scaled_sdot(&self, x_i8: &[i8], x_scales: &[f32]) -> f32 {
-        debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
-        debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
-
-        use std::arch::{
-            aarch64::{
-                vaddvq_s32, vandq_u8, vdupq_n_s8, vdupq_n_s32, vdupq_n_u8, vld1q_s8, vld1q_u8,
-                vorrq_u8, vreinterpretq_s8_u8, vshlq_n_u8, vshrq_n_u8, vsubq_s8,
-            },
-            asm,
+    pub unsafe fn unpack_aarch64(&self) -> Q6KUnpackedAarch64 {
+        use std::arch::aarch64::{
+            vandq_u8, vdupq_n_s8, vdupq_n_u8, vld1q_u8, vorrq_u8, vreinterpretq_s8_u8, vshlq_n_u8,
+            vshrq_n_u8, vsubq_s8,
         };
-
         let d = self.scale_f32();
         let mut weight_scales = [0.0_f32; 16];
         for (idx, scale) in weight_scales.iter_mut().enumerate() {
             *scale = d * self.scales[idx] as f32;
         }
 
-        let mut sum = 0.0_f32;
         let mut ql_offset = 0;
         let mut qh_offset = 0;
-        let mut scale_offset = 0;
+        let mut w = [unsafe { vdupq_n_s8(0) }; 16];
 
         unsafe {
             let low_mask = vdupq_n_u8(0x0f);
             let offset = vdupq_n_s8(32);
-            for n in (0..QK_K_BLOCK_SIZE).step_by(128) {
-                let x_scale_offset = n / Q8_BLOCK_SIZE;
-                let c1_low = weight_scales[scale_offset] * x_scales[x_scale_offset];
-                let c1_high = weight_scales[scale_offset + 1] * x_scales[x_scale_offset];
-                let c2_low = weight_scales[scale_offset + 2] * x_scales[x_scale_offset + 1];
-                let c2_high = weight_scales[scale_offset + 3] * x_scales[x_scale_offset + 1];
-                let c3_low = weight_scales[scale_offset + 4] * x_scales[x_scale_offset + 2];
-                let c3_high = weight_scales[scale_offset + 5] * x_scales[x_scale_offset + 2];
-                let c4_low = weight_scales[scale_offset + 6] * x_scales[x_scale_offset + 3];
-                let c4_high = weight_scales[scale_offset + 7] * x_scales[x_scale_offset + 3];
-
+            for half in 0..2 {
                 let ql_a = vld1q_u8(self.ql.as_ptr().add(ql_offset));
                 let ql_b = vld1q_u8(self.ql.as_ptr().add(ql_offset + 16));
                 let ql_c = vld1q_u8(self.ql.as_ptr().add(ql_offset + 32));
@@ -1371,108 +1359,172 @@ impl Q6KBlock {
 
                 let qh_bits0 = vandq_u8(qh_a, vdupq_n_u8(0x03));
                 let w0_u = vorrq_u8(vandq_u8(ql_a, low_mask), vshlq_n_u8::<4>(qh_bits0));
-                let w0 = vsubq_s8(vreinterpretq_s8_u8(w0_u), offset);
+                w[half * 8] = vsubq_s8(vreinterpretq_s8_u8(w0_u), offset);
 
                 let qh_bits1 = vandq_u8(qh_b, vdupq_n_u8(0x03));
                 let w1_u = vorrq_u8(vandq_u8(ql_b, low_mask), vshlq_n_u8::<4>(qh_bits1));
-                let w1 = vsubq_s8(vreinterpretq_s8_u8(w1_u), offset);
+                w[half * 8 + 1] = vsubq_s8(vreinterpretq_s8_u8(w1_u), offset);
 
                 let qh_bits2 = vandq_u8(qh_a, vdupq_n_u8(0x0c));
                 let w2_u = vorrq_u8(vandq_u8(ql_c, low_mask), vshlq_n_u8::<2>(qh_bits2));
-                let w2 = vsubq_s8(vreinterpretq_s8_u8(w2_u), offset);
+                w[half * 8 + 2] = vsubq_s8(vreinterpretq_s8_u8(w2_u), offset);
 
                 let qh_bits3 = vandq_u8(qh_b, vdupq_n_u8(0x0c));
                 let w3_u = vorrq_u8(vandq_u8(ql_d, low_mask), vshlq_n_u8::<2>(qh_bits3));
-                let w3 = vsubq_s8(vreinterpretq_s8_u8(w3_u), offset);
+                w[half * 8 + 3] = vsubq_s8(vreinterpretq_s8_u8(w3_u), offset);
 
                 let qh_bits4 = vandq_u8(qh_a, vdupq_n_u8(0x30));
                 let w4_u = vorrq_u8(vshrq_n_u8::<4>(ql_a), qh_bits4);
-                let w4 = vsubq_s8(vreinterpretq_s8_u8(w4_u), offset);
+                w[half * 8 + 4] = vsubq_s8(vreinterpretq_s8_u8(w4_u), offset);
 
                 let qh_bits5 = vandq_u8(qh_b, vdupq_n_u8(0x30));
                 let w5_u = vorrq_u8(vshrq_n_u8::<4>(ql_b), qh_bits5);
-                let w5 = vsubq_s8(vreinterpretq_s8_u8(w5_u), offset);
+                w[half * 8 + 5] = vsubq_s8(vreinterpretq_s8_u8(w5_u), offset);
 
                 let qh_bits6 = vandq_u8(qh_a, vdupq_n_u8(0xc0));
                 let w6_u = vorrq_u8(vshrq_n_u8::<4>(ql_c), vshrq_n_u8::<2>(qh_bits6));
-                let w6 = vsubq_s8(vreinterpretq_s8_u8(w6_u), offset);
+                w[half * 8 + 6] = vsubq_s8(vreinterpretq_s8_u8(w6_u), offset);
 
                 let qh_bits7 = vandq_u8(qh_b, vdupq_n_u8(0xc0));
                 let w7_u = vorrq_u8(vshrq_n_u8::<4>(ql_d), vshrq_n_u8::<2>(qh_bits7));
-                let w7 = vsubq_s8(vreinterpretq_s8_u8(w7_u), offset);
-
-                let x0 = vld1q_s8(x_i8.as_ptr().add(n));
-                let x1 = vld1q_s8(x_i8.as_ptr().add(n + 16));
-                let x2 = vld1q_s8(x_i8.as_ptr().add(n + 32));
-                let x3 = vld1q_s8(x_i8.as_ptr().add(n + 48));
-                let x4 = vld1q_s8(x_i8.as_ptr().add(n + 64));
-                let x5 = vld1q_s8(x_i8.as_ptr().add(n + 80));
-                let x6 = vld1q_s8(x_i8.as_ptr().add(n + 96));
-                let x7 = vld1q_s8(x_i8.as_ptr().add(n + 112));
-
-                let mut acc0 = vdupq_n_s32(0);
-                let mut acc1 = vdupq_n_s32(0);
-                let mut acc2 = vdupq_n_s32(0);
-                let mut acc3 = vdupq_n_s32(0);
-                let mut acc4 = vdupq_n_s32(0);
-                let mut acc5 = vdupq_n_s32(0);
-                let mut acc6 = vdupq_n_s32(0);
-                let mut acc7 = vdupq_n_s32(0);
-
-                asm!(
-                    ".arch_extension dotprod",
-                    "sdot {acc0:v}.4s, {w0:v}.16b, {x0:v}.16b",
-                    "sdot {acc1:v}.4s, {w1:v}.16b, {x1:v}.16b",
-                    "sdot {acc2:v}.4s, {w2:v}.16b, {x2:v}.16b",
-                    "sdot {acc3:v}.4s, {w3:v}.16b, {x3:v}.16b",
-                    "sdot {acc4:v}.4s, {w4:v}.16b, {x4:v}.16b",
-                    "sdot {acc5:v}.4s, {w5:v}.16b, {x5:v}.16b",
-                    "sdot {acc6:v}.4s, {w6:v}.16b, {x6:v}.16b",
-                    "sdot {acc7:v}.4s, {w7:v}.16b, {x7:v}.16b",
-                    acc0 = inout(vreg) acc0,
-                    acc1 = inout(vreg) acc1,
-                    acc2 = inout(vreg) acc2,
-                    acc3 = inout(vreg) acc3,
-                    acc4 = inout(vreg) acc4,
-                    acc5 = inout(vreg) acc5,
-                    acc6 = inout(vreg) acc6,
-                    acc7 = inout(vreg) acc7,
-                    w0 = in(vreg) w0,
-                    w1 = in(vreg) w1,
-                    w2 = in(vreg) w2,
-                    w3 = in(vreg) w3,
-                    w4 = in(vreg) w4,
-                    w5 = in(vreg) w5,
-                    w6 = in(vreg) w6,
-                    w7 = in(vreg) w7,
-                    x0 = in(vreg) x0,
-                    x1 = in(vreg) x1,
-                    x2 = in(vreg) x2,
-                    x3 = in(vreg) x3,
-                    x4 = in(vreg) x4,
-                    x5 = in(vreg) x5,
-                    x6 = in(vreg) x6,
-                    x7 = in(vreg) x7,
-                    options(nostack, preserves_flags),
-                );
-
-                sum += c1_low * vaddvq_s32(acc0) as f32;
-                sum += c1_high * vaddvq_s32(acc1) as f32;
-                sum += c2_low * vaddvq_s32(acc2) as f32;
-                sum += c2_high * vaddvq_s32(acc3) as f32;
-                sum += c3_low * vaddvq_s32(acc4) as f32;
-                sum += c3_high * vaddvq_s32(acc5) as f32;
-                sum += c4_low * vaddvq_s32(acc6) as f32;
-                sum += c4_high * vaddvq_s32(acc7) as f32;
+                w[half * 8 + 7] = vsubq_s8(vreinterpretq_s8_u8(w7_u), offset);
 
                 ql_offset += 64;
                 qh_offset += 32;
-                scale_offset += 8;
             }
         }
 
-        sum
+        Q6KUnpackedAarch64 { w, weight_scales }
     }
+
+    /// Computes the Q6_K-by-Q8 dot product with AArch64 SDOT instructions.
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure the CPU supports the `dotprod` feature. The input slices
+    /// must cover exactly one Q6_K block and its eight Q8 activation scales.
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    pub unsafe fn dot_q8_scaled_sdot(&self, x_i8: &[i8], x_scales: &[f32]) -> f32 {
+        let unpacked = unsafe { self.unpack_aarch64() };
+        unsafe { dot_q8_scaled_sdot_preloaded(&unpacked, x_i8, x_scales) }
+    }
+}
+
+/// Computes Q6_K-by-Q8 SDOT from a pre-unpacked Q6_K block.
+///
+/// # Safety
+///
+/// Callers must ensure the CPU supports the `dotprod` feature. The input slices
+/// must cover exactly one Q6_K block and its eight Q8 activation scales.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub unsafe fn dot_q8_scaled_sdot_preloaded(
+    unpacked: &Q6KUnpackedAarch64,
+    x_i8: &[i8],
+    x_scales: &[f32],
+) -> f32 {
+    debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+    debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+
+    use std::arch::{
+        aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8},
+        asm,
+    };
+
+    let mut sum = 0.0_f32;
+    let mut scale_offset = 0;
+    unsafe {
+        for half in 0..2 {
+            let n = half * 128;
+            let x_scale_offset = n / Q8_BLOCK_SIZE;
+            let c1_low = unpacked.weight_scales[scale_offset] * x_scales[x_scale_offset];
+            let c1_high = unpacked.weight_scales[scale_offset + 1] * x_scales[x_scale_offset];
+            let c2_low = unpacked.weight_scales[scale_offset + 2] * x_scales[x_scale_offset + 1];
+            let c2_high = unpacked.weight_scales[scale_offset + 3] * x_scales[x_scale_offset + 1];
+            let c3_low = unpacked.weight_scales[scale_offset + 4] * x_scales[x_scale_offset + 2];
+            let c3_high = unpacked.weight_scales[scale_offset + 5] * x_scales[x_scale_offset + 2];
+            let c4_low = unpacked.weight_scales[scale_offset + 6] * x_scales[x_scale_offset + 3];
+            let c4_high = unpacked.weight_scales[scale_offset + 7] * x_scales[x_scale_offset + 3];
+
+            let x0 = vld1q_s8(x_i8.as_ptr().add(n));
+            let x1 = vld1q_s8(x_i8.as_ptr().add(n + 16));
+            let x2 = vld1q_s8(x_i8.as_ptr().add(n + 32));
+            let x3 = vld1q_s8(x_i8.as_ptr().add(n + 48));
+            let x4 = vld1q_s8(x_i8.as_ptr().add(n + 64));
+            let x5 = vld1q_s8(x_i8.as_ptr().add(n + 80));
+            let x6 = vld1q_s8(x_i8.as_ptr().add(n + 96));
+            let x7 = vld1q_s8(x_i8.as_ptr().add(n + 112));
+
+            let w0 = unpacked.w[half * 8];
+            let w1 = unpacked.w[half * 8 + 1];
+            let w2 = unpacked.w[half * 8 + 2];
+            let w3 = unpacked.w[half * 8 + 3];
+            let w4 = unpacked.w[half * 8 + 4];
+            let w5 = unpacked.w[half * 8 + 5];
+            let w6 = unpacked.w[half * 8 + 6];
+            let w7 = unpacked.w[half * 8 + 7];
+
+            let mut acc0 = vdupq_n_s32(0);
+            let mut acc1 = vdupq_n_s32(0);
+            let mut acc2 = vdupq_n_s32(0);
+            let mut acc3 = vdupq_n_s32(0);
+            let mut acc4 = vdupq_n_s32(0);
+            let mut acc5 = vdupq_n_s32(0);
+            let mut acc6 = vdupq_n_s32(0);
+            let mut acc7 = vdupq_n_s32(0);
+
+            asm!(
+                ".arch_extension dotprod",
+                "sdot {acc0:v}.4s, {w0:v}.16b, {x0:v}.16b",
+                "sdot {acc1:v}.4s, {w1:v}.16b, {x1:v}.16b",
+                "sdot {acc2:v}.4s, {w2:v}.16b, {x2:v}.16b",
+                "sdot {acc3:v}.4s, {w3:v}.16b, {x3:v}.16b",
+                "sdot {acc4:v}.4s, {w4:v}.16b, {x4:v}.16b",
+                "sdot {acc5:v}.4s, {w5:v}.16b, {x5:v}.16b",
+                "sdot {acc6:v}.4s, {w6:v}.16b, {x6:v}.16b",
+                "sdot {acc7:v}.4s, {w7:v}.16b, {x7:v}.16b",
+                acc0 = inout(vreg) acc0,
+                acc1 = inout(vreg) acc1,
+                acc2 = inout(vreg) acc2,
+                acc3 = inout(vreg) acc3,
+                acc4 = inout(vreg) acc4,
+                acc5 = inout(vreg) acc5,
+                acc6 = inout(vreg) acc6,
+                acc7 = inout(vreg) acc7,
+                w0 = in(vreg) w0,
+                w1 = in(vreg) w1,
+                w2 = in(vreg) w2,
+                w3 = in(vreg) w3,
+                w4 = in(vreg) w4,
+                w5 = in(vreg) w5,
+                w6 = in(vreg) w6,
+                w7 = in(vreg) w7,
+                x0 = in(vreg) x0,
+                x1 = in(vreg) x1,
+                x2 = in(vreg) x2,
+                x3 = in(vreg) x3,
+                x4 = in(vreg) x4,
+                x5 = in(vreg) x5,
+                x6 = in(vreg) x6,
+                x7 = in(vreg) x7,
+                options(nostack, preserves_flags),
+            );
+
+            sum += c1_low * vaddvq_s32(acc0) as f32;
+            sum += c1_high * vaddvq_s32(acc1) as f32;
+            sum += c2_low * vaddvq_s32(acc2) as f32;
+            sum += c2_high * vaddvq_s32(acc3) as f32;
+            sum += c3_low * vaddvq_s32(acc4) as f32;
+            sum += c3_high * vaddvq_s32(acc5) as f32;
+            sum += c4_low * vaddvq_s32(acc6) as f32;
+            sum += c4_high * vaddvq_s32(acc7) as f32;
+
+            scale_offset += 8;
+        }
+    }
+
+    sum
 }
 
 pub fn decode_q8_0_blocks(bytes: &[u8]) -> Result<Vec<Q8_0Block>, Q8BlockError> {
@@ -2964,6 +3016,8 @@ mod tests {
 
     use crate::gguf::{GgufTensorDescriptor, GgufTensorType};
 
+    #[cfg(target_arch = "aarch64")]
+    use super::dot_q8_scaled_sdot_preloaded;
     use super::{
         Q4_0_BLOCK_BYTES, Q4_0Block, Q4_1_BLOCK_BYTES, Q4_1Block, Q6_K_BLOCK_BYTES, Q6KBlock,
         Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader, Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel,
@@ -3328,6 +3382,14 @@ mod tests {
             let sdot = unsafe { block.dot_q8_scaled_sdot(&x_i8, &x_scales) };
             let diff = (sdot - scalar).abs();
             assert!(diff < 1e-3, "sdot={sdot}, scalar={scalar}, diff={diff}");
+
+            let unpacked = unsafe { block.unpack_aarch64() };
+            let preloaded = unsafe { dot_q8_scaled_sdot_preloaded(&unpacked, &x_i8, &x_scales) };
+            let diff = (preloaded - sdot).abs();
+            assert!(
+                diff < 1e-6,
+                "preloaded={preloaded}, sdot={sdot}, diff={diff}"
+            );
         }
     }
 
