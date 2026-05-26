@@ -77,9 +77,18 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+redacted_deploy_key_label() {
+  if [[ -n "$SSH_KEY" ]]; then
+    echo "<ssh-key-path>"
+  else
+    echo "<ssh-agent>"
+  fi
+}
+
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid remote build dry run"
-  echo "target: ${PI_USER}@${PI_HOST}"
+  echo "target: <pi-user>@<pi-host>"
+  echo "target_redacted: true"
   echo "deploy_mode: $DEPLOY_MODE"
   echo "remote_workspace: $PI_WORKSPACE"
   echo "remote_repo: $PI_REPO"
@@ -93,9 +102,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "ready_tokens: $READY_TOKENS"
   echo "ready_temp: $READY_TEMP"
   printf 'deploy_command: scripts/deploy.sh %s %s %s %s\n' \
-    "$(shell_quote "$PI_HOST")" \
-    "$(shell_quote "$SSH_KEY")" \
-    "$(shell_quote "$PI_USER")" \
+    "<pi-host>" \
+    "$(redacted_deploy_key_label)" \
+    "<pi-user>" \
     "$(shell_quote "$DEPLOY_MODE")"
   echo "remote_steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo check; cargo build --release; probe; bench q8-dot 1000 3"
   if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" ]]; then
