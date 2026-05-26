@@ -463,25 +463,33 @@ fn ready_chat_prompt_from_env_value(value: Option<String>, smoke_prompt: &str) -
         .unwrap_or_else(|| smoke_prompt.to_owned())
 }
 
-fn ready_chat_tokens(smoke_tokens: usize) -> usize {
+fn ready_chat_tokens(smoke_tokens: usize) -> Result<usize, &'static str> {
     ready_chat_tokens_from_env_value(env::var(READY_TOKENS_ENV).ok(), smoke_tokens)
 }
 
-fn ready_chat_tokens_from_env_value(value: Option<String>, smoke_tokens: usize) -> usize {
-    value
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&value| value > 0)
-        .unwrap_or(smoke_tokens)
+fn ready_chat_tokens_from_env_value(
+    value: Option<String>,
+    smoke_tokens: usize,
+) -> Result<usize, &'static str> {
+    parse_optional_positive_usize(
+        value.as_ref(),
+        "ready direct chat env token count must be a positive integer",
+    )
+    .map(|value| value.unwrap_or(smoke_tokens))
 }
 
-fn ready_chat_temp() -> f32 {
+fn ready_chat_temp() -> Result<f32, &'static str> {
     ready_chat_temp_from_env_value(env::var(READY_TEMP_ENV).ok())
 }
 
-fn ready_chat_temp_from_env_value(value: Option<String>) -> f32 {
-    value
-        .and_then(|value| value.parse::<f32>().ok())
-        .unwrap_or(0.0)
+fn ready_chat_temp_from_env_value(value: Option<String>) -> Result<f32, &'static str> {
+    match value {
+        Some(value) => parse_non_negative_f32(
+            &value,
+            "ready direct chat env temperature must be a non-negative number",
+        ),
+        None => Ok(0.0),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2666,10 +2674,23 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         .chat_prompt_override
         .clone()
         .unwrap_or_else(|| ready_chat_prompt(&smoke.prompt));
-    let chat_tokens = parsed
-        .chat_tokens_override
-        .unwrap_or_else(|| ready_chat_tokens(smoke.max_tokens));
-    let chat_temp = ready_chat_temp();
+    let chat_tokens = match parsed.chat_tokens_override {
+        Some(tokens) => tokens,
+        None => match ready_chat_tokens(smoke.max_tokens) {
+            Ok(tokens) => tokens,
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let chat_temp = match ready_chat_temp() {
+        Ok(temp) => temp,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
 
     if parsed.dry_run {
         println!("NanoCamelid Llama 3.2 1B readiness dry run");
@@ -4385,20 +4406,36 @@ mod tests {
 
     #[test]
     fn ready_chat_tokens_parse_positive_env_override() {
-        assert_eq!(ready_chat_tokens_from_env_value(Some("4".to_owned()), 8), 4);
-        assert_eq!(ready_chat_tokens_from_env_value(Some("0".to_owned()), 8), 8);
+        assert_eq!(
+            ready_chat_tokens_from_env_value(Some("4".to_owned()), 8),
+            Ok(4)
+        );
+        assert_eq!(
+            ready_chat_tokens_from_env_value(Some("0".to_owned()), 8),
+            Err("ready direct chat env token count must be a positive integer")
+        );
         assert_eq!(
             ready_chat_tokens_from_env_value(Some("bad".to_owned()), 8),
-            8
+            Err("ready direct chat env token count must be a positive integer")
         );
-        assert_eq!(ready_chat_tokens_from_env_value(None, 8), 8);
+        assert_eq!(ready_chat_tokens_from_env_value(None, 8), Ok(8));
     }
 
     #[test]
-    fn ready_chat_temp_defaults_to_zero_for_invalid_env() {
-        assert_eq!(ready_chat_temp_from_env_value(Some("0.2".to_owned())), 0.2);
-        assert_eq!(ready_chat_temp_from_env_value(Some("bad".to_owned())), 0.0);
-        assert_eq!(ready_chat_temp_from_env_value(None), 0.0);
+    fn ready_chat_temp_rejects_invalid_env() {
+        assert_eq!(
+            ready_chat_temp_from_env_value(Some("0.2".to_owned())),
+            Ok(0.2)
+        );
+        assert_eq!(
+            ready_chat_temp_from_env_value(Some("-0.1".to_owned())),
+            Err("ready direct chat env temperature must be a non-negative number")
+        );
+        assert_eq!(
+            ready_chat_temp_from_env_value(Some("bad".to_owned())),
+            Err("ready direct chat env temperature must be a non-negative number")
+        );
+        assert_eq!(ready_chat_temp_from_env_value(None), Ok(0.0));
     }
 
     #[test]

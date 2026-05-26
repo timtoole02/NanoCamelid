@@ -188,6 +188,10 @@ cargo clippy --all-targets -- -D warnings
 echo "==> Checking 1B readiness CLI dry run..."
 cargo run -- ready 1b --dry-run
 
+echo "==> Checking 1B readiness CLI rejects invalid direct chat env..."
+expect_failure "ready 1b invalid direct chat temperature" env NANOCAMELID_READY_TEMP=bad cargo run -- ready 1b --dry-run
+expect_failure "ready 1b invalid direct chat token count" env NANOCAMELID_READY_TOKENS=0 cargo run -- ready 1b --dry-run
+
 echo "==> Checking 1B Pi smoke launcher dry run..."
 ./scripts/pi/smoke-1b.sh --dry-run
 
