@@ -8,7 +8,7 @@ Usage: bench-1b-prefill.sh [model.gguf] [prompt] [max_tokens] [temp] [batches] [
 
 Runs the Pi-local Llama 3.2 1B chat path repeatedly with different
 NANOCAMELID_PREFILL_BATCH values. Each run prints NanoCamelid's normal
-"Prompt ingested" and generation timing lines.
+"Prompt ingested" and generation timing lines, followed by a JSON summary line.
 
 Model resolution:
   1. explicit model.gguf argument
@@ -69,6 +69,55 @@ require_non_negative_float() {
 
 shell_quote() {
   printf '%q' "$1"
+}
+
+json_number_or_null() {
+  if [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    printf '%s' "$1"
+  else
+    printf 'null'
+  fi
+}
+
+json_integer_or_null() {
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$1"
+  else
+    printf 'null'
+  fi
+}
+
+print_batch_json() {
+  local batch="$1"
+  local exit_status="$2"
+  local run_log="$3"
+  local status="ok"
+  local prefill_sec=""
+  local generated_tokens=""
+  local generation_sec=""
+  local tokens_per_sec=""
+
+  if [[ "$exit_status" -ne 0 ]]; then
+    status="failed"
+  fi
+
+  prefill_sec="$(
+    sed -nE 's/^Prompt ingested in ([0-9.]+)s with prefill batch [0-9]+$/\1/p' "$run_log" \
+      | tail -n 1
+  )"
+  read -r generated_tokens generation_sec tokens_per_sec < <(
+    sed -nE 's/^Generated ([0-9]+) tokens in ([0-9.]+)s \(([0-9.]+) tokens\/sec\)$/\1 \2 \3/p' "$run_log" \
+      | tail -n 1
+  ) || true
+
+  printf 'json: {"benchmark":"llama32-1b-prefill","batch_size":%s,"status":"%s","exit_status":%s,"prefill_sec":%s,"generated_tokens":%s,"generation_sec":%s,"tokens_per_sec":%s}\n' \
+    "$batch" \
+    "$status" \
+    "$exit_status" \
+    "$(json_number_or_null "$prefill_sec")" \
+    "$(json_integer_or_null "$generated_tokens")" \
+    "$(json_number_or_null "$generation_sec")" \
+    "$(json_number_or_null "$tokens_per_sec")"
 }
 
 DRY_RUN=0
@@ -199,8 +248,23 @@ echo "max_tokens: $MAX_TOKENS"
 echo "temp: $TEMP"
 echo "batches: ${BATCHES[*]}"
 
+EXIT_STATUS=0
+RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-prefill.XXXXXX")"
+trap 'rm -f "$RUN_LOG"' EXIT
+
 for batch in "${BATCHES[@]}"; do
   echo
   echo "==> Running with NANOCAMELID_PREFILL_BATCH=$batch"
-  NANOCAMELID_PREFILL_BATCH="$batch" run_nanocamelid chat "$MODEL" "$PROMPT" "$TEMP" "$MAX_TOKENS"
+  : >"$RUN_LOG"
+  set +e
+  NANOCAMELID_PREFILL_BATCH="$batch" run_nanocamelid chat "$MODEL" "$PROMPT" "$TEMP" "$MAX_TOKENS" 2>&1 | tee "$RUN_LOG"
+  batch_status=${PIPESTATUS[0]}
+  set -e
+  print_batch_json "$batch" "$batch_status" "$RUN_LOG"
+  if [[ "$batch_status" -ne 0 ]]; then
+    EXIT_STATUS="$batch_status"
+    break
+  fi
 done
+
+exit "$EXIT_STATUS"

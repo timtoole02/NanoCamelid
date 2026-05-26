@@ -337,7 +337,7 @@ single-token reference behavior, or use `bench q4-prefill` to compare candidate
 batch sizes on the current host without loading a GGUF model.
 On a prepared Pi workspace, `./scripts/pi/bench-1b-prefill.sh` sweeps the real
 Llama 3.2 1B chat path across prefill batch sizes and prints the model-backed
-prompt ingestion timing for each run.
+prompt ingestion timing plus one `json:` summary line for each batch.
 
 Set `NANOCAMELID_TRACE=1` on `generate`, `chat`, or `tui` runs to print an
 aggregate stage-level timing summary. It is intended for focused tuning: the
@@ -501,7 +501,8 @@ cargo run --release -- bench q4-prefill 128 16
 Each cargo benchmark prints human-readable timing plus a JSON summary line.
 Treat results as specific to the exact Pi, model, build, and environment used.
 The 1B prefill sweep is model-backed and reports NanoCamelid's normal prompt
-ingestion and generation timing for each selected batch size.
+ingestion and generation timing for each selected batch size, then emits a
+`json: {"benchmark":"llama32-1b-prefill",...}` line for log collection.
 
 Useful environment controls:
 
