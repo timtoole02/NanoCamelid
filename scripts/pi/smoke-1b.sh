@@ -88,13 +88,40 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
-if [[ "$DRY_RUN" == "1" ]] && command -v cargo >/dev/null 2>&1; then
-  launcher_mode="cargo"
-elif [[ -x "$BINARY" ]]; then
+if [[ -x "$BINARY" ]]; then
   launcher_mode="binary"
 elif command -v cargo >/dev/null 2>&1; then
   launcher_mode="cargo"
 else
+  launcher_mode="unavailable"
+fi
+
+shell_command() {
+  printf '%q' "$1"
+  shift
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
+}
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "NanoCamelid Llama 3.2 1B smoke launcher dry run"
+  echo "repo: $REPO"
+  echo "cargo_target_dir: $TARGET_DIR"
+  echo "launcher_mode: $launcher_mode"
+  echo "binary: $BINARY"
+  echo "model: $MODEL"
+  echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "smoke_kind: $SMOKE_KIND"
+  echo "smoke_prompt: $SMOKE_PROMPT"
+  echo "smoke_tokens: $SMOKE_TOKENS"
+  printf 'smoke_command: '
+  shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+  exit 0
+fi
+
+if [[ "$launcher_mode" == "unavailable" ]]; then
   echo "NanoCamelid release binary not found and cargo is not on PATH." >&2
   echo "Expected binary: $BINARY" >&2
   exit 3
@@ -110,16 +137,6 @@ run_nanocamelid() {
   export CARGO_TARGET_DIR="$TARGET_DIR"
   cargo run --release -- "$@"
 }
-
-if [[ "$DRY_RUN" == "1" ]]; then
-  echo "NanoCamelid Llama 3.2 1B smoke launcher dry run"
-  echo "repo: $REPO"
-  echo "cargo_target_dir: $TARGET_DIR"
-  echo "launcher_mode: $launcher_mode"
-  echo "binary: $BINARY"
-  run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --dry-run
-  exit 0
-fi
 
 if [[ ! -f "$MODEL" ]]; then
   echo "Model not found: $MODEL" >&2

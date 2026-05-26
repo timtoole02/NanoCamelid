@@ -125,13 +125,55 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
-if [[ "$DRY_RUN" == "1" ]] && command -v cargo >/dev/null 2>&1; then
-  launcher_mode="cargo"
-elif [[ -x "$BINARY" ]]; then
+if [[ -x "$BINARY" ]]; then
   launcher_mode="binary"
 elif command -v cargo >/dev/null 2>&1; then
   launcher_mode="cargo"
 else
+  launcher_mode="unavailable"
+fi
+
+shell_command() {
+  printf '%q' "$1"
+  shift
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
+}
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "NanoCamelid Llama 3.2 1B readiness launcher dry run"
+  echo "repo: $REPO"
+  echo "cargo_target_dir: $TARGET_DIR"
+  echo "launcher_mode: $launcher_mode"
+  echo "binary: $BINARY"
+  echo "model: $MODEL"
+  echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "smoke_kind: $SMOKE_KIND"
+  echo "smoke_prompt: $SMOKE_PROMPT"
+  echo "smoke_tokens: $SMOKE_TOKENS"
+  echo "direct_chat: $([[ "$CHAT_ENABLED_LOWER" == "0" || "$CHAT_ENABLED_LOWER" == "false" || "$CHAT_ENABLED_LOWER" == "no" ]] && echo disabled || echo enabled)"
+  printf 'inspect_command: '
+  shell_command nanocamelid inspect "$MODEL"
+  printf 'smoke_command: '
+  shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+  case "$CHAT_ENABLED_LOWER" in
+    0 | false | no)
+      echo "chat_command: skipped"
+      ;;
+    *)
+      echo "chat_prompt: $CHAT_PROMPT"
+      echo "chat_temp: $CHAT_TEMP"
+      echo "chat_tokens: $CHAT_TOKENS"
+      printf 'chat_command: '
+      shell_command nanocamelid chat "$MODEL" "$CHAT_PROMPT" "$CHAT_TEMP" "$CHAT_TOKENS"
+      ;;
+  esac
+  exit 0
+fi
+
+if [[ "$launcher_mode" == "unavailable" ]]; then
   echo "NanoCamelid release binary not found and cargo is not on PATH." >&2
   echo "Expected binary: $BINARY" >&2
   exit 3
@@ -147,30 +189,6 @@ run_nanocamelid() {
   export CARGO_TARGET_DIR="$TARGET_DIR"
   cargo run --release -- "$@"
 }
-
-if [[ "$DRY_RUN" == "1" ]]; then
-  echo "NanoCamelid Llama 3.2 1B readiness launcher dry run"
-  echo "repo: $REPO"
-  echo "cargo_target_dir: $TARGET_DIR"
-  echo "launcher_mode: $launcher_mode"
-  echo "binary: $BINARY"
-  READY_ARGS=(ready 1b "$MODEL" "$SMOKE_KIND" "$CHAT_PROMPT" "$CHAT_TOKENS" --dry-run)
-  case "$CHAT_ENABLED_LOWER" in
-    0 | false | no)
-      READY_ARGS+=(--no-chat)
-      ;;
-    *)
-      if [[ -n "$CHAT_ENABLED_OVERRIDE" ]]; then
-        READY_ARGS+=(--chat)
-      fi
-      ;;
-  esac
-  export NANOCAMELID_READY_SMOKE_PROMPT="$SMOKE_PROMPT"
-  export NANOCAMELID_READY_SMOKE_TOKENS="$SMOKE_TOKENS"
-  export NANOCAMELID_READY_TEMP="$CHAT_TEMP"
-  run_nanocamelid "${READY_ARGS[@]}"
-  exit 0
-fi
 
 if [[ ! -f "$MODEL" ]]; then
   echo "Model not found: $MODEL" >&2
