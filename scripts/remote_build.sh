@@ -52,6 +52,7 @@ READY_CHAT="${NANOCAMELID_REMOTE_READY_CHAT:-${NANOCAMELID_READY_CHAT:-1}}"
 READY_PROMPT="${NANOCAMELID_READY_PROMPT:-$SMOKE_PROMPT}"
 READY_TOKENS="${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}"
 READY_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
+READY_CHAT_LOWER="$(printf '%s' "$READY_CHAT" | tr '[:upper:]' '[:lower:]')"
 
 if [[ -z "$PI_HOST" ]]; then
   usage
@@ -113,9 +114,13 @@ redacted_deploy_key_label() {
   fi
 }
 
-require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
-require_positive_integer "Readiness token count" "$READY_TOKENS"
-require_non_negative_float "Readiness temperature" "$READY_TEMP"
+if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" ]]; then
+  require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
+  if [[ "$READY_CHAT_LOWER" != "0" && "$READY_CHAT_LOWER" != "false" && "$READY_CHAT_LOWER" != "no" ]]; then
+    require_positive_integer "Readiness token count" "$READY_TOKENS"
+    require_non_negative_float "Readiness temperature" "$READY_TEMP"
+  fi
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid remote build dry run"
