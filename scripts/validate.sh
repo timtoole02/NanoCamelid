@@ -10,6 +10,7 @@ Runs NanoCamelid's standard local validation gate:
   2. cargo test
   3. cargo clippy --all-targets -- -D warnings
   4. cargo run -- ready 1b --dry-run
+  5. ./scripts/pi/chat-1b.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -149,7 +150,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- ready 1b --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- ready 1b --dry-run; ./scripts/pi/chat-1b.sh --dry-run"
   exit 0
 fi
 
@@ -171,3 +172,6 @@ cargo clippy --all-targets -- -D warnings
 
 echo "==> Checking 1B readiness CLI dry run..."
 cargo run -- ready 1b --dry-run
+
+echo "==> Checking 1B Pi chat launcher dry run..."
+./scripts/pi/chat-1b.sh --dry-run

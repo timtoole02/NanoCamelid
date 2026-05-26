@@ -54,8 +54,13 @@ require_positive_integer() {
   fi
 }
 
-shell_quote() {
+shell_command() {
   printf '%q' "$1"
+  shift
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
 }
 
 DRY_RUN=0
@@ -113,10 +118,19 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
+if [[ -x "$BINARY" ]]; then
+  launcher_mode="binary"
+elif command -v cargo >/dev/null 2>&1; then
+  launcher_mode="cargo"
+else
+  launcher_mode="unavailable"
+fi
+
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid Llama 3.2 1B chat launch dry run"
   echo "repo: $REPO"
   echo "cargo_target_dir: $TARGET_DIR"
+  echo "launcher_mode: $launcher_mode"
   echo "binary: $BINARY"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
@@ -131,17 +145,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
       echo "smoke_command: skipped"
       ;;
     *)
-      printf 'smoke_command: nanocamelid smoke 1b %s %s %s %s\n' \
-        "$(shell_quote "$MODEL")" \
-        "$(shell_quote "$SMOKE_KIND")" \
-        "$(shell_quote "$SMOKE_PROMPT")" \
-        "$(shell_quote "$SMOKE_TOKENS")"
+      printf 'smoke_command: '
+      shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
       ;;
   esac
-  printf 'tui_command: nanocamelid tui %s %s %s\n' \
-    "$(shell_quote "$MODEL")" \
-    "$(shell_quote "$TEMP")" \
-    "$(shell_quote "$MAX_TOKENS")"
+  printf 'tui_command: '
+  shell_command nanocamelid tui "$MODEL" "$TEMP" "$MAX_TOKENS"
   exit 0
 fi
 
@@ -151,11 +160,7 @@ if [[ ! -f "$MODEL" ]]; then
   exit 2
 fi
 
-if [[ -x "$BINARY" ]]; then
-  launcher_mode="binary"
-elif command -v cargo >/dev/null 2>&1; then
-  launcher_mode="cargo"
-else
+if [[ "$launcher_mode" == "unavailable" ]]; then
   echo "NanoCamelid release binary not found and cargo is not on PATH." >&2
   echo "Expected binary: $BINARY" >&2
   exit 3
