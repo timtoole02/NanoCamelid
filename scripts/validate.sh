@@ -14,8 +14,9 @@ Runs NanoCamelid's standard local validation gate:
   6. ./scripts/pi/ready-1b.sh --dry-run
   7. ./scripts/pi/chat-1b.sh --dry-run
   8. ./scripts/pi/bench-1b-prefill.sh --dry-run
-  9. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  10. ./scripts/install.sh --dry-run
+  9. ./scripts/pi/context-pack-1b.sh --dry-run
+  10. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  11. ./scripts/install.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -155,7 +156,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- ready 1b --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- ready 1b --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
   exit 0
 fi
 
@@ -215,6 +216,12 @@ expect_failure "bench-1b-prefill invalid temperature" env NANOCAMELID_PREFILL_TE
 
 echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid batch size..."
 expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BATCHES=1,bad,32 ./scripts/pi/bench-1b-prefill.sh --dry-run
+
+echo "==> Checking 1B Pi context-pack launcher dry run..."
+./scripts/pi/context-pack-1b.sh --dry-run
+
+echo "==> Checking 1B Pi context-pack launcher rejects invalid context cap..."
+expect_failure "context-pack-1b invalid context cap" env NANOCAMELID_CONTEXT_PACKS=512,bad,2048 ./scripts/pi/context-pack-1b.sh --dry-run
 
 echo "==> Checking 1B Pi readiness launcher rejects invalid temperature..."
 expect_failure "ready-1b invalid temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/pi/ready-1b.sh --dry-run

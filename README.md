@@ -39,6 +39,7 @@ Quick 1B readiness check on a Pi workspace:
 ```bash
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/chat-1b.sh --dry-run
+./scripts/pi/context-pack-1b.sh --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
 CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
@@ -57,6 +58,8 @@ chat turn. Set `NANOCAMELID_READY_CHAT=0` for inspect+smoke only, or set
 prompt.
 `./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
 without requiring the GGUF to exist yet.
+`./scripts/pi/context-pack-1b.sh` reruns the 1B smoke gate across context caps
+from `NANOCAMELID_CONTEXT_PACKS`, defaulting to `512,1024,2048,4096,8192`.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 
@@ -309,9 +312,10 @@ external drive path first so the repo does not create build artifacts on the
 internal disk. On prepared Pi workspaces, the same script defaults to
 `/mnt/nanocamelid/target`. The gate also runs `cargo run -- ready 1b --dry-run`
 plus the Pi `smoke-1b.sh`, `ready-1b.sh`, `chat-1b.sh`, and
-`bench-1b-prefill.sh` launcher dry runs, plus the installer dry run, so the
-default Llama 3.2 1B command paths and build-entry target-dir guard stay covered
-without requiring the GGUF during local validation.
+`bench-1b-prefill.sh` launcher dry runs, plus the `context-pack-1b.sh` and
+installer dry runs, so the default Llama 3.2 1B command paths and
+build-entry target-dir guard stay covered without requiring the GGUF during
+local validation.
 
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
