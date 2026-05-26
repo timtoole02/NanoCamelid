@@ -3347,7 +3347,7 @@ pub(crate) unsafe fn dot_q8_0_q8_0_1x4_sdot_aarch64(
 
     let activation_low = unsafe { vld1q_s8(activation.as_ptr()) };
     let activation_high = unsafe { vld1q_s8(activation.as_ptr().add(16)) };
-    
+
     let w0_low = unsafe { vld1q_s8(weights[0].values().as_ptr()) };
     let w0_high = unsafe { vld1q_s8(weights[0].values().as_ptr().add(16)) };
     let w1_low = unsafe { vld1q_s8(weights[1].values().as_ptr()) };
