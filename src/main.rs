@@ -1237,48 +1237,60 @@ fn parse_ready_1b_args(args: &[String]) -> Result<Ready1BArgs, &'static str> {
     let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
     let q4_exists = Path::new(&q4_path).is_file();
     let smoke_defaults = ready_smoke_defaults_from_env()?;
-    parse_ready_1b_args_with_env_and_smoke_defaults(
+    let chat_enabled_default = ready_chat_enabled();
+    parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
         args,
         smoke_model_path_from_env(),
         &workspace,
         q4_exists,
         smoke_defaults,
-    )
-}
-
-fn parse_smoke_3b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
-    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
-    let defaults = smoke_defaults_from_env()?;
-    parse_smoke_3b_args_with_env_and_defaults(
-        args,
-        smoke_model_path_from_env(),
-        &workspace,
-        defaults,
+        chat_enabled_default,
     )
 }
 
 #[cfg(test)]
-fn parse_ready_1b_args_with_env(
-    args: &[String],
-    env_model_path: Option<String>,
-    workspace: &str,
-    q4_exists: bool,
-) -> Result<Ready1BArgs, &'static str> {
-    parse_ready_1b_args_with_env_and_smoke_defaults(
-        args,
-        env_model_path,
-        workspace,
-        q4_exists,
-        SmokeDefaults::default(),
-    )
-}
-
 fn parse_ready_1b_args_with_env_and_smoke_defaults(
     args: &[String],
     env_model_path: Option<String>,
     workspace: &str,
     q4_exists: bool,
     smoke_defaults: SmokeDefaults,
+) -> Result<Ready1BArgs, &'static str> {
+    parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
+        args,
+        env_model_path,
+        workspace,
+        q4_exists,
+        smoke_defaults,
+        true,
+    )
+}
+
+fn parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+    smoke_defaults: SmokeDefaults,
+    chat_enabled_default: bool,
+) -> Result<Ready1BArgs, &'static str> {
+    parse_ready_1b_args_inner(
+        args,
+        env_model_path,
+        workspace,
+        q4_exists,
+        smoke_defaults,
+        chat_enabled_default,
+    )
+}
+
+fn parse_ready_1b_args_inner(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+    smoke_defaults: SmokeDefaults,
+    chat_enabled_default: bool,
 ) -> Result<Ready1BArgs, &'static str> {
     let mut chat_enabled_override = None;
     let mut dry_run = false;
@@ -1316,7 +1328,7 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
         smoke_args.get(option_idx + 1),
         "ready 1B token count must be a positive integer",
     )?;
-    let smoke_only = chat_enabled_override == Some(false);
+    let smoke_only = !chat_enabled_override.unwrap_or(chat_enabled_default);
 
     let (smoke_prompt, smoke_tokens, chat_prompt_override, chat_tokens_override) = if smoke_only {
         (
@@ -1348,6 +1360,33 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
         chat_tokens_override,
         dry_run,
     })
+}
+
+fn parse_smoke_3b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
+    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+    let defaults = smoke_defaults_from_env()?;
+    parse_smoke_3b_args_with_env_and_defaults(
+        args,
+        smoke_model_path_from_env(),
+        &workspace,
+        defaults,
+    )
+}
+
+#[cfg(test)]
+fn parse_ready_1b_args_with_env(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<Ready1BArgs, &'static str> {
+    parse_ready_1b_args_with_env_and_smoke_defaults(
+        args,
+        env_model_path,
+        workspace,
+        q4_exists,
+        SmokeDefaults::default(),
+    )
 }
 
 #[cfg(test)]
@@ -4177,11 +4216,12 @@ mod tests {
         is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
         looks_like_gguf_path, parse_cpu_list, parse_generate_args_with_env,
         parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
-        parse_ready_1b_args_with_env_and_smoke_defaults, parse_smoke_1b_args_with_env,
-        parse_smoke_1b_args_with_env_and_defaults, parse_smoke_3b_args_with_env,
-        parse_smoke_3b_args_with_env_and_defaults, parse_smoke_args_with_env,
-        parse_tui_args_with_env, parse_tui_args_with_env_and_workspace, parse_tui_command,
-        print_runtime_trace_summary, ready_chat_enabled_from_env_value,
+        parse_ready_1b_args_with_env_and_smoke_defaults,
+        parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
+        parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
+        parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
+        parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
+        parse_tui_command, print_runtime_trace_summary, ready_chat_enabled_from_env_value,
         ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
         ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
         resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
@@ -5229,6 +5269,30 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.smoke.prompt, "Smoke this");
         assert_eq!(parsed.smoke.max_tokens, 3);
         assert_eq!(parsed.chat_enabled_override, Some(false));
+        assert_eq!(parsed.chat_prompt_override, None);
+        assert_eq!(parsed.chat_tokens_override, None);
+    }
+
+    #[test]
+    fn ready_1b_args_env_disabled_chat_uses_positionals_for_smoke_gate() {
+        let parsed = parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
+            &["chat".to_owned(), "Smoke this".to_owned(), "3".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+            SmokeDefaults {
+                kind: SmokeKind::Q8Model,
+                prompt: "Default smoke".to_owned(),
+                max_tokens: 2,
+            },
+            false,
+        )
+        .expect("env-disabled ready args should parse");
+
+        assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
+        assert_eq!(parsed.smoke.prompt, "Smoke this");
+        assert_eq!(parsed.smoke.max_tokens, 3);
+        assert_eq!(parsed.chat_enabled_override, None);
         assert_eq!(parsed.chat_prompt_override, None);
         assert_eq!(parsed.chat_tokens_override, None);
     }
