@@ -224,6 +224,9 @@ prompt, route through the top experts, and produce prompt-level chat output
 across the Pi pipeline. This is not a single-Pi support claim: full Mixtral
 single-node generation exceeds 16 GB Pi RAM during eager weight load and needs
 clustered execution or a future lazy expert loader.
+The cluster TCP path now performs a startup handshake so every node confirms the
+same protocol, model shape, MoE expert shape, and adjacent layer ranges before
+activation streaming begins.
 
 Latest Mixtral cluster chat evidence:
 
@@ -233,6 +236,13 @@ Latest Mixtral cluster chat evidence:
 - prompt: `Write one short sentence about Raspberry Pi clusters.`
 - rendered prompt: `<s>[INST] Write one short sentence about Raspberry Pi clusters. [/INST]`
 - generated text: `Raspberry Pi clusters are groups of`
+
+Use the Pi launcher to print the exact current run plan without hard-coding node
+addresses in the repo:
+
+```bash
+./scripts/pi/mixtral-cluster.sh --dry-run
+```
 - generated tokens: `8`
 - throughput: about `1.12 tok/sec`
 
@@ -826,38 +836,37 @@ Mixtral.
 
 For Mixtral 8x7B Q4_0 specifically, use the 32-layer split that has been
 Pi-smoked: `0..11` on the master, `11..22` on the middle worker, and `22..32`
-on the final worker. Start the final worker:
+on the final worker. The launcher below wraps the same commands and keeps the
+node addresses in environment variables:
 
 ```bash
-NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
-NANOCAMELID_Q4_SWIZZLE_1X4=0 \
-cargo run --release --bin cluster_tcp_smoke -- \
-  worker /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf 0.0.0.0:5007 22
+./scripts/pi/mixtral-cluster.sh --dry-run
+```
+
+Start the final worker:
+
+```bash
+./scripts/pi/mixtral-cluster.sh final /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf
 ```
 
 Start the middle worker:
 
 ```bash
-NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
-NANOCAMELID_Q4_SWIZZLE_1X4=0 \
-cargo run --release --bin cluster_tcp_smoke -- \
-  middle-worker /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf \
-  0.0.0.0:5006 <final-worker-ip>:5007 11 22
+NANOCAMELID_CLUSTER_FINAL_ADDR=<final-worker-host>:5007 \
+./scripts/pi/mixtral-cluster.sh middle /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf
 ```
 
 Run chat generation from the master:
 
 ```bash
-NANOCAMELID_CLUSTER_CONTEXT_LIMIT=128 \
-NANOCAMELID_Q4_SWIZZLE_1X4=0 \
-cargo run --release --bin cluster_tcp_smoke -- \
-  master-chat /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf \
-  <middle-worker-ip>:5006 "Write one short sentence about Raspberry Pi clusters." 11 8
+NANOCAMELID_CLUSTER_MIDDLE_ADDR=<middle-worker-host>:5006 \
+./scripts/pi/mixtral-cluster.sh master /path/to/mixtral-8x7b-instruct-v0.1.Q4_0.gguf
 ```
 
 Useful output to check:
 
 - `result: PASS` from `cluster_split_smoke`
+- `*_cluster_peer` handshake lines from every TCP role
 - `generated_tokens`, streamed generated text, and `cluster_tokens_per_sec` from
   `master-generate` or `master-chat`
 - `worker_generated_tokens` from the final worker

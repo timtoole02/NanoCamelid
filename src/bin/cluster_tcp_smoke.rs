@@ -183,6 +183,28 @@ fn run_worker(
         .map_err(|err| format!("failed to set TCP_NODELAY: {err}"))?;
     println!("master_connected: {peer_addr}");
 
+    let local_hello = cluster_hello(
+        cluster::ClusterNodeRole::FinalWorker,
+        &loaded.config,
+        node1.layer_start,
+        node1.layer_end,
+    )?;
+    let upstream_hello = cluster::recv_cluster_hello(&mut stream)
+        .map_err(|err| format!("failed to receive cluster hello from upstream: {err}"))?;
+    validate_peer_hello(
+        &local_hello,
+        &upstream_hello,
+        &[
+            cluster::ClusterNodeRole::Master,
+            cluster::ClusterNodeRole::Middle,
+        ],
+        None,
+        Some(node1.layer_start),
+    )?;
+    cluster::send_cluster_hello(&mut stream, local_hello)
+        .map_err(|err| format!("failed to send cluster hello to upstream: {err}"))?;
+    print_cluster_peer("upstream", &upstream_hello);
+
     let options = runtime_options();
     let mut cache = inference::LlamaKvCache::new(
         loaded.config.block_count,
@@ -313,6 +335,24 @@ fn run_middle_worker(
         .set_nodelay(true)
         .map_err(|err| format!("failed to set downstream TCP_NODELAY: {err}"))?;
     println!("downstream_connected: {next_addr}");
+    let local_hello = cluster_hello(
+        cluster::ClusterNodeRole::Middle,
+        &config,
+        node.layer_start,
+        node.layer_end,
+    )?;
+    cluster::send_cluster_hello(&mut downstream, local_hello)
+        .map_err(|err| format!("failed to send cluster hello to downstream worker: {err}"))?;
+    let downstream_hello = cluster::recv_cluster_hello(&mut downstream)
+        .map_err(|err| format!("failed to receive cluster hello from downstream worker: {err}"))?;
+    validate_peer_hello(
+        &local_hello,
+        &downstream_hello,
+        &[cluster::ClusterNodeRole::FinalWorker],
+        Some(node.layer_end),
+        Some(config.block_count),
+    )?;
+    print_cluster_peer("downstream", &downstream_hello);
 
     let (mut upstream, peer_addr) = listener
         .accept()
@@ -321,6 +361,18 @@ fn run_middle_worker(
         .set_nodelay(true)
         .map_err(|err| format!("failed to set upstream TCP_NODELAY: {err}"))?;
     println!("upstream_connected: {peer_addr}");
+    let upstream_hello = cluster::recv_cluster_hello(&mut upstream)
+        .map_err(|err| format!("failed to receive cluster hello from upstream: {err}"))?;
+    validate_peer_hello(
+        &local_hello,
+        &upstream_hello,
+        &[cluster::ClusterNodeRole::Master],
+        Some(0),
+        Some(node.layer_start),
+    )?;
+    cluster::send_cluster_hello(&mut upstream, local_hello)
+        .map_err(|err| format!("failed to send cluster hello to upstream: {err}"))?;
+    print_cluster_peer("upstream", &upstream_hello);
 
     let options = runtime_options();
     let mut cache =
@@ -547,6 +599,27 @@ fn run_master_generate(
     stream
         .set_nodelay(true)
         .map_err(|err| format!("failed to set TCP_NODELAY: {err}"))?;
+    let local_hello = cluster_hello(
+        cluster::ClusterNodeRole::Master,
+        &loaded.config,
+        0,
+        loaded.split_layer,
+    )?;
+    cluster::send_cluster_hello(&mut stream, local_hello)
+        .map_err(|err| format!("failed to send cluster hello to worker: {err}"))?;
+    let worker_hello = cluster::recv_cluster_hello(&mut stream)
+        .map_err(|err| format!("failed to receive cluster hello from worker: {err}"))?;
+    validate_peer_hello(
+        &local_hello,
+        &worker_hello,
+        &[
+            cluster::ClusterNodeRole::Middle,
+            cluster::ClusterNodeRole::FinalWorker,
+        ],
+        Some(loaded.split_layer),
+        None,
+    )?;
+    print_cluster_peer("worker", &worker_hello);
 
     let started_prefill = Instant::now();
     let prompt_len = prompt_tokens.len();
@@ -718,6 +791,27 @@ fn run_master_session(
     stream
         .set_nodelay(true)
         .map_err(|err| format!("failed to set TCP_NODELAY: {err}"))?;
+    let local_hello = cluster_hello(
+        cluster::ClusterNodeRole::Master,
+        &loaded.config,
+        0,
+        loaded.split_layer,
+    )?;
+    cluster::send_cluster_hello(&mut stream, local_hello)
+        .map_err(|err| format!("failed to send cluster hello to worker: {err}"))?;
+    let worker_hello = cluster::recv_cluster_hello(&mut stream)
+        .map_err(|err| format!("failed to receive cluster hello from worker: {err}"))?;
+    validate_peer_hello(
+        &local_hello,
+        &worker_hello,
+        &[
+            cluster::ClusterNodeRole::Middle,
+            cluster::ClusterNodeRole::FinalWorker,
+        ],
+        Some(loaded.split_layer),
+        None,
+    )?;
+    print_cluster_peer("worker", &worker_hello);
     let mut current_token = token_id;
     let mut generated_tokens = Vec::new();
     let mut full_forward_total = Duration::ZERO;
@@ -898,6 +992,110 @@ struct LoadedClusterModel {
     gguf: gguf::GgufFile,
     config: model::LlamaModelConfig,
     split_layer: usize,
+}
+
+fn cluster_hello(
+    role: cluster::ClusterNodeRole,
+    config: &model::LlamaModelConfig,
+    layer_start: usize,
+    layer_end: usize,
+) -> Result<cluster::ClusterHello, String> {
+    let to_u32 = |label: &str, value: usize| {
+        u32::try_from(value).map_err(|_| format!("{label} {value} exceeds u32 wire range"))
+    };
+    Ok(cluster::ClusterHello {
+        role,
+        block_count: to_u32("block_count", config.block_count)?,
+        embedding_length: to_u32("embedding_length", config.embedding_length)?,
+        context_length: to_u32("context_length", config.context_length)?,
+        kv_width: to_u32("kv_width", config.kv_width)?,
+        vocab_size: to_u32("vocab_size", config.vocab_size)?,
+        layer_start: to_u32("layer_start", layer_start)?,
+        layer_end: to_u32("layer_end", layer_end)?,
+        expert_count: to_u32("expert_count", config.expert_count)?,
+        expert_used_count: to_u32("expert_used_count", config.expert_used_count)?,
+    })
+}
+
+fn validate_peer_hello(
+    local: &cluster::ClusterHello,
+    peer: &cluster::ClusterHello,
+    allowed_roles: &[cluster::ClusterNodeRole],
+    expected_layer_start: Option<usize>,
+    expected_layer_end: Option<usize>,
+) -> Result<(), String> {
+    if !allowed_roles.contains(&peer.role) {
+        return Err(format!(
+            "cluster peer role {:?} is not allowed here; expected one of {:?}",
+            peer.role, allowed_roles
+        ));
+    }
+
+    let shape_pairs = [
+        ("block_count", local.block_count, peer.block_count),
+        (
+            "embedding_length",
+            local.embedding_length,
+            peer.embedding_length,
+        ),
+        ("context_length", local.context_length, peer.context_length),
+        ("kv_width", local.kv_width, peer.kv_width),
+        ("vocab_size", local.vocab_size, peer.vocab_size),
+        ("expert_count", local.expert_count, peer.expert_count),
+        (
+            "expert_used_count",
+            local.expert_used_count,
+            peer.expert_used_count,
+        ),
+    ];
+    for (label, expected, actual) in shape_pairs {
+        if expected != actual {
+            return Err(format!(
+                "cluster peer {label} mismatch: local {expected}, peer {actual}"
+            ));
+        }
+    }
+
+    if let Some(expected) = expected_layer_start
+        && peer.layer_start != expected as u32
+    {
+        return Err(format!(
+            "cluster peer layer_start mismatch: expected {expected}, got {}",
+            peer.layer_start
+        ));
+    }
+    if let Some(expected) = expected_layer_end
+        && peer.layer_end != expected as u32
+    {
+        return Err(format!(
+            "cluster peer layer_end mismatch: expected {expected}, got {}",
+            peer.layer_end
+        ));
+    }
+    if peer.layer_start >= peer.layer_end || peer.layer_end > peer.block_count {
+        return Err(format!(
+            "cluster peer has invalid layer range {}..{} for {} layers",
+            peer.layer_start, peer.layer_end, peer.block_count
+        ));
+    }
+
+    Ok(())
+}
+
+fn print_cluster_peer(label: &str, hello: &cluster::ClusterHello) {
+    println!(
+        "{label}_cluster_peer: role={:?} layers={}..{} blocks={} hidden={} ctx={} kv={} vocab={} experts={}/{}",
+        hello.role,
+        hello.layer_start,
+        hello.layer_end,
+        hello.block_count,
+        hello.embedding_length,
+        hello.context_length,
+        hello.kv_width,
+        hello.vocab_size,
+        hello.expert_used_count,
+        hello.expert_count
+    );
 }
 
 fn load_cluster_model(

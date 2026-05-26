@@ -2,8 +2,11 @@ use std::io::{self, Read, Write};
 
 pub const ACTIVATION_MAGIC: u32 = 0xDEAD_BEEF;
 pub const TOKEN_FEEDBACK_MAGIC: u32 = 0xCAFE_FEED;
+pub const CLUSTER_HELLO_MAGIC: u32 = 0x4E43_4C48; // "NCLH"
+pub const CLUSTER_PROTOCOL_VERSION: u32 = 1;
 pub const ACTIVATION_HEADER_BYTES: usize = 16;
 pub const TOKEN_FEEDBACK_BYTES: usize = 12;
+pub const CLUSTER_HELLO_BYTES: usize = 48;
 pub const DEFAULT_MAX_ACTIVATION_FLOATS: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,6 +20,104 @@ pub struct ActivationHeader {
 pub struct TokenFeedback {
     pub token_id: u32,
     pub is_finished: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClusterNodeRole {
+    Master = 1,
+    Middle = 2,
+    FinalWorker = 3,
+}
+
+impl ClusterNodeRole {
+    fn from_wire(value: u32) -> io::Result<Self> {
+        match value {
+            1 => Ok(Self::Master),
+            2 => Ok(Self::Middle),
+            3 => Ok(Self::FinalWorker),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid cluster node role: {other}"),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClusterHello {
+    pub role: ClusterNodeRole,
+    pub block_count: u32,
+    pub embedding_length: u32,
+    pub context_length: u32,
+    pub kv_width: u32,
+    pub vocab_size: u32,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub expert_count: u32,
+    pub expert_used_count: u32,
+}
+
+pub fn send_cluster_hello<W: Write>(writer: &mut W, hello: ClusterHello) -> io::Result<()> {
+    let mut bytes = [0_u8; CLUSTER_HELLO_BYTES];
+    let fields = [
+        CLUSTER_HELLO_MAGIC,
+        CLUSTER_PROTOCOL_VERSION,
+        hello.role as u32,
+        hello.block_count,
+        hello.embedding_length,
+        hello.context_length,
+        hello.kv_width,
+        hello.vocab_size,
+        hello.layer_start,
+        hello.layer_end,
+        hello.expert_count,
+        hello.expert_used_count,
+    ];
+    for (idx, field) in fields.iter().enumerate() {
+        let start = idx * 4;
+        bytes[start..start + 4].copy_from_slice(&field.to_le_bytes());
+    }
+    writer.write_all(&bytes)?;
+    writer.flush()
+}
+
+pub fn recv_cluster_hello<R: Read>(reader: &mut R) -> io::Result<ClusterHello> {
+    let mut bytes = [0_u8; CLUSTER_HELLO_BYTES];
+    reader.read_exact(&mut bytes)?;
+
+    let read_u32 = |idx: usize| -> u32 {
+        let start = idx * 4;
+        u32::from_le_bytes(bytes[start..start + 4].try_into().unwrap())
+    };
+
+    let magic = read_u32(0);
+    if magic != CLUSTER_HELLO_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid cluster hello magic: 0x{magic:08X}"),
+        ));
+    }
+
+    let version = read_u32(1);
+    if version != CLUSTER_PROTOCOL_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported cluster protocol version: {version}"),
+        ));
+    }
+
+    Ok(ClusterHello {
+        role: ClusterNodeRole::from_wire(read_u32(2))?,
+        block_count: read_u32(3),
+        embedding_length: read_u32(4),
+        context_length: read_u32(5),
+        kv_width: read_u32(6),
+        vocab_size: read_u32(7),
+        layer_start: read_u32(8),
+        layer_end: read_u32(9),
+        expert_count: read_u32(10),
+        expert_used_count: read_u32(11),
+    })
 }
 
 pub fn send_activation_packet<W: Write>(
@@ -147,10 +248,66 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        ACTIVATION_MAGIC, TOKEN_FEEDBACK_MAGIC, recv_activation_packet,
-        recv_activation_packet_limited, recv_token_feedback, send_activation_packet,
-        send_token_feedback,
+        ACTIVATION_MAGIC, CLUSTER_HELLO_MAGIC, CLUSTER_PROTOCOL_VERSION, ClusterHello,
+        ClusterNodeRole, TOKEN_FEEDBACK_MAGIC, recv_activation_packet,
+        recv_activation_packet_limited, recv_cluster_hello, recv_token_feedback,
+        send_activation_packet, send_cluster_hello, send_token_feedback,
     };
+
+    #[test]
+    fn cluster_hello_round_trips() {
+        let hello = ClusterHello {
+            role: ClusterNodeRole::Middle,
+            block_count: 32,
+            embedding_length: 4096,
+            context_length: 512,
+            kv_width: 1024,
+            vocab_size: 32000,
+            layer_start: 11,
+            layer_end: 22,
+            expert_count: 8,
+            expert_used_count: 2,
+        };
+
+        let mut bytes = Vec::new();
+        send_cluster_hello(&mut bytes, hello).unwrap();
+
+        let decoded = recv_cluster_hello(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(decoded, hello);
+    }
+
+    #[test]
+    fn cluster_hello_rejects_bad_magic_version_and_role() {
+        let mut bad_magic = Vec::new();
+        bad_magic.extend_from_slice(&0_u32.to_le_bytes());
+        bad_magic.extend_from_slice(&CLUSTER_PROTOCOL_VERSION.to_le_bytes());
+        bad_magic.extend_from_slice(&(ClusterNodeRole::Master as u32).to_le_bytes());
+        bad_magic.resize(super::CLUSTER_HELLO_BYTES, 0);
+        let err = recv_cluster_hello(&mut Cursor::new(bad_magic)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("invalid cluster hello magic"));
+
+        let mut bad_version = Vec::new();
+        bad_version.extend_from_slice(&CLUSTER_HELLO_MAGIC.to_le_bytes());
+        bad_version.extend_from_slice(&99_u32.to_le_bytes());
+        bad_version.extend_from_slice(&(ClusterNodeRole::Master as u32).to_le_bytes());
+        bad_version.resize(super::CLUSTER_HELLO_BYTES, 0);
+        let err = recv_cluster_hello(&mut Cursor::new(bad_version)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("unsupported cluster protocol version")
+        );
+
+        let mut bad_role = Vec::new();
+        bad_role.extend_from_slice(&CLUSTER_HELLO_MAGIC.to_le_bytes());
+        bad_role.extend_from_slice(&CLUSTER_PROTOCOL_VERSION.to_le_bytes());
+        bad_role.extend_from_slice(&99_u32.to_le_bytes());
+        bad_role.resize(super::CLUSTER_HELLO_BYTES, 0);
+        let err = recv_cluster_hello(&mut Cursor::new(bad_role)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("invalid cluster node role"));
+    }
 
     #[test]
     fn activation_packet_round_trips_little_endian_payload() {
