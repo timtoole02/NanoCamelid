@@ -77,6 +77,34 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+is_positive_integer() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+require_positive_integer() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_positive_integer "$value"; then
+    echo "$label must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
+is_non_negative_float() {
+  [[ "${1:-}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]
+}
+
+require_non_negative_float() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_non_negative_float "$value"; then
+    echo "$label must be a non-negative number: $value" >&2
+    exit 2
+  fi
+}
+
 redacted_deploy_key_label() {
   if [[ -n "$SSH_KEY" ]]; then
     echo "<ssh-key-path>"
@@ -84,6 +112,10 @@ redacted_deploy_key_label() {
     echo "<ssh-agent>"
   fi
 }
+
+require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
+require_positive_integer "Readiness token count" "$READY_TOKENS"
+require_non_negative_float "Readiness temperature" "$READY_TEMP"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid remote build dry run"

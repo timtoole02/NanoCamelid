@@ -14,7 +14,8 @@ Runs NanoCamelid's standard local validation gate:
   6. ./scripts/pi/ready-1b.sh --dry-run
   7. ./scripts/pi/chat-1b.sh --dry-run
   8. ./scripts/pi/bench-1b-prefill.sh --dry-run
-  9. ./scripts/install.sh --dry-run
+  9. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  10. ./scripts/install.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -154,7 +155,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- ready 1b --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/install.sh --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- ready 1b --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
   exit 0
 fi
 
@@ -204,6 +205,15 @@ echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 
 echo "==> Checking 1B Pi readiness launcher rejects invalid temperature..."
 expect_failure "ready-1b invalid temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/pi/ready-1b.sh --dry-run
+
+echo "==> Checking remote Pi build launcher dry run..."
+./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+
+echo "==> Checking remote Pi build launcher rejects invalid smoke token count..."
+expect_failure "remote_build invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+
+echo "==> Checking remote Pi build launcher rejects invalid readiness temperature..."
+expect_failure "remote_build invalid readiness temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking installer dry run target-dir safety..."
 ./scripts/install.sh --dry-run
