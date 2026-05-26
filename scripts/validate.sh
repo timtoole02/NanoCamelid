@@ -11,21 +11,23 @@ Runs NanoCamelid's standard local validation gate:
   3. cargo clippy --all-targets -- -D warnings
   4. cargo run -- model 1b --dry-run
   5. cargo run -- inspect 1b --dry-run
-  6. cargo run -- smoke 1b --dry-run
-  7. cargo run -- ready 1b --dry-run
-  8. cargo run -- tui 1b --dry-run
-  9. ./scripts/pi/model-1b.sh --dry-run
-  10. ./scripts/pi/smoke-1b.sh --dry-run
-  11. ./scripts/pi/ready-1b.sh --dry-run
-  12. ./scripts/pi/chat-1b.sh --dry-run
-  13. ./scripts/pi/bench-1b-prefill.sh --dry-run
-  14. ./scripts/pi/context-pack-1b.sh --dry-run
-  15. ./scripts/pi/strand-cluster.sh --dry-run
-  16. ./scripts/pi/mixtral-cluster.sh --dry-run
-  17. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  18. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  19. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  20. ./scripts/install.sh --dry-run
+  6. cargo run -- generate 1b --dry-run
+  7. cargo run -- chat 1b --dry-run
+  8. cargo run -- smoke 1b --dry-run
+  9. cargo run -- ready 1b --dry-run
+  10. cargo run -- tui 1b --dry-run
+  11. ./scripts/pi/model-1b.sh --dry-run
+  12. ./scripts/pi/smoke-1b.sh --dry-run
+  13. ./scripts/pi/ready-1b.sh --dry-run
+  14. ./scripts/pi/chat-1b.sh --dry-run
+  15. ./scripts/pi/bench-1b-prefill.sh --dry-run
+  16. ./scripts/pi/context-pack-1b.sh --dry-run
+  17. ./scripts/pi/strand-cluster.sh --dry-run
+  18. ./scripts/pi/mixtral-cluster.sh --dry-run
+  19. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  20. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  21. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  22. ./scripts/install.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -165,7 +167,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- tui 1b --dry-run; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- tui 1b --dry-run; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
   exit 0
 fi
 
@@ -250,6 +252,22 @@ expect_output "inspect 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Lla
 expect_output "inspect 1b selected source" "selected_source: " cargo run -- inspect 1b --dry-run
 expect_failure "inspect 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- inspect 1b --dry-run
 expect_failure "inspect 1b extra argument" cargo run -- inspect 1b extra --dry-run
+
+echo "==> Checking 1B generate CLI dry run..."
+cargo run -- generate 1b --dry-run
+expect_output "generate 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- generate 1b --dry-run
+expect_output "generate 1b placeholder prompt" "prompt: <prompt>" cargo run -- generate 1b --dry-run
+expect_output "generate 1b command" "generate_command: nanocamelid generate /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- generate 1b --dry-run
+expect_output "generate 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- generate 1b --dry-run
+expect_failure "generate 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- generate 1b --dry-run
+
+echo "==> Checking 1B chat CLI dry run..."
+cargo run -- chat 1b --dry-run
+expect_output "chat 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- chat 1b --dry-run
+expect_output "chat 1b placeholder prompt" "prompt: <prompt>" cargo run -- chat 1b --dry-run
+expect_output "chat 1b command" "chat_command: nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- chat 1b --dry-run
+expect_output "chat 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- chat 1b --dry-run
+expect_failure "chat 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- chat 1b --dry-run
 
 echo "==> Checking 1B smoke CLI dry run..."
 cargo run -- smoke 1b --dry-run
