@@ -54,6 +54,20 @@ require_positive_integer() {
   fi
 }
 
+is_non_negative_float() {
+  [[ "${1:-}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]
+}
+
+require_non_negative_float() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_non_negative_float "$value"; then
+    echo "$label must be a non-negative number: $value" >&2
+    exit 2
+  fi
+}
+
 shell_command() {
   printf '%q' "$1"
   shift
@@ -112,6 +126,7 @@ SMOKE_ENABLED_LOWER="$(printf '%s' "$SMOKE_ENABLED" | tr '[:upper:]' '[:lower:]'
 SMOKE_KIND="${NANOCAMELID_CHAT_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_CHAT_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_CHAT_SMOKE_TOKENS:-1}"
+require_non_negative_float "Temperature" "$TEMP"
 require_positive_integer "Max token count" "$MAX_TOKENS"
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"

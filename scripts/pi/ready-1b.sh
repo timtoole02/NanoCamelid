@@ -60,6 +60,20 @@ require_positive_integer() {
   fi
 }
 
+is_non_negative_float() {
+  [[ "${1:-}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]
+}
+
+require_non_negative_float() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_non_negative_float "$value"; then
+    echo "$label must be a non-negative number: $value" >&2
+    exit 2
+  fi
+}
+
 CHAT_ENABLED_OVERRIDE=""
 DRY_RUN=0
 POSITIONAL_ARGS=()
@@ -136,6 +150,7 @@ case "$CHAT_ENABLED_LOWER" in
 esac
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
 require_positive_integer "Direct chat token count" "$CHAT_TOKENS"
+require_non_negative_float "Direct chat temperature" "$CHAT_TEMP"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"

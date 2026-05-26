@@ -158,6 +158,16 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+expect_failure() {
+  local description="$1"
+  shift
+
+  if "$@"; then
+    echo "Expected failure but command passed: $description" >&2
+    exit 1
+  fi
+}
+
 mkdir -p "$CARGO_TARGET_DIR"
 
 echo "==> Cargo target dir: $CARGO_TARGET_DIR"
@@ -186,8 +196,14 @@ echo "==> Checking 1B Pi readiness launcher dry run..."
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run
 
+echo "==> Checking 1B Pi chat launcher rejects invalid temperature..."
+expect_failure "chat-1b invalid temperature" env NANOCAMELID_TEMP=bad ./scripts/pi/chat-1b.sh --dry-run
+
 echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run
+
+echo "==> Checking 1B Pi readiness launcher rejects invalid temperature..."
+expect_failure "ready-1b invalid temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/pi/ready-1b.sh --dry-run
 
 echo "==> Checking installer dry run target-dir safety..."
 ./scripts/install.sh --dry-run
