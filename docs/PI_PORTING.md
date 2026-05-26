@@ -36,6 +36,7 @@ baseline is the Llama 3.2 1B readiness path in the CLI and Pi scripts:
 - `cargo fmt -- --check`
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
+- `cargo run -- model 1b --dry-run`
 - `cargo run -- ready 1b --dry-run`
 - `./scripts/pi/model-1b.sh --dry-run`
 - `./scripts/pi/ready-1b.sh --dry-run`
