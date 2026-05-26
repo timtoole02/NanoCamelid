@@ -953,6 +953,9 @@ fn print_smoke_usage() {
     println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Shared default GGUF path for inspect/generate/smoke"
     );
+    println!("  {SMOKE_KIND_ENV}                    Default smoke 1b/3b kind; default chat");
+    println!("  {SMOKE_PROMPT_ENV}                  Default smoke 1b/3b prompt");
+    println!("  {SMOKE_TOKENS_ENV}                  Default smoke 1b/3b generated token count");
     println!(
         "  {WORKSPACE_ENV}                         Pi workspace for smoke 1b/3b defaults; default {DEFAULT_PI_WORKSPACE}"
     );
@@ -1219,7 +1222,14 @@ fn parse_smoke_1b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
     let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
     let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
     let q4_exists = Path::new(&q4_path).is_file();
-    parse_smoke_1b_args_with_env(args, smoke_model_path_from_env(), &workspace, q4_exists)
+    let defaults = smoke_defaults_from_env()?;
+    parse_smoke_1b_args_with_env_and_defaults(
+        args,
+        smoke_model_path_from_env(),
+        &workspace,
+        q4_exists,
+        defaults,
+    )
 }
 
 fn parse_ready_1b_args(args: &[String]) -> Result<Ready1BArgs, &'static str> {
@@ -1238,7 +1248,13 @@ fn parse_ready_1b_args(args: &[String]) -> Result<Ready1BArgs, &'static str> {
 
 fn parse_smoke_3b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
     let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
-    parse_smoke_3b_args_with_env(args, smoke_model_path_from_env(), &workspace)
+    let defaults = smoke_defaults_from_env()?;
+    parse_smoke_3b_args_with_env_and_defaults(
+        args,
+        smoke_model_path_from_env(),
+        &workspace,
+        defaults,
+    )
 }
 
 #[cfg(test)]
@@ -1334,6 +1350,7 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
     })
 }
 
+#[cfg(test)]
 fn parse_smoke_1b_args_with_env(
     args: &[String],
     env_model_path: Option<String>,
@@ -1401,39 +1418,68 @@ fn parse_smoke_1b_args_with_env_and_defaults(
     })
 }
 
-fn ready_smoke_defaults_from_env() -> Result<SmokeDefaults, &'static str> {
-    let kind = env::var(READY_SMOKE_KIND_ENV)
-        .ok()
-        .or_else(|| env::var(SMOKE_KIND_ENV).ok())
-        .map(|value| {
-            SmokeKind::from_arg(value.trim())
-                .ok_or("unknown ready smoke kind env; expected chat, model, q8-chat, or q8-model")
-        })
-        .transpose()?
-        .unwrap_or(SmokeKind::Q8Chat);
-    let prompt = env::var(READY_SMOKE_PROMPT_ENV)
-        .ok()
-        .or_else(|| env::var(SMOKE_PROMPT_ENV).ok())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_1B_SMOKE_PROMPT.to_owned());
-    let max_tokens = env::var(READY_SMOKE_TOKENS_ENV)
-        .ok()
-        .or_else(|| env::var(SMOKE_TOKENS_ENV).ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&value| value > 0)
-        .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
-
-    Ok(SmokeDefaults {
-        kind,
-        prompt,
-        max_tokens,
-    })
+fn smoke_defaults_from_env() -> Result<SmokeDefaults, &'static str> {
+    smoke_defaults_from_values(
+        SmokeDefaults::default(),
+        env::var(SMOKE_KIND_ENV).ok(),
+        env::var(SMOKE_PROMPT_ENV).ok(),
+        env::var(SMOKE_TOKENS_ENV).ok(),
+        "unknown smoke kind env; expected chat, model, q8-chat, or q8-model",
+        "smoke env max_tokens must be a positive integer",
+    )
 }
 
+fn ready_smoke_defaults_from_env() -> Result<SmokeDefaults, &'static str> {
+    let defaults = smoke_defaults_from_env()?;
+    smoke_defaults_from_values(
+        defaults,
+        env::var(READY_SMOKE_KIND_ENV).ok(),
+        env::var(READY_SMOKE_PROMPT_ENV).ok(),
+        env::var(READY_SMOKE_TOKENS_ENV).ok(),
+        "unknown ready smoke kind env; expected chat, model, q8-chat, or q8-model",
+        "ready smoke env max_tokens must be a positive integer",
+    )
+}
+
+fn smoke_defaults_from_values(
+    mut defaults: SmokeDefaults,
+    kind: Option<String>,
+    prompt: Option<String>,
+    max_tokens: Option<String>,
+    kind_error: &'static str,
+    token_error: &'static str,
+) -> Result<SmokeDefaults, &'static str> {
+    if let Some(value) = kind {
+        defaults.kind = SmokeKind::from_arg(value.trim()).ok_or(kind_error)?;
+    }
+    if let Some(value) = prompt.filter(|value| !value.is_empty()) {
+        defaults.prompt = value;
+    }
+    if let Some(value) = parse_optional_positive_usize(max_tokens.as_ref(), token_error)? {
+        defaults.max_tokens = value;
+    }
+    Ok(defaults)
+}
+
+#[cfg(test)]
 fn parse_smoke_3b_args_with_env(
     args: &[String],
     env_model_path: Option<String>,
     workspace: &str,
+) -> Result<Smoke1BArgs, &'static str> {
+    parse_smoke_3b_args_with_env_and_defaults(
+        args,
+        env_model_path,
+        workspace,
+        SmokeDefaults::default(),
+    )
+}
+
+fn parse_smoke_3b_args_with_env_and_defaults(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    defaults: SmokeDefaults,
 ) -> Result<Smoke1BArgs, &'static str> {
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
@@ -1459,17 +1505,17 @@ fn parse_smoke_3b_args_with_env(
             SmokeKind::from_arg(value)
                 .ok_or("unknown 3B smoke kind; expected chat, model, q8-chat, or q8-model")?
         }
-        _ => SmokeKind::Q8Chat,
+        _ => defaults.kind,
     };
     let prompt = positionals
         .get(option_idx)
         .cloned()
-        .unwrap_or_else(|| DEFAULT_1B_SMOKE_PROMPT.to_owned());
+        .unwrap_or_else(|| defaults.prompt.clone());
     let max_tokens = parse_optional_positive_usize(
         positionals.get(option_idx + 1),
         "3B smoke max_tokens must be a positive integer",
     )?
-    .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
+    .unwrap_or(defaults.max_tokens);
 
     Ok(Smoke1BArgs {
         kind,
@@ -4132,13 +4178,16 @@ mod tests {
         looks_like_gguf_path, parse_cpu_list, parse_generate_args_with_env,
         parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults, parse_smoke_1b_args_with_env,
-        parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
-        parse_tui_args_with_env_and_workspace, parse_tui_command, print_runtime_trace_summary,
-        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
-        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
-        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        resolve_model_path_arg, runtime_options_from_gguf, shared_token_prefix_len, shell_command,
-        smoke_plan_command, trim_tui_history, tui_prompt_history, validate_generation_budget,
+        parse_smoke_1b_args_with_env_and_defaults, parse_smoke_3b_args_with_env,
+        parse_smoke_3b_args_with_env_and_defaults, parse_smoke_args_with_env,
+        parse_tui_args_with_env, parse_tui_args_with_env_and_workspace, parse_tui_command,
+        print_runtime_trace_summary, ready_chat_enabled_from_env_value,
+        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
+        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
+        resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
+        runtime_options_from_gguf, shared_token_prefix_len, shell_command,
+        smoke_defaults_from_values, smoke_plan_command, trim_tui_history, tui_prompt_history,
+        validate_generation_budget,
     };
 
     #[test]
@@ -4875,6 +4924,78 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(parsed.prompt, DEFAULT_1B_SMOKE_PROMPT);
         assert_eq!(parsed.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
+    }
+
+    #[test]
+    fn smoke_1b_args_use_env_style_defaults_when_positionals_are_missing() {
+        let parsed = parse_smoke_1b_args_with_env_and_defaults(
+            &[],
+            None,
+            "/mnt/nanocamelid",
+            true,
+            SmokeDefaults {
+                kind: SmokeKind::Q8Model,
+                prompt: "One token check".to_owned(),
+                max_tokens: 1,
+            },
+        )
+        .expect("custom-default 1B smoke args should parse");
+
+        assert_eq!(parsed.kind, SmokeKind::Q8Model);
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.prompt, "One token check");
+        assert_eq!(parsed.max_tokens, 1);
+    }
+
+    #[test]
+    fn smoke_3b_args_use_env_style_defaults_when_positionals_are_missing() {
+        let parsed = parse_smoke_3b_args_with_env_and_defaults(
+            &[],
+            None,
+            "/mnt/nanocamelid",
+            SmokeDefaults {
+                kind: SmokeKind::Q8Model,
+                prompt: "Three billion check".to_owned(),
+                max_tokens: 3,
+            },
+        )
+        .expect("custom-default 3B smoke args should parse");
+
+        assert_eq!(parsed.kind, SmokeKind::Q8Model);
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.prompt, "Three billion check");
+        assert_eq!(parsed.max_tokens, 3);
+    }
+
+    #[test]
+    fn smoke_defaults_from_values_reject_invalid_kind_and_tokens() {
+        let invalid_kind = smoke_defaults_from_values(
+            SmokeDefaults::default(),
+            Some("broken".to_owned()),
+            None,
+            None,
+            "bad kind",
+            "bad tokens",
+        )
+        .expect_err("invalid smoke kind should fail");
+        assert_eq!(invalid_kind, "bad kind");
+
+        let invalid_tokens = smoke_defaults_from_values(
+            SmokeDefaults::default(),
+            None,
+            None,
+            Some("0".to_owned()),
+            "bad kind",
+            "bad tokens",
+        )
+        .expect_err("zero smoke token default should fail");
+        assert_eq!(invalid_tokens, "bad tokens");
     }
 
     #[test]
