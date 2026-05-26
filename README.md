@@ -291,6 +291,19 @@ the same GGUF path across repeated `inspect`, `generate`, `chat`, and `tui`
 runs, or `NANOCAMELID_SMOKE_GGUF` to override that shared default just for smoke
 validation.
 
+For the standard local validation gate, use:
+
+```bash
+NANOCAMELID_TARGET_DIR="/Volumes/SSK Drive/nanocamelid-target" ./scripts/validate.sh
+./scripts/validate.sh --dry-run
+```
+
+On macOS, `validate.sh` refuses to guess a default target directory or use a
+non-`/Volumes` target. Set `CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` to an
+external drive path first so the repo does not create build artifacts on the
+internal disk. On prepared Pi workspaces, the same script defaults to
+`/mnt/nanocamelid/target`.
+
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
 
