@@ -98,6 +98,9 @@ fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid Llama 3.2 1B chat launch dry run"
+  echo "repo: $REPO"
+  echo "cargo_target_dir: $TARGET_DIR"
+  echo "binary: $BINARY"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
   echo "temp: $TEMP"

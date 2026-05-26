@@ -112,6 +112,11 @@ run_nanocamelid() {
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  echo "NanoCamelid Llama 3.2 1B smoke launcher dry run"
+  echo "repo: $REPO"
+  echo "cargo_target_dir: $TARGET_DIR"
+  echo "launcher_mode: $launcher_mode"
+  echo "binary: $BINARY"
   run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --dry-run
   exit 0
 fi

@@ -149,6 +149,11 @@ run_nanocamelid() {
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  echo "NanoCamelid Llama 3.2 1B readiness launcher dry run"
+  echo "repo: $REPO"
+  echo "cargo_target_dir: $TARGET_DIR"
+  echo "launcher_mode: $launcher_mode"
+  echo "binary: $BINARY"
   READY_ARGS=(ready 1b "$MODEL" "$SMOKE_KIND" "$CHAT_PROMPT" "$CHAT_TOKENS" --dry-run)
   case "$CHAT_ENABLED_LOWER" in
     0 | false | no)
