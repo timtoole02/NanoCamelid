@@ -68,14 +68,16 @@ case "$DEPLOY_MODE" in
     ;;
 esac
 
-case "$REMOTE_SMOKE_KIND" in
-  chat | model | q8-chat | q8-model) ;;
-  *)
-    echo "Unknown smoke kind: $REMOTE_SMOKE_KIND" >&2
-    echo "Expected chat, model, q8-chat, or q8-model." >&2
-    exit 2
-    ;;
-esac
+if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" ]]; then
+  case "$REMOTE_SMOKE_KIND" in
+    chat | model | q8-chat | q8-model) ;;
+    *)
+      echo "Unknown smoke kind: $REMOTE_SMOKE_KIND" >&2
+      echo "Expected chat, model, q8-chat, or q8-model." >&2
+      exit 2
+      ;;
+  esac
+fi
 
 if [[ ! -f "$SSH_KEY" ]]; then
   SSH_OPTS=()
