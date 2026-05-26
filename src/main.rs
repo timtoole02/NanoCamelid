@@ -3022,7 +3022,16 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     };
 
     if parsed.dry_run {
+        let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+        let q4_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+        let q8_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q8_MODEL);
+
         println!("NanoCamelid Llama 3.2 1B readiness dry run");
+        println!("workspace: {workspace}");
+        println!("q4_model: {q4_model_path}");
+        println!("q4_exists: {}", Path::new(&q4_model_path).is_file());
+        println!("q8_model: {q8_model_path}");
+        println!("q8_exists: {}", Path::new(&q8_model_path).is_file());
         println!("selected_source: {}", smoke.model_source);
         println!("model: {}", model_path.display());
         println!("model_exists: {}", model_path.is_file());
