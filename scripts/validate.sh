@@ -173,6 +173,22 @@ expect_failure() {
   fi
 }
 
+expect_output_order() {
+  local description="$1"
+  local first="$2"
+  local second="$3"
+  shift 3
+
+  if ! "$@" | awk -v first="$first" -v second="$second" '
+    index($0, first) && first_line == 0 { first_line = NR }
+    index($0, second) && second_line == 0 { second_line = NR }
+    END { exit !(first_line > 0 && second_line > 0 && first_line < second_line) }
+  '; then
+    echo "Expected output order missing for $description: $first before $second" >&2
+    exit 1
+  fi
+}
+
 expect_output() {
   local description="$1"
   local expected="$2"
@@ -209,6 +225,7 @@ expect_failure "model 1b invalid model arg" cargo run -- model 1b not-a-model --
 echo "==> Checking 1B readiness CLI dry run..."
 cargo run -- ready 1b --dry-run
 expect_output "ready 1b probe command" "probe_command: nanocamelid probe" cargo run -- ready 1b --dry-run
+expect_output_order "ready 1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" cargo run -- ready 1b --dry-run
 
 echo "==> Checking 1B readiness CLI rejects invalid direct chat env..."
 expect_failure "ready 1b invalid direct chat temperature" env NANOCAMELID_READY_TEMP=bad cargo run -- ready 1b --dry-run
@@ -231,6 +248,7 @@ echo "==> Checking 1B Pi readiness launcher dry run..."
 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b probe command" "probe_command: nanocamelid probe" ./scripts/pi/ready-1b.sh --dry-run
+expect_output_order "ready-1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" ./scripts/pi/ready-1b.sh --dry-run
 
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run

@@ -2925,12 +2925,12 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             if chat_enabled { "enabled" } else { "disabled" }
         );
         println!(
-            "inspect_command: {}",
-            shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
-        );
-        println!(
             "probe_command: {}",
             shell_command(&["nanocamelid", "probe"])
+        );
+        println!(
+            "inspect_command: {}",
+            shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
         );
         println!(
             "smoke_command: {}",
