@@ -37,6 +37,7 @@ evidence.
 Quick 1B readiness check on a Pi workspace:
 
 ```bash
+./scripts/pi/model-1b.sh --dry-run
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/chat-1b.sh --dry-run
 ./scripts/pi/context-pack-1b.sh --dry-run
@@ -48,6 +49,9 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run --
 `inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
 first, then the Pi-local `Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback
 under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
+`./scripts/pi/model-1b.sh --dry-run` prints the same 1B model resolution plan
+and shows whether the Q4_0, Q8_0, and selected GGUF files exist before you run
+the heavier smoke gate.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override.
@@ -393,10 +397,15 @@ For the fuller 1B readiness gate, including inspect, smoke, and one direct chat
 turn:
 
 ```bash
+./scripts/pi/model-1b.sh
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/ready-1b.sh --no-chat
 ./scripts/pi/ready-1b.sh --dry-run
 ```
+
+Use `model-1b.sh --dry-run` as a cheap model-placement preflight when the GGUF
+has not been copied yet. Without `--dry-run`, it exits nonzero if the selected
+1B GGUF is missing.
 
 The same gate is available through the CLI when you are already using the
 release binary or Cargo directly:

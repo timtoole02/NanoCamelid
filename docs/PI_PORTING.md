@@ -31,6 +31,7 @@ NanoCamelid is not a direct copy of Camelid. It is a Raspberry Pi focused extrac
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
 - `cargo run -- ready 1b --dry-run`
+- `./scripts/pi/model-1b.sh --dry-run`
 - `cargo run -- probe` on Raspberry Pi 5
 - `cargo run -- inspect <model.gguf>` against a local small-model GGUF
 - `cargo run --release -- bench q8-dot` on Raspberry Pi 5 for repeated scalar vs NEON Q8 dot timing and JSON output
