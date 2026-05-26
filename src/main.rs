@@ -2842,6 +2842,15 @@ fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
         }
         Err(err) => mismatches.push(format!("config_error {err}")),
     }
+    match tokenizer::Tokenizer::from_gguf(gguf) {
+        Ok(tokenizer) => check_shape_value(
+            &mut mismatches,
+            "tokenizer_chat_template_format",
+            "llama3_instruct",
+            tokenizer.chat_template_format().unwrap_or("none"),
+        ),
+        Err(err) => mismatches.push(format!("tokenizer_error {err}")),
+    }
 
     ModelShapeAudit {
         label: "llama32_1b",
@@ -6534,6 +6543,25 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn llama32_1b_shape_audit_requires_llama3_instruct_renderer() {
+        let mut fixture = llama32_1b_shape_fixture();
+        fixture.metadata.insert(
+            "tokenizer.chat_template".to_owned(),
+            GgufMetadataValue::String("{{ bos_token }}{{ messages }}".to_owned()),
+        );
+
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert!(!audit.ready);
+        assert!(
+            audit.mismatches.contains(
+                &"tokenizer_chat_template_format expected llama3_instruct got metadata_unparsed"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
     fn runtime_options_read_qwen2_rope_scaling_metadata() {
         let mut fixture = inspect_fixture(false);
         fixture.metadata.insert(
@@ -6828,6 +6856,13 @@ flags\t\t: sse4_2 avx2
         fixture.metadata.insert(
             "llama.vocab_size".to_owned(),
             GgufMetadataValue::U32(128_256),
+        );
+        fixture.metadata.insert(
+            "tokenizer.chat_template".to_owned(),
+            GgufMetadataValue::String(
+                "{% for message in messages %}<|start_header_id|>{{ message['role'] }}<|end_header_id|>\n\n{{ message['content'] }}<|eot_id|>{% endfor %}<|start_header_id|>assistant<|end_header_id|>\n\n"
+                    .to_owned(),
+            ),
         );
         if let Some(token_embd) = fixture
             .tensors
