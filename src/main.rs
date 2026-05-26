@@ -3405,6 +3405,16 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         );
         println!("status_on_success: ready_1b_status: ok");
         println!(
+            "json_on_success: {}",
+            ready_1b_status_json(
+                model_path,
+                &smoke,
+                chat_enabled,
+                chat_tokens,
+                &context_limit_plan_value()
+            )
+        );
+        println!(
             "probe_command: {}",
             shell_command(&["nanocamelid", "probe"])
         );
@@ -3484,6 +3494,10 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         };
         println!("==> Skipping direct 1B chat turn; {reason}");
         println!("ready_1b_status: ok");
+        println!(
+            "json: {}",
+            ready_1b_status_json(model_path, &smoke, false, None, &context_limit_plan_value())
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -3496,8 +3510,58 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     );
     if chat_code == ExitCode::SUCCESS {
         println!("ready_1b_status: ok");
+        println!(
+            "json: {}",
+            ready_1b_status_json(
+                model_path,
+                &smoke,
+                true,
+                chat_tokens,
+                &context_limit_plan_value()
+            )
+        );
     }
     chat_code
+}
+
+fn ready_1b_status_json(
+    model_path: &Path,
+    smoke: &Smoke1BArgs,
+    direct_chat: bool,
+    chat_tokens: Option<usize>,
+    context_limit: &str,
+) -> String {
+    let chat_tokens = chat_tokens
+        .map(|tokens| tokens.to_string())
+        .unwrap_or_else(|| "null".to_owned());
+    format!(
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
+        json_string(&model_path.display().to_string()),
+        json_string(smoke.model_source),
+        json_string(context_limit),
+        smoke.kind.label(),
+        smoke.max_tokens,
+        direct_chat,
+        chat_tokens
+    )
+}
+
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
@@ -5105,7 +5169,7 @@ mod tests {
         TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
-        is_help_flag, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
+        is_help_flag, json_string, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, parse_bench_q4_layout_args,
         parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
         parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
@@ -5115,12 +5179,13 @@ mod tests {
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
         parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
-        parse_tui_command, print_runtime_trace_summary, ready_chat_enabled_from_env_value,
-        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
-        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
-        resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
-        shared_token_prefix_len, shell_command, smoke_defaults_from_values, smoke_plan_command,
-        trim_tui_history, tui_prompt_history, validate_generation_budget,
+        parse_tui_command, print_runtime_trace_summary, ready_1b_status_json,
+        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
+        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
+        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
+        runtime_options_from_gguf, shared_token_prefix_len, shell_command,
+        smoke_defaults_from_values, smoke_plan_command, trim_tui_history, tui_prompt_history,
+        validate_generation_budget,
     };
 
     #[test]
@@ -6487,6 +6552,36 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             smoke_plan_command("1b", Path::new("/models/custom.gguf"), &parsed),
             "nanocamelid smoke 1b /models/custom.gguf model 'Hello Pi' 2"
+        );
+    }
+
+    #[test]
+    fn json_string_escapes_log_values() {
+        assert_eq!(json_string("plain"), "\"plain\"");
+        assert_eq!(json_string("can't \"skip\"\n"), "\"can't \\\"skip\\\"\\n\"");
+        assert_eq!(json_string("back\\slash"), "\"back\\\\slash\"");
+    }
+
+    #[test]
+    fn ready_1b_status_json_records_success_plan() {
+        let smoke = Smoke1BArgs {
+            kind: SmokeKind::Q8Chat,
+            model_path: "/models/ignored.gguf".to_owned(),
+            model_source: "explicit argument",
+            prompt: "Say hello".to_owned(),
+            max_tokens: 8,
+            dry_run: false,
+        };
+
+        assert_eq!(
+            ready_1b_status_json(
+                Path::new("/models/Llama-3.2-1B-Instruct-Q4_0.gguf"),
+                &smoke,
+                true,
+                Some(4),
+                "512"
+            ),
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"direct_chat\":true,\"chat_tokens\":4}"
         );
     }
 
