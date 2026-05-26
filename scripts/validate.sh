@@ -173,6 +173,17 @@ expect_failure() {
   fi
 }
 
+expect_output() {
+  local description="$1"
+  local expected="$2"
+  shift 2
+
+  if ! "$@" | grep -F "$expected" >/dev/null; then
+    echo "Expected output missing for $description: $expected" >&2
+    exit 1
+  fi
+}
+
 mkdir -p "$CARGO_TARGET_DIR"
 
 echo "==> Cargo target dir: $CARGO_TARGET_DIR"
@@ -213,12 +224,15 @@ expect_failure "model-1b invalid model arg" ./scripts/pi/model-1b.sh not-a-model
 
 echo "==> Checking 1B Pi smoke launcher dry run..."
 ./scripts/pi/smoke-1b.sh --dry-run
+expect_output "smoke-1b selected source" "selected_source: " ./scripts/pi/smoke-1b.sh --dry-run
 
 echo "==> Checking 1B Pi readiness launcher dry run..."
 ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
 
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b selected source" "selected_source: " ./scripts/pi/chat-1b.sh --dry-run
 
 echo "==> Checking 1B Pi chat launcher rejects invalid temperature..."
 expect_failure "chat-1b invalid temperature" env NANOCAMELID_TEMP=bad ./scripts/pi/chat-1b.sh --dry-run
@@ -228,6 +242,7 @@ env NANOCAMELID_CHAT_SMOKE=0 NANOCAMELID_CHAT_SMOKE_KIND=bad NANOCAMELID_CHAT_SM
 
 echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output "bench-1b-prefill selected source" "selected_source: " ./scripts/pi/bench-1b-prefill.sh --dry-run
 
 echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid generated token count..."
 expect_failure "bench-1b-prefill invalid generated token count" env NANOCAMELID_PREFILL_TOKENS=0 ./scripts/pi/bench-1b-prefill.sh --dry-run
@@ -240,6 +255,7 @@ expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BAT
 
 echo "==> Checking 1B Pi context-pack launcher dry run..."
 ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b selected source" "selected_source: " ./scripts/pi/context-pack-1b.sh --dry-run
 
 echo "==> Checking 1B Pi context-pack launcher rejects invalid context cap..."
 expect_failure "context-pack-1b invalid context cap" env NANOCAMELID_CONTEXT_PACKS=512,bad,2048 ./scripts/pi/context-pack-1b.sh --dry-run

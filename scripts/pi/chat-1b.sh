@@ -104,13 +104,17 @@ Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
 if [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
   MODEL="$NANOCAMELID_MODEL_GGUF"
+  MODEL_SOURCE="NANOCAMELID_MODEL_GGUF"
 elif [[ -f "$Q4_MODEL" ]]; then
   MODEL="$Q4_MODEL"
+  MODEL_SOURCE="workspace Q4_0 default"
 else
   MODEL="$Q8_MODEL"
+  MODEL_SOURCE="workspace Q8_0 fallback"
 fi
 if looks_like_gguf_path "${1:-}"; then
   MODEL="$1"
+  MODEL_SOURCE="explicit argument"
   shift
 fi
 if [[ $# -gt 2 ]]; then
@@ -157,6 +161,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "cargo_target_dir: $TARGET_DIR"
   echo "launcher_mode: $launcher_mode"
   echo "binary: $BINARY"
+  echo "selected_source: $MODEL_SOURCE"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
   echo "temp: $TEMP"
