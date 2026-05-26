@@ -2390,11 +2390,21 @@ fn bench_q4_prefill(prompt_len: usize, batch_size: usize, runs: usize) -> ExitCo
     let median = median_duration(elapsed_runs.clone());
     let median_ms = median.as_secs_f64() * 1000.0;
     let median_ms_per_token = median_ms / prompt_len as f64;
+    let median_prompt_tokens_per_sec = if median_ms > 0.0 {
+        prompt_len as f64 / (median_ms / 1000.0)
+    } else {
+        0.0
+    };
     let min_ms = elapsed_runs
         .iter()
         .min()
         .map(|duration| duration.as_secs_f64() * 1000.0)
         .unwrap_or_default();
+    let max_prompt_tokens_per_sec = if min_ms > 0.0 {
+        prompt_len as f64 / (min_ms / 1000.0)
+    } else {
+        0.0
+    };
 
     println!("NanoCamelid Q4 prefill benchmark");
     println!("prompt_len: {prompt_len}");
@@ -2408,9 +2418,11 @@ fn bench_q4_prefill(prompt_len: usize, batch_size: usize, runs: usize) -> ExitCo
     }
     println!("median_ms: {median_ms:.3}");
     println!("median_ms_per_token: {median_ms_per_token:.3}");
+    println!("median_prompt_tokens_per_sec: {median_prompt_tokens_per_sec:.3}");
     println!("min_ms: {min_ms:.3}");
+    println!("max_prompt_tokens_per_sec: {max_prompt_tokens_per_sec:.3}");
     println!(
-        "json: {{\"benchmark\":\"q4-prefill\",\"prompt_len\":{},\"batch_size\":{},\"runs\":{},\"rows\":{},\"cols\":{},\"kernel\":\"{}\",\"run_ms\":{},\"median_ms\":{:.6},\"median_ms_per_token\":{:.6},\"min_ms\":{:.6}}}",
+        "json: {{\"benchmark\":\"q4-prefill\",\"prompt_len\":{},\"batch_size\":{},\"runs\":{},\"rows\":{},\"cols\":{},\"kernel\":\"{}\",\"run_ms\":{},\"median_ms\":{:.6},\"median_ms_per_token\":{:.6},\"median_prompt_tokens_per_sec\":{:.6},\"min_ms\":{:.6},\"max_prompt_tokens_per_sec\":{:.6}}}",
         prompt_len,
         batch_size,
         runs,
@@ -2420,7 +2432,9 @@ fn bench_q4_prefill(prompt_len: usize, batch_size: usize, runs: usize) -> ExitCo
         duration_ms_json(&elapsed_runs),
         median_ms,
         median_ms_per_token,
-        min_ms
+        median_prompt_tokens_per_sec,
+        min_ms,
+        max_prompt_tokens_per_sec
     );
 
     ExitCode::SUCCESS

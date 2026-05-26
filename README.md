@@ -533,6 +533,8 @@ cargo run --release -- bench q4-prefill 128 16
 ```
 
 Each cargo benchmark prints human-readable timing plus a JSON summary line.
+`bench q4-prefill` reports both milliseconds per prompt token and prompt
+tokens/sec so Pi prefill sweeps can be compared without manual conversion.
 Treat results as specific to the exact Pi, model, build, and environment used.
 The 1B prefill sweep is model-backed and reports NanoCamelid's normal prompt
 ingestion and generation timing for each selected batch size, then emits a
