@@ -32,7 +32,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-echo "Connecting to ${PI_USER}@${PI_HOST} to check/create directories..."
+echo "Connecting to target Pi to check/create directories..."
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" "mkdir -p '$PI_REPO'"
 
 if [[ "$DEPLOY_MODE" == "git-ff" ]]; then
@@ -105,7 +105,7 @@ elif [[ "$DEPLOY_MODE" != "rsync" ]]; then
   exit 2
 fi
 
-echo "Syncing NanoCamelid folder via rsync from $REPO_ROOT..."
+echo "Syncing NanoCamelid folder via rsync from $REPO_ROOT to target Pi..."
 RSYNC_SSH=()
 if [[ ${#SSH_OPTS[@]} -gt 0 ]]; then
   RSYNC_SSH=(-e "ssh -i $SSH_KEY")
@@ -127,4 +127,4 @@ rsync -avz \
   "${PI_USER}@${PI_HOST}:$PI_REPO"
 
 echo "Synchronization complete!"
-echo "Source files deployed to: $PI_REPO on the Pi"
+echo "Source files deployed to Pi workspace."

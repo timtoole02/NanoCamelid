@@ -135,7 +135,7 @@ fi
 echo "Deploying latest changes first..."
 "$(dirname "$0")/deploy.sh" "$PI_HOST" "$SSH_KEY" "$PI_USER" "$DEPLOY_MODE"
 
-echo "Building NanoCamelid on ${PI_USER}@${PI_HOST}..."
+echo "Building NanoCamelid on target Pi..."
 printf -v REMOTE_PI_WORKSPACE '%q' "$PI_WORKSPACE"
 printf -v REMOTE_PI_TARGET_DIR '%q' "$PI_TARGET_DIR"
 printf -v REMOTE_PI_REPO '%q' "$PI_REPO"
