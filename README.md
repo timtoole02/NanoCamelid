@@ -59,9 +59,9 @@ the heavier smoke gate.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override.
-`ready 1b` runs the host fast-path probe, inspect, scalar-vs-selected smoke
-validation, and one direct chat turn. Set `NANOCAMELID_READY_CHAT=0` for
-probe+inspect+smoke only, or set
+`ready 1b` runs the host fast-path probe, strict Llama 3.2 1B shape audit,
+inspect, scalar-vs-selected smoke validation, and one direct chat turn. Set
+`NANOCAMELID_READY_CHAT=0` for probe+audit+inspect+smoke only, or set
 `NANOCAMELID_READY_PROMPT`, `NANOCAMELID_READY_TOKENS`, and
 `NANOCAMELID_READY_TEMP` when the direct chat turn should differ from the smoke
 prompt.
@@ -411,8 +411,8 @@ For the matching one-command 1B validation path on that same Pi workspace:
 ./scripts/pi/smoke-1b.sh
 ```
 
-For the fuller 1B readiness gate, including host fast-path probe, inspect,
-smoke, and one direct chat turn:
+For the fuller 1B readiness gate, including host fast-path probe, strict model
+shape audit, inspect, smoke, and one direct chat turn:
 
 ```bash
 ./scripts/pi/model-1b.sh
@@ -435,10 +435,11 @@ nanocamelid ready 1b --dry-run
 nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ```
 
-Use `--no-chat` or `--smoke-only` for the inspect plus smoke-only form when you
-want the gate to validate the model path without launching the final direct
-chat turn. Use `--dry-run` to print the resolved 1B model path, smoke settings,
-host probe command, and direct-chat gate without loading the GGUF. For
+Use `--no-chat` or `--smoke-only` for the audit plus inspect plus smoke-only
+form when you want the gate to validate the model path without launching the
+final direct chat turn. Use `--dry-run` to print the resolved 1B model path,
+smoke settings, host probe command, model audit command, and direct-chat gate
+without loading the GGUF. For
 non-interactive automation, the CLI and `ready-1b.sh` also honor
 `NANOCAMELID_READY_SMOKE_KIND`, `NANOCAMELID_READY_SMOKE_PROMPT`, and
 `NANOCAMELID_READY_SMOKE_TOKENS` as smoke defaults before the final direct chat

@@ -7,9 +7,10 @@ usage() {
 Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]
 
 Runs NanoCamelid's Pi-local Llama 3.2 1B readiness gate:
-  1. inspect the selected GGUF
-  2. run scalar-vs-selected smoke validation
-  3. run one direct chat turn
+  1. audit the selected GGUF's Llama 3.2 1B shape
+  2. inspect the selected GGUF
+  3. run scalar-vs-selected smoke validation
+  4. run one direct chat turn
 
 Model resolution:
   1. explicit model.gguf argument
@@ -27,8 +28,8 @@ Useful env:
   NANOCAMELID_READY_PROMPT         Direct chat prompt
   NANOCAMELID_READY_TOKENS         Direct chat generated token count
   NANOCAMELID_READY_TEMP           Direct chat temperature, default 0.0
-  NANOCAMELID_READY_CHAT=0         Stop after inspect and smoke
-  --no-chat, --smoke-only          Stop after inspect and smoke; positionals override the smoke prompt
+  NANOCAMELID_READY_CHAT=0         Stop after audit, inspect, and smoke
+  --no-chat, --smoke-only          Stop after audit, inspect, and smoke; positionals override the smoke prompt
   --chat                           Force the direct chat turn even when NANOCAMELID_READY_CHAT=0
   --dry-run                        Print the resolved readiness plan without loading the model
 USAGE
@@ -215,6 +216,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "direct_chat: $([[ "$CHAT_ENABLED_LOWER" == "0" || "$CHAT_ENABLED_LOWER" == "false" || "$CHAT_ENABLED_LOWER" == "no" ]] && echo disabled || echo enabled)"
   printf 'probe_command: '
   shell_command nanocamelid probe
+  printf 'model_command: '
+  shell_command nanocamelid model 1b "$MODEL"
   printf 'inspect_command: '
   shell_command nanocamelid inspect "$MODEL"
   printf 'smoke_command: '
@@ -262,6 +265,9 @@ fi
 
 echo "==> Probing host fast-path support"
 run_nanocamelid probe
+
+echo "==> Auditing 1B model shape: $MODEL"
+run_nanocamelid model 1b "$MODEL"
 
 echo "==> Inspecting 1B model: $MODEL"
 run_nanocamelid inspect "$MODEL"

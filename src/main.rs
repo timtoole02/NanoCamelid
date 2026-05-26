@@ -886,12 +886,12 @@ fn print_ready_usage() {
     );
     println!();
     println!(
-        "Run the Llama 3.2 1B readiness gate: inspect metadata, smoke scalar-vs-selected logits, then run one direct chat turn."
+        "Run the Llama 3.2 1B readiness gate: audit shape, inspect metadata, smoke scalar-vs-selected logits, then run one direct chat turn."
     );
     println!();
     println!("Options:");
     println!(
-        "  --no-chat, --smoke-only                  Stop after inspect and smoke; positionals override the smoke prompt"
+        "  --no-chat, --smoke-only                  Stop after audit, inspect, and smoke; positionals override the smoke prompt"
     );
     println!("  --chat                                   Force the direct chat turn");
     println!(
@@ -913,7 +913,7 @@ fn print_ready_usage() {
     println!("  {READY_SMOKE_KIND_ENV:<38} Smoke kind, default chat");
     println!("  {READY_SMOKE_PROMPT_ENV:<38} Smoke prompt");
     println!("  {READY_SMOKE_TOKENS_ENV:<38} Smoke generated token count");
-    println!("  {READY_CHAT_ENV:<38} Set to 0 to stop after inspect and smoke");
+    println!("  {READY_CHAT_ENV:<38} Set to 0 to stop after audit, inspect, and smoke");
     println!("  {READY_PROMPT_ENV:<38} Direct chat prompt after smoke");
     println!("  {READY_TOKENS_ENV:<38} Direct chat generated token count");
     println!("  {READY_TEMP_ENV:<38} Direct chat temperature, default 0.0");
@@ -2998,6 +2998,10 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    audit_llama32_1b_model_shape(model_path)
+}
+
+fn audit_llama32_1b_model_shape(model_path: &Path) -> ExitCode {
     match gguf::read_file(model_path) {
         Ok(file) => {
             let shape = llama32_1b_shape_audit(&file);
@@ -3075,6 +3079,15 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             shell_command(&["nanocamelid", "probe"])
         );
         println!(
+            "model_command: {}",
+            shell_command(&[
+                "nanocamelid",
+                "model",
+                "1b",
+                &model_path.display().to_string()
+            ])
+        );
+        println!(
             "inspect_command: {}",
             shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
         );
@@ -3113,6 +3126,11 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     println!("NanoCamelid Llama 3.2 1B readiness");
     println!("==> Probing host fast-path support");
     print_probe();
+    println!("==> Auditing 1B model shape: {}", model_path.display());
+    let model_audit_code = audit_llama32_1b_model_shape(model_path);
+    if model_audit_code != ExitCode::SUCCESS {
+        return model_audit_code;
+    }
     println!("==> Inspecting 1B model: {}", model_path.display());
     let inspect_code = inspect_gguf(model_path);
     if inspect_code != ExitCode::SUCCESS {
