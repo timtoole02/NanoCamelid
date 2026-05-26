@@ -59,6 +59,15 @@ if [[ -z "$PI_HOST" ]]; then
   exit 1
 fi
 
+case "$DEPLOY_MODE" in
+  rsync | git-ff) ;;
+  *)
+    echo "Unknown deploy mode: $DEPLOY_MODE" >&2
+    echo "Expected rsync or git-ff." >&2
+    exit 2
+    ;;
+esac
+
 case "$REMOTE_SMOKE_KIND" in
   chat | model | q8-chat | q8-model) ;;
   *)

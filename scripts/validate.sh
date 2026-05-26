@@ -262,6 +262,9 @@ env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/pi/ready-1b.
 echo "==> Checking remote Pi build launcher dry run..."
 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
+echo "==> Checking remote Pi build launcher rejects invalid deploy mode..."
+expect_failure "remote_build invalid deploy mode" ./scripts/remote_build.sh "<redacted-pi-host>" "" "" bad-mode --dry-run
+
 echo "==> Checking remote Pi build launcher rejects invalid smoke token count..."
 expect_failure "remote_build invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
