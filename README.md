@@ -11,8 +11,9 @@ evidence.
 ## Current State
 
 - GGUF metadata and tensor layout inspection are available.
-- Q8_0, Q4_0, Q4_1, and Q6_K tensor paths are implemented for the tested rows
-  below.
+- Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q4_K, Q5_K, and Q6_K tensor paths are
+  implemented in the runtime. The model catalog below only marks rows as
+  supported after Pi-local, row-specific smoke/parity evidence exists.
 - Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma turn-template
   rendering is available for smoke tests and chat.
 - The terminal TUI keeps the model loaded and reuses matching KV-cache prefixes
@@ -821,6 +822,8 @@ Useful output to check:
 - GGUF metadata and tensor layout inspection are available.
 - Q8_0 scalar, NEON, and auto-selected SDOT dot-product paths are available.
 - Q4_0 loading and Q4_0 weight x Q8_0 activation matmul paths are available.
+- Q5_0, Q5_1, Q4_K, and Q5_K loading plus Q8-activation matmul paths are
+  available through scalar reference kernels.
 - Single-turn chat prompt rendering is available for recognized instruct templates.
 - Interactive terminal chat is available with model/kernel, token, TTFT, and throughput telemetry.
 - The TUI can switch GGUFs at runtime with `/model <path>`.
