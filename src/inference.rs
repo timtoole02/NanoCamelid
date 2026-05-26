@@ -2222,7 +2222,9 @@ pub fn matmul_q4_k(
         for (block_idx, w_block) in w_row.iter().enumerate() {
             let x_block_start = block_idx * QK_K_BLOCK_SIZE;
             let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
-            sum += w_block.dot_q8_scaled(
+            let unpacked = w_block.unpack();
+            sum += crate::q8::Q4KBlock::dot_q8_scaled_preloaded(
+                &unpacked,
                 &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
                 &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
             );
@@ -2294,7 +2296,9 @@ pub fn matmul_q5_k(
         for (block_idx, w_block) in w_row.iter().enumerate() {
             let x_block_start = block_idx * QK_K_BLOCK_SIZE;
             let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
-            sum += w_block.dot_q8_scaled(
+            let unpacked = w_block.unpack();
+            sum += crate::q8::Q5KBlock::dot_q8_scaled_preloaded(
+                &unpacked,
                 &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
                 &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
             );
