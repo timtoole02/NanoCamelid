@@ -598,7 +598,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
 | Mixtral 8x7B Instruct v0.1 | Q4_0 | Supported three-Pi cluster chat | Expert-indexed MoE tensors inspect as `ready`; three-Pi `master-chat` handshake validated the `0..11`, `11..22`, `22..32` split, rendered the `[INST]` prompt, and generated 8 tokens at about `1.26 tok/sec`. Single-Pi full generation OOMs on 16 GB Pi RAM. |
 | Qwen2.5-Coder 32B Instruct | Q4_0 | Cluster smoke only | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec`; this is not a single-Pi claim. |
-| Llama 3 70B Instruct | Q4_0 | Token-level cluster smoke only | Three-Pi token-level smoke generated two tokens at about `0.17 tok/sec`; full prompt-level chat still needs tokenizer support for the tested GGUF. |
+| Llama 3 70B Instruct | Q4_0 | Supported three-Pi cluster chat | Tested GGUF inspects as `ready`, uses the `llama3_instruct` chat renderer, and three-Pi `master-chat` generated 4 tokens with the `0..27`, `27..54`, `54..80` split at about `0.29 tok/sec` after a 19-token prompt ingest. This is not a single-Pi claim. |
 
 See [`docs/MODEL_CATALOG.md`](docs/MODEL_CATALOG.md) for likely-compatible
 rows to test next and model families that are intentionally not claimable yet.
@@ -628,6 +628,9 @@ Current Pi 2 evidence, measured on local release builds:
   (`0.17 tok/sec`).
 - Experimental Q6_K SDOT on Pi 2 preserved the Strand 14B one-token smoke output
   and reduced a capped one-token wall-clock run from `78s` to `54s`.
+- Llama 3 70B Instruct Q4_0 three-Pi `master-chat`: 19-token prompt ingest
+  took about `100.39s`; generated `"Raspberry Pi clusters"` as 4 tokens in
+  `13.93s` (`0.29 tok/sec`) with the `0..27`, `27..54`, `54..80` split.
 - Q4_0 page-aligned 1x4 swizzled storage improved the isolated Pi 2 layout
   microbenchmark from `99.716ms` to `96.445ms` over 7 runs, about `1.034x`
   versus contiguous swizzled storage. The same Qwen prompt stayed essentially

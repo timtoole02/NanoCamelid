@@ -49,7 +49,7 @@ These rows have been loaded and generated on Raspberry Pi-class ARM64 hardware.
 | Strand Rust Coder 14B | `Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF`, `Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf` | `qwen2` | Supported but slow | README-documented capped-context smoke, about `0.17 tok/sec` |
 | Mixtral 8x7B Instruct v0.1 | `mixtral-8x7b-instruct-v0.1.Q4_0.gguf` | `llama` MoE | Supported three-Pi cluster chat | `inspect` reports `ready`; three-Pi `master-chat` handshake validates the `0..11`, `11..22`, `22..32` split, renders the `[INST]` prompt, and generated 8 tokens at about `1.26 tok/sec`. Single-Pi full generation OOMs on 16 GB Pi RAM. |
 | Qwen2.5-Coder 32B Instruct | `qwen2.5-coder-32b-instruct-q4_0.gguf` | `qwen2` | Supported cluster/large-model smoke | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec` |
-| Llama 3 70B Instruct | `Meta-Llama-3-70B-Instruct.Q4_0.gguf` | `llama` | Token-level cluster smoke only | Three-Pi token-level smoke generated two tokens at about `0.17 tok/sec`; prompt tokenizer path still needs full support |
+| Llama 3 70B Instruct | `Meta-Llama-3-70B-Instruct.Q4_0.gguf` | `llama` | Supported three-Pi cluster chat | `inspect` reports `ready`; missing GGUF `tokenizer.ggml.pre` is accepted for Llama BPE metadata; `master-chat` renders `llama3_instruct` and generated `"Raspberry Pi clusters"` as 4 tokens at about `0.29 tok/sec` after a 19-token prompt ingest with the `0..27`, `27..54`, `54..80` split. Single-Pi support is not claimed. |
 
 ## Likely Compatible, Test Next
 
@@ -79,7 +79,6 @@ Do not present these as supported until the listed runtime gaps are closed.
 | Broader Gemma family | Gemma 3 1B IT Q4_0 is supported; broader Gemma rows are not claimed yet | Add row-specific smokes for each exact GGUF, especially larger Gemma rows with soft-capping or alternate tensor mixes |
 | Phi family | Phi-3.5 Mini Instruct Q4_0 inspects, but generation is not supported yet because the tested GGUF uses fused `blk.*.attn_qkv.weight` tensors | Add fused-QKV load/runtime splitting and parity tests before promoting |
 | LFM2 family | LFM2 700M/1.2B/2.6B inspect enough metadata and tokenizer state to identify the rows, but generation is not supported yet because the architecture includes shortconv/hybrid blocks and lacks the dense Llama-style `output_norm.weight` contract | Add LFM2 shortconv/hybrid runtime support, then rerun the full support matrix |
-| Llama 3 70B prompt-level chat | Partial only | Token-level cluster smoke works; full prompt text path needs tokenizer compatibility for the exact 70B GGUF metadata |
 
 ## Promotion Checklist
 
