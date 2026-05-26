@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     hint::black_box,
     io::{self, Write},
@@ -2136,6 +2137,26 @@ fn inspect_gguf(path: &Path) -> ExitCode {
                 }
             );
             println!("  tied_output: {}", runtime.tied_output);
+            println!(
+                "  tensor_type_support: {}",
+                if runtime.unsupported_tensor_types.is_empty() {
+                    "ok"
+                } else {
+                    "unsupported"
+                }
+            );
+            if !runtime.supported_tensor_types.is_empty() {
+                println!(
+                    "  supported_tensor_types: {}",
+                    runtime.supported_tensor_types.join(",")
+                );
+            }
+            if !runtime.unsupported_tensor_types.is_empty() {
+                println!(
+                    "  unsupported_tensor_types: {}",
+                    runtime.unsupported_tensor_types.join(",")
+                );
+            }
 
             match &runtime.model_config {
                 Ok(config) => {
@@ -2261,6 +2282,8 @@ fn inspect_gguf(path: &Path) -> ExitCode {
 struct InspectRuntimeSummary {
     ready: bool,
     tied_output: bool,
+    supported_tensor_types: Vec<String>,
+    unsupported_tensor_types: Vec<String>,
     model_config: Result<model::LlamaModelConfig, String>,
     tensor_layouts: Result<(), String>,
     tokenizer: Result<InspectTokenizerSummary, String>,
@@ -2305,15 +2328,58 @@ fn inspect_runtime_summary(gguf: &gguf::GgufFile) -> InspectRuntimeSummary {
         .tensors
         .iter()
         .any(|tensor| tensor.name == "output.weight");
-    let ready = model_config.is_ok() && tensor_layouts.is_ok() && tokenizer.is_ok();
+    let (supported_tensor_types, unsupported_tensor_types) = inspect_tensor_type_support(gguf);
+    let ready = model_config.is_ok()
+        && tensor_layouts.is_ok()
+        && tokenizer.is_ok()
+        && unsupported_tensor_types.is_empty();
 
     InspectRuntimeSummary {
         ready,
         tied_output,
+        supported_tensor_types,
+        unsupported_tensor_types,
         model_config,
         tensor_layouts,
         tokenizer,
     }
+}
+
+fn inspect_tensor_type_support(gguf: &gguf::GgufFile) -> (Vec<String>, Vec<String>) {
+    let mut supported = BTreeSet::new();
+    let mut unsupported = BTreeSet::new();
+
+    for tensor in &gguf.tensors {
+        let name = tensor.tensor_type.name().to_owned();
+        if runtime_supports_tensor_type(tensor.tensor_type) {
+            supported.insert(name);
+        } else {
+            unsupported.insert(name);
+        }
+    }
+
+    (
+        supported.into_iter().collect(),
+        unsupported.into_iter().collect(),
+    )
+}
+
+fn runtime_supports_tensor_type(tensor_type: gguf::GgufTensorType) -> bool {
+    matches!(
+        tensor_type,
+        gguf::GgufTensorType::F32
+            | gguf::GgufTensorType::F16
+            | gguf::GgufTensorType::Q8_0
+            | gguf::GgufTensorType::Q4_0
+            | gguf::GgufTensorType::Q4_1
+            | gguf::GgufTensorType::Q5_0
+            | gguf::GgufTensorType::Q5_1
+            | gguf::GgufTensorType::Q2K
+            | gguf::GgufTensorType::Q3K
+            | gguf::GgufTensorType::Q4K
+            | gguf::GgufTensorType::Q5K
+            | gguf::GgufTensorType::Q6K
+    )
 }
 
 fn smoke_q8_model(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode {
@@ -4778,6 +4844,8 @@ flags\t\t: sse4_2 avx2
         assert!(summary.ready);
         assert!(summary.tensor_layouts.is_ok());
         assert!(summary.tied_output);
+        assert!(summary.unsupported_tensor_types.is_empty());
+        assert!(summary.supported_tensor_types.contains(&"Q8_0".to_owned()));
         assert_eq!(
             summary
                 .model_config
@@ -4802,6 +4870,43 @@ flags\t\t: sse4_2 avx2
             .tensor_layouts
             .expect_err("broken fixture should fail tensor layout validation");
         assert!(err.contains("blk.0.ffn_down.weight"));
+    }
+
+    #[test]
+    fn inspect_runtime_summary_reports_unsupported_tensor_types() {
+        let mut fixture = inspect_fixture(false);
+        fixture.tensors.push(tensor_desc(
+            "unsupported.weight",
+            vec![32, 32],
+            GgufTensorType::Q8_1,
+            36,
+        ));
+
+        let summary = inspect_runtime_summary(&fixture);
+        assert!(!summary.ready);
+        assert_eq!(summary.unsupported_tensor_types, vec!["Q8_1".to_owned()]);
+    }
+
+    #[test]
+    fn inspect_runtime_summary_accepts_low_bit_k_tensor_types() {
+        let mut fixture = inspect_fixture(false);
+        fixture.tensors.push(tensor_desc(
+            "q2.weight",
+            vec![256, 1],
+            GgufTensorType::Q2K,
+            84,
+        ));
+        fixture.tensors.push(tensor_desc(
+            "q3.weight",
+            vec![256, 1],
+            GgufTensorType::Q3K,
+            110,
+        ));
+
+        let summary = inspect_runtime_summary(&fixture);
+        assert!(summary.unsupported_tensor_types.is_empty());
+        assert!(summary.supported_tensor_types.contains(&"Q2_K".to_owned()));
+        assert!(summary.supported_tensor_types.contains(&"Q3_K".to_owned()));
     }
 
     #[test]

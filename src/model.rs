@@ -9,10 +9,10 @@ use std::{
 
 use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{
-    Q4_0Block, Q4_1Block, Q4KBlock, Q5_0Block, Q5_1Block, Q5KBlock, Q6KBlock, Q8_0Block,
-    QK_K_BLOCK_SIZE, decode_q4_0_blocks, decode_q4_1_blocks, decode_q4_k_blocks,
-    decode_q5_0_blocks, decode_q5_1_blocks, decode_q5_k_blocks, decode_q6_k_blocks,
-    decode_q8_0_blocks, swizzle_q4_0_1x4,
+    Q2KBlock, Q3KBlock, Q4_0Block, Q4_1Block, Q4KBlock, Q5_0Block, Q5_1Block, Q5KBlock, Q6KBlock,
+    Q8_0Block, QK_K_BLOCK_SIZE, decode_q2_k_blocks, decode_q3_k_blocks, decode_q4_0_blocks,
+    decode_q4_1_blocks, decode_q4_k_blocks, decode_q5_0_blocks, decode_q5_1_blocks,
+    decode_q5_k_blocks, decode_q6_k_blocks, decode_q8_0_blocks, swizzle_q4_0_1x4,
 };
 use memmap2::Mmap;
 
@@ -266,6 +266,8 @@ pub enum QuantizedMatrix {
     Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix),
     Q5_0(Vec<Q5_0Block>),
     Q5_1(Vec<Q5_1Block>),
+    Q2K(Vec<Q2KBlock>),
+    Q3K(Vec<Q3KBlock>),
     Q4K(Vec<Q4KBlock>),
     Q5K(Vec<Q5KBlock>),
     Q6K(Vec<Q6KBlock>),
@@ -828,6 +830,26 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             }
             Ok(data)
         }
+        GgufTensorType::Q2K => {
+            let blocks = decode_q2_k_blocks(bytes).map_err(|e| e.to_string())?;
+            let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
+            for block in blocks {
+                let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
+                block.dequantize(&mut values);
+                data.extend_from_slice(&values);
+            }
+            Ok(data)
+        }
+        GgufTensorType::Q3K => {
+            let blocks = decode_q3_k_blocks(bytes).map_err(|e| e.to_string())?;
+            let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
+            for block in blocks {
+                let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
+                block.dequantize(&mut values);
+                data.extend_from_slice(&values);
+            }
+            Ok(data)
+        }
         GgufTensorType::Q4K => {
             let blocks = decode_q4_k_blocks(bytes).map_err(|e| e.to_string())?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
@@ -898,6 +920,12 @@ fn load_quantized_matrix(
         GgufTensorType::Q5_1 => decode_q5_1_blocks(bytes)
             .map(QuantizedMatrix::Q5_1)
             .map_err(|e| e.to_string()),
+        GgufTensorType::Q2K => decode_q2_k_blocks(bytes)
+            .map(QuantizedMatrix::Q2K)
+            .map_err(|e| e.to_string()),
+        GgufTensorType::Q3K => decode_q3_k_blocks(bytes)
+            .map(QuantizedMatrix::Q3K)
+            .map_err(|e| e.to_string()),
         GgufTensorType::Q4K => decode_q4_k_blocks(bytes)
             .map(QuantizedMatrix::Q4K)
             .map_err(|e| e.to_string()),
@@ -908,7 +936,7 @@ fn load_quantized_matrix(
             .map(QuantizedMatrix::Q6K)
             .map_err(|e| e.to_string()),
         other => Err(format!(
-            "expected Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q4_K, Q5_K, or Q6_K tensor type for {name}, got {other:?}"
+            "expected Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, or Q6_K tensor type for {name}, got {other:?}"
         )),
     }
 }

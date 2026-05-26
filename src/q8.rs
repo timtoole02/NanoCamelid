@@ -20,6 +20,8 @@ pub const Q4_1_BLOCK_BYTES: usize = 4 + (Q8_BLOCK_SIZE / 2);
 pub const Q5_0_BLOCK_BYTES: usize = 2 + 4 + (Q8_BLOCK_SIZE / 2);
 pub const Q5_1_BLOCK_BYTES: usize = 4 + 4 + (Q8_BLOCK_SIZE / 2);
 pub const QK_K_BLOCK_SIZE: usize = 256;
+pub const Q2_K_BLOCK_BYTES: usize = 16 + 64 + 4;
+pub const Q3_K_BLOCK_BYTES: usize = 32 + 64 + 12 + 2;
 pub const Q4_K_BLOCK_BYTES: usize = 4 + 12 + 128;
 pub const Q5_K_BLOCK_BYTES: usize = 4 + 12 + 32 + 128;
 pub const Q6_K_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
@@ -110,6 +112,22 @@ pub struct Q5_1Block {
     min_bits: u16,
     high_bits: u32,
     values: [u8; Q8_BLOCK_SIZE / 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q2KBlock {
+    scales: [u8; QK_K_BLOCK_SIZE / 16],
+    values: [u8; QK_K_BLOCK_SIZE / 4],
+    scale_bits: u16,
+    min_bits: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q3KBlock {
+    high_bits: [u8; QK_K_BLOCK_SIZE / 8],
+    values: [u8; QK_K_BLOCK_SIZE / 4],
+    scales: [u8; 12],
+    scale_bits: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -545,6 +563,342 @@ impl Q5_1Block {
             out[idx + 16] = (byte >> 4) | high_high;
         }
         out
+    }
+}
+
+impl Q2KBlock {
+    pub fn from_bytes(bytes: &[u8; Q2_K_BLOCK_BYTES]) -> Self {
+        let mut scales = [0_u8; QK_K_BLOCK_SIZE / 16];
+        let mut values = [0_u8; QK_K_BLOCK_SIZE / 4];
+        scales.copy_from_slice(&bytes[0..16]);
+        values.copy_from_slice(&bytes[16..80]);
+        let scale_bits = u16::from_le_bytes([bytes[80], bytes[81]]);
+        let min_bits = u16::from_le_bytes([bytes[82], bytes[83]]);
+
+        Self {
+            scales,
+            values,
+            scale_bits,
+            min_bits,
+        }
+    }
+
+    pub fn from_parts(
+        scales: [u8; QK_K_BLOCK_SIZE / 16],
+        values: [u8; QK_K_BLOCK_SIZE / 4],
+        scale_bits: u16,
+        min_bits: u16,
+    ) -> Self {
+        Self {
+            scales,
+            values,
+            scale_bits,
+            min_bits,
+        }
+    }
+
+    pub fn scales(&self) -> &[u8; QK_K_BLOCK_SIZE / 16] {
+        &self.scales
+    }
+
+    pub fn packed_values(&self) -> &[u8; QK_K_BLOCK_SIZE / 4] {
+        &self.values
+    }
+
+    pub fn scale_bits(&self) -> u16 {
+        self.scale_bits
+    }
+
+    pub fn min_bits(&self) -> u16 {
+        self.min_bits
+    }
+
+    pub fn scale_f32(&self) -> f32 {
+        fast_f16_to_f32(self.scale_bits)
+    }
+
+    pub fn min_f32(&self) -> f32 {
+        fast_f16_to_f32(self.min_bits)
+    }
+
+    pub fn dequantize(&self, out: &mut [f32; QK_K_BLOCK_SIZE]) {
+        let d = self.scale_f32();
+        let d_min = self.min_f32();
+        let mut scale_idx = 0;
+
+        for super_idx in 0..2 {
+            let value_base = super_idx * 32;
+            let out_base = super_idx * 128;
+            let mut shift = 0;
+            for group_idx in 0..4 {
+                let low_scale = self.scales[scale_idx];
+                scale_idx += 1;
+                let low_d = d * (low_scale & 0x0f) as f32;
+                let low_min = d_min * (low_scale >> 4) as f32;
+                for l in 0..16 {
+                    out[out_base + group_idx * 32 + l] =
+                        low_d * ((self.values[value_base + l] >> shift) & 3) as f32 - low_min;
+                }
+
+                let high_scale = self.scales[scale_idx];
+                scale_idx += 1;
+                let high_d = d * (high_scale & 0x0f) as f32;
+                let high_min = d_min * (high_scale >> 4) as f32;
+                for l in 0..16 {
+                    out[out_base + group_idx * 32 + 16 + l] = high_d
+                        * ((self.values[value_base + 16 + l] >> shift) & 3) as f32
+                        - high_min;
+                }
+
+                shift += 2;
+            }
+        }
+    }
+
+    pub fn dot_q8_scaled(&self, x_i8: &[i8], x_scales: &[f32]) -> f32 {
+        debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+        debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+
+        let d = self.scale_f32();
+        let d_min = self.min_f32();
+        let mut scale_idx = 0;
+        let mut sum = 0.0_f32;
+
+        for super_idx in 0..2 {
+            let value_base = super_idx * 32;
+            let x_base = super_idx * 128;
+            let mut shift = 0;
+            for group_idx in 0..4 {
+                let x_scale = x_scales[super_idx * 4 + group_idx];
+
+                let low_scale = self.scales[scale_idx];
+                scale_idx += 1;
+                let low_d = d * (low_scale & 0x0f) as f32;
+                let low_min = d_min * (low_scale >> 4) as f32;
+                let mut low_weighted_sum = 0_i32;
+                let mut low_activation_sum = 0_i32;
+                for l in 0..16 {
+                    let x = i32::from(x_i8[x_base + group_idx * 32 + l]);
+                    low_weighted_sum += i32::from((self.values[value_base + l] >> shift) & 3) * x;
+                    low_activation_sum += x;
+                }
+
+                let high_scale = self.scales[scale_idx];
+                scale_idx += 1;
+                let high_d = d * (high_scale & 0x0f) as f32;
+                let high_min = d_min * (high_scale >> 4) as f32;
+                let mut high_weighted_sum = 0_i32;
+                let mut high_activation_sum = 0_i32;
+                for l in 0..16 {
+                    let x = i32::from(x_i8[x_base + group_idx * 32 + 16 + l]);
+                    high_weighted_sum +=
+                        i32::from((self.values[value_base + 16 + l] >> shift) & 3) * x;
+                    high_activation_sum += x;
+                }
+
+                sum += x_scale
+                    * (low_d * low_weighted_sum as f32 - low_min * low_activation_sum as f32);
+                sum += x_scale
+                    * (high_d * high_weighted_sum as f32 - high_min * high_activation_sum as f32);
+
+                shift += 2;
+            }
+        }
+
+        sum
+    }
+}
+
+impl Q3KBlock {
+    pub fn from_bytes(bytes: &[u8; Q3_K_BLOCK_BYTES]) -> Self {
+        let mut high_bits = [0_u8; QK_K_BLOCK_SIZE / 8];
+        let mut values = [0_u8; QK_K_BLOCK_SIZE / 4];
+        let mut scales = [0_u8; 12];
+        high_bits.copy_from_slice(&bytes[0..32]);
+        values.copy_from_slice(&bytes[32..96]);
+        scales.copy_from_slice(&bytes[96..108]);
+        let scale_bits = u16::from_le_bytes([bytes[108], bytes[109]]);
+
+        Self {
+            high_bits,
+            values,
+            scales,
+            scale_bits,
+        }
+    }
+
+    pub fn from_parts(
+        high_bits: [u8; QK_K_BLOCK_SIZE / 8],
+        values: [u8; QK_K_BLOCK_SIZE / 4],
+        scales: [u8; 12],
+        scale_bits: u16,
+    ) -> Self {
+        Self {
+            high_bits,
+            values,
+            scales,
+            scale_bits,
+        }
+    }
+
+    pub fn high_bits(&self) -> &[u8; QK_K_BLOCK_SIZE / 8] {
+        &self.high_bits
+    }
+
+    pub fn packed_values(&self) -> &[u8; QK_K_BLOCK_SIZE / 4] {
+        &self.values
+    }
+
+    pub fn scales(&self) -> &[u8; 12] {
+        &self.scales
+    }
+
+    pub fn scale_bits(&self) -> u16 {
+        self.scale_bits
+    }
+
+    pub fn scale_f32(&self) -> f32 {
+        fast_f16_to_f32(self.scale_bits)
+    }
+
+    fn expanded_scales(&self) -> [i8; 16] {
+        const KMASK1: u32 = 0x0303_0303;
+        const KMASK2: u32 = 0x0f0f_0f0f;
+
+        let mut aux = [
+            u32::from_le_bytes([
+                self.scales[0],
+                self.scales[1],
+                self.scales[2],
+                self.scales[3],
+            ]),
+            u32::from_le_bytes([
+                self.scales[4],
+                self.scales[5],
+                self.scales[6],
+                self.scales[7],
+            ]),
+            u32::from_le_bytes([
+                self.scales[8],
+                self.scales[9],
+                self.scales[10],
+                self.scales[11],
+            ]),
+            0,
+        ];
+
+        let tmp = aux[2];
+        aux[2] = ((aux[0] >> 4) & KMASK2) | (((tmp >> 4) & KMASK1) << 4);
+        aux[3] = ((aux[1] >> 4) & KMASK2) | (((tmp >> 6) & KMASK1) << 4);
+        aux[0] = (aux[0] & KMASK2) | (((tmp) & KMASK1) << 4);
+        aux[1] = (aux[1] & KMASK2) | (((tmp >> 2) & KMASK1) << 4);
+
+        let mut out = [0_i8; 16];
+        for (chunk_idx, chunk) in aux.iter().enumerate() {
+            for (byte_idx, byte) in chunk.to_le_bytes().iter().enumerate() {
+                out[chunk_idx * 4 + byte_idx] = i8::from_le_bytes([*byte]);
+            }
+        }
+        out
+    }
+
+    pub fn dequantize(&self, out: &mut [f32; QK_K_BLOCK_SIZE]) {
+        let d = self.scale_f32();
+        let scales = self.expanded_scales();
+        let mut scale_idx = 0;
+        let mut high_mask = 1_u8;
+
+        for super_idx in 0..2 {
+            let value_base = super_idx * 32;
+            let out_base = super_idx * 128;
+            let mut shift = 0;
+            for group_idx in 0..4 {
+                let low_d = d * (scales[scale_idx] - 32) as f32;
+                scale_idx += 1;
+                for l in 0..16 {
+                    let high = if self.high_bits[l] & high_mask != 0 {
+                        0
+                    } else {
+                        4
+                    };
+                    let value = ((self.values[value_base + l] >> shift) & 3) as i8 - high;
+                    out[out_base + group_idx * 32 + l] = low_d * value as f32;
+                }
+
+                let high_d = d * (scales[scale_idx] - 32) as f32;
+                scale_idx += 1;
+                for l in 0..16 {
+                    let idx = 16 + l;
+                    let high = if self.high_bits[idx] & high_mask != 0 {
+                        0
+                    } else {
+                        4
+                    };
+                    let value = ((self.values[value_base + idx] >> shift) & 3) as i8 - high;
+                    out[out_base + group_idx * 32 + 16 + l] = high_d * value as f32;
+                }
+
+                shift += 2;
+                high_mask <<= 1;
+            }
+        }
+    }
+
+    pub fn dot_q8_scaled(&self, x_i8: &[i8], x_scales: &[f32]) -> f32 {
+        debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+        debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+
+        let d = self.scale_f32();
+        let scales = self.expanded_scales();
+        let mut scale_idx = 0;
+        let mut high_mask = 1_u8;
+        let mut sum = 0.0_f32;
+
+        for super_idx in 0..2 {
+            let value_base = super_idx * 32;
+            let x_base = super_idx * 128;
+            let mut shift = 0;
+            for group_idx in 0..4 {
+                let x_scale = x_scales[super_idx * 4 + group_idx];
+
+                let low_d = d * (scales[scale_idx] - 32) as f32;
+                scale_idx += 1;
+                let mut low_weighted_sum = 0_i32;
+                for l in 0..16 {
+                    let high = if self.high_bits[l] & high_mask != 0 {
+                        0
+                    } else {
+                        4
+                    };
+                    let value = ((self.values[value_base + l] >> shift) & 3) as i8 - high;
+                    low_weighted_sum +=
+                        i32::from(value) * i32::from(x_i8[x_base + group_idx * 32 + l]);
+                }
+
+                let high_d = d * (scales[scale_idx] - 32) as f32;
+                scale_idx += 1;
+                let mut high_weighted_sum = 0_i32;
+                for l in 0..16 {
+                    let idx = 16 + l;
+                    let high = if self.high_bits[idx] & high_mask != 0 {
+                        0
+                    } else {
+                        4
+                    };
+                    let value = ((self.values[value_base + idx] >> shift) & 3) as i8 - high;
+                    high_weighted_sum +=
+                        i32::from(value) * i32::from(x_i8[x_base + group_idx * 32 + 16 + l]);
+                }
+
+                sum += x_scale * low_d * low_weighted_sum as f32;
+                sum += x_scale * high_d * high_weighted_sum as f32;
+
+                shift += 2;
+                high_mask <<= 1;
+            }
+        }
+
+        sum
     }
 }
 
@@ -1212,6 +1566,44 @@ pub fn decode_q5_1_blocks(bytes: &[u8]) -> Result<Vec<Q5_1Block>, Q8BlockError> 
                 .try_into()
                 .expect("chunks_exact guarantees Q5_1 block length");
             Q5_1Block::from_bytes(bytes)
+        })
+        .collect())
+}
+
+pub fn decode_q2_k_blocks(bytes: &[u8]) -> Result<Vec<Q2KBlock>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(Q2_K_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: Q2_K_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(Q2_K_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; Q2_K_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees Q2_K block length");
+            Q2KBlock::from_bytes(bytes)
+        })
+        .collect())
+}
+
+pub fn decode_q3_k_blocks(bytes: &[u8]) -> Result<Vec<Q3KBlock>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(Q3_K_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: Q3_K_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(Q3_K_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; Q3_K_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees Q3_K block length");
+            Q3KBlock::from_bytes(bytes)
         })
         .collect())
 }

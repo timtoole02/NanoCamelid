@@ -6,9 +6,25 @@ need more runtime work before they should be promoted.
 
 The current runtime supports dense Llama-style, Qwen2-style, Qwen3-style,
 SmolLM, and Gemma 3 transformer blocks with GGUF tensor types used by the tested
-rows below: `Q4_0`, `Q4_1`, `Q8_0`, and `Q6_K` where explicitly noted.
+rows below. Runtime tensor support is broader than the promoted model rows:
+`Q8_0`, `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K`, and
+`Q6_K` can load and execute through the current reference paths, but rows only
+move to supported after Pi-local smoke/parity evidence.
 Long-context GGUFs should be smoke-tested with `NANOCAMELID_CONTEXT_LIMIT`
 until full advertised-context memory behavior is validated.
+
+## Quantization Compatibility
+
+| Quant family | Runtime status | Promotion status |
+| --- | --- | --- |
+| `Q8_0` | Supported; scalar/NEON/SDOT paths | Pi-smoked baseline rows exist |
+| `Q4_0` | Supported; scalar plus default Pi fast paths | Multiple Pi-smoked rows exist |
+| `Q4_1` | Supported; scalar reference path | Pi-smoked through Gemma 3 1B IT tensor mix |
+| `Q5_0`, `Q5_1` | Supported; scalar reference path | Needs row-specific Pi smoke before model claims |
+| `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K` | Supported; scalar reference path | Needs row-specific Pi smoke before model claims |
+| `Q6_K` | Supported; scalar plus Pi SDOT path | Strand 14B capped-context smoke exists |
+| `IQ2_*`, `IQ3_*`, `IQ4_*` | Deferred | Add only when an exact target row needs it |
+| `MXFP4`, `NVFP4`, `TQ1_0`, `TQ2_0` | Deferred | Out of scope until a concrete model row justifies the complexity |
 
 ## Supported and Pi-Smoked
 
