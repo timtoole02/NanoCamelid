@@ -103,23 +103,10 @@ fn main() -> ExitCode {
                 print_help(HelpTopic::Inspect);
                 return ExitCode::SUCCESS;
             }
-            match resolve_inspect_model_path_arg(args.get(1)) {
-                Some(path) => {
-                    let model_path = Path::new(&path);
-                    match args.get(1).map(String::as_str) {
-                        Some(alias) if is_llama32_1b_alias(alias) && !model_path.is_file() => {
-                            eprintln!("{}", llama32_1b_model_not_found_message(model_path));
-                            ExitCode::from(2)
-                        }
-                        Some(alias) if is_llama32_3b_alias(alias) && !model_path.is_file() => {
-                            eprintln!("{}", llama32_3b_model_not_found_message(model_path));
-                            ExitCode::from(2)
-                        }
-                        _ => inspect_gguf(model_path),
-                    }
-                }
-                None => {
-                    eprintln!("missing GGUF path; pass one or set {DEFAULT_MODEL_GGUF_ENV}");
+            match parse_inspect_args(&args[1..]) {
+                Ok(parsed) => run_inspect(parsed),
+                Err(err) => {
+                    eprintln!("{err}");
                     print_help(HelpTopic::Inspect);
                     ExitCode::from(2)
                 }
@@ -645,8 +632,8 @@ fn print_usage() {
     println!(
         "  inspect <model.gguf>                      Inspect GGUF metadata and tensor layouts"
     );
-    println!("  inspect 1b                                Inspect the default Llama 3.2 1B path");
-    println!("  inspect 3b                                Inspect the default Llama 3.2 3B path");
+    println!("  inspect 1b [--dry-run]                    Inspect the default Llama 3.2 1B path");
+    println!("  inspect 3b [--dry-run]                    Inspect the default Llama 3.2 3B path");
     println!("  generate <model.gguf> <prompt> [temp] [max_tokens]");
     println!("  generate 1b <prompt> [temp] [max_tokens]");
     println!("  generate 3b <prompt> [temp] [max_tokens]");
@@ -728,14 +715,15 @@ fn print_inspect_usage() {
     println!("NanoCamelid inspect");
     println!();
     println!("Usage:");
-    println!("  nanocamelid inspect <model.gguf>");
-    println!("  nanocamelid inspect 1b                     inspect the default Llama 3.2 1B path");
-    println!("  nanocamelid inspect 3b                     inspect the default Llama 3.2 3B path");
+    println!("  nanocamelid inspect <model.gguf> [--dry-run]");
+    println!("  nanocamelid inspect 1b [--dry-run]         inspect the default Llama 3.2 1B path");
+    println!("  nanocamelid inspect 3b [--dry-run]         inspect the default Llama 3.2 3B path");
     println!("  nanocamelid inspect                        with NANOCAMELID_MODEL_GGUF set");
     println!();
     println!(
         "Inspect GGUF metadata, runtime-ready LLaMA config, tokenizer support, and the first tensor layouts."
     );
+    println!("Use --dry-run to print the resolved inspect command without reading the GGUF.");
     println!();
     println!("Env:");
     println!(
@@ -1144,6 +1132,20 @@ struct Ready1BArgs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct InspectArgs {
+    model_path: String,
+    model_source: &'static str,
+    target: Option<InspectTarget>,
+    dry_run: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InspectTarget {
+    Llama32_1B,
+    Llama32_3B,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct BenchQ8DotArgs {
     iterations: usize,
     runs: usize,
@@ -1181,6 +1183,80 @@ fn parse_tui_args(args: &[String]) -> Result<TuiArgs, &'static str> {
         &workspace,
         q4_exists,
     )
+}
+
+fn parse_inspect_args(args: &[String]) -> Result<InspectArgs, &'static str> {
+    let (workspace, q4_exists) = llama32_1b_workspace_defaults();
+    parse_inspect_args_with_env(
+        args,
+        default_model_path_and_source_from_env(),
+        smoke_model_path_and_source_from_env(),
+        &workspace,
+        q4_exists,
+    )
+}
+
+fn parse_inspect_args_with_env(
+    args: &[String],
+    default_env_model_path: Option<(String, &'static str)>,
+    alias_env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<InspectArgs, &'static str> {
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            arg if arg.starts_with('-') => return Err("unknown inspect option"),
+            _ => positionals.push(arg.clone()),
+        }
+    }
+
+    if positionals.len() > 1 {
+        return Err("unexpected extra inspect argument");
+    }
+
+    let Some(first) = positionals.first() else {
+        let Some((model_path, model_source)) = default_env_model_path else {
+            return Err("missing GGUF path; pass one or set NANOCAMELID_MODEL_GGUF");
+        };
+        return Ok(InspectArgs {
+            model_path,
+            model_source,
+            target: None,
+            dry_run,
+        });
+    };
+
+    if is_llama32_1b_alias(first) {
+        let (model_path, model_source) =
+            resolve_llama32_1b_model_path_and_source(alias_env_model_path, workspace, q4_exists)?;
+        return Ok(InspectArgs {
+            model_path,
+            model_source,
+            target: Some(InspectTarget::Llama32_1B),
+            dry_run,
+        });
+    }
+
+    if is_llama32_3b_alias(first) {
+        let (model_path, model_source) =
+            resolve_llama32_3b_model_path_and_source(alias_env_model_path, workspace)?;
+        return Ok(InspectArgs {
+            model_path,
+            model_source,
+            target: Some(InspectTarget::Llama32_3B),
+            dry_run,
+        });
+    }
+
+    Ok(InspectArgs {
+        model_path: first.clone(),
+        model_source: "explicit argument",
+        target: None,
+        dry_run,
+    })
 }
 
 #[cfg(test)]
@@ -1935,34 +2011,35 @@ fn is_llama32_3b_alias(value: &str) -> bool {
     matches!(value, "3b" | "llama32-3b" | "llama-3.2-3b")
 }
 
-fn resolve_inspect_model_path_arg(path: Option<&String>) -> Option<String> {
-    match path.map(String::as_str) {
-        Some(alias) if is_llama32_1b_alias(alias) => {
-            Some(resolve_llama32_1b_model_path(smoke_model_path_from_env()))
-        }
-        Some(alias) if is_llama32_3b_alias(alias) => {
-            Some(resolve_llama32_3b_model_path(smoke_model_path_from_env()))
-        }
-        _ => resolve_model_path_arg(path, default_model_path_from_env()),
-    }
-}
-
-fn resolve_llama32_1b_model_path(env_model_path: Option<String>) -> String {
-    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
-    let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
-    resolve_llama32_1b_model_path_with_workspace(
-        env_model_path,
-        &workspace,
-        Path::new(&q4_path).is_file(),
-    )
-}
-
 fn resolve_llama32_1b_model_path_with_workspace(
     env_model_path: Option<String>,
     workspace: &str,
     q4_exists: bool,
 ) -> String {
     env_model_path.unwrap_or_else(|| default_llama32_1b_model_path(workspace, q4_exists))
+}
+
+fn resolve_llama32_1b_model_path_and_source(
+    env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<(String, &'static str), &'static str> {
+    match env_model_path {
+        Some((path, source)) => {
+            if !looks_like_gguf_path(&path) {
+                return Err("inspect alias env model path must be a .gguf path");
+            }
+            Ok((path, source))
+        }
+        None if q4_exists => Ok((
+            llama32_1b_model_path(workspace, LLAMA32_1B_Q4_MODEL),
+            "workspace Q4_0 default",
+        )),
+        None => Ok((
+            llama32_1b_model_path(workspace, LLAMA32_1B_Q8_MODEL),
+            "workspace Q8_0 fallback",
+        )),
+    }
 }
 
 fn default_llama32_1b_model_path(workspace: &str, q4_exists: bool) -> String {
@@ -1974,16 +2051,29 @@ fn default_llama32_1b_model_path(workspace: &str, q4_exists: bool) -> String {
     llama32_1b_model_path(workspace, model_name)
 }
 
-fn resolve_llama32_3b_model_path(env_model_path: Option<String>) -> String {
-    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
-    resolve_llama32_3b_model_path_with_workspace(env_model_path, &workspace)
-}
-
 fn resolve_llama32_3b_model_path_with_workspace(
     env_model_path: Option<String>,
     workspace: &str,
 ) -> String {
     env_model_path.unwrap_or_else(|| default_llama32_3b_model_path(workspace))
+}
+
+fn resolve_llama32_3b_model_path_and_source(
+    env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+) -> Result<(String, &'static str), &'static str> {
+    match env_model_path {
+        Some((path, source)) => {
+            if !looks_like_gguf_path(&path) {
+                return Err("inspect alias env model path must be a .gguf path");
+            }
+            Ok((path, source))
+        }
+        None => Ok((
+            default_llama32_3b_model_path(workspace),
+            "workspace Q4_0 default",
+        )),
+    }
 }
 
 fn default_llama32_3b_model_path(workspace: &str) -> String {
@@ -1998,12 +2088,14 @@ fn llama32_1b_model_path(workspace: &str, model_name: &str) -> String {
         .into_owned()
 }
 
-fn resolve_model_path_arg(path: Option<&String>, env_model_path: Option<String>) -> Option<String> {
-    path.cloned().or(env_model_path)
-}
-
 fn default_model_path_from_env() -> Option<String> {
     env::var(DEFAULT_MODEL_GGUF_ENV).ok()
+}
+
+fn default_model_path_and_source_from_env() -> Option<(String, &'static str)> {
+    env::var(DEFAULT_MODEL_GGUF_ENV)
+        .ok()
+        .map(|path| (path, DEFAULT_MODEL_GGUF_ENV))
 }
 
 fn smoke_model_path_from_env() -> Option<String> {
@@ -2590,6 +2682,56 @@ fn duration_ms_json(durations: &[std::time::Duration]) -> String {
         .map(|duration| format!("{:.6}", duration.as_secs_f64() * 1000.0))
         .collect::<Vec<_>>();
     format!("[{}]", values.join(","))
+}
+
+fn run_inspect(parsed: InspectArgs) -> ExitCode {
+    let model_path = Path::new(&parsed.model_path);
+
+    if parsed.dry_run {
+        println!("NanoCamelid inspect dry run");
+        match parsed.target {
+            Some(InspectTarget::Llama32_1B) => {
+                let workspace =
+                    env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+                let q4_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+                let q8_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q8_MODEL);
+                println!("workspace: {workspace}");
+                println!("q4_model: {q4_model_path}");
+                println!("q4_exists: {}", Path::new(&q4_model_path).is_file());
+                println!("q8_model: {q8_model_path}");
+                println!("q8_exists: {}", Path::new(&q8_model_path).is_file());
+            }
+            Some(InspectTarget::Llama32_3B) => {
+                let workspace =
+                    env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+                let q4_model_path = llama32_1b_model_path(&workspace, LLAMA32_3B_Q4_MODEL);
+                println!("workspace: {workspace}");
+                println!("q4_model: {q4_model_path}");
+                println!("q4_exists: {}", Path::new(&q4_model_path).is_file());
+            }
+            None => {}
+        }
+        println!("selected_source: {}", parsed.model_source);
+        println!("model: {}", model_path.display());
+        println!("model_exists: {}", model_path.is_file());
+        println!(
+            "inspect_command: {}",
+            shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    match parsed.target {
+        Some(InspectTarget::Llama32_1B) if !model_path.is_file() => {
+            eprintln!("{}", llama32_1b_model_not_found_message(model_path));
+            ExitCode::from(2)
+        }
+        Some(InspectTarget::Llama32_3B) if !model_path.is_file() => {
+            eprintln!("{}", llama32_3b_model_not_found_message(model_path));
+            ExitCode::from(2)
+        }
+        _ => inspect_gguf(model_path),
+    }
 }
 
 fn inspect_gguf(path: &Path) -> ExitCode {
@@ -4797,16 +4939,17 @@ mod tests {
 
     use super::{
         ChatTurn, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_Q4_PREFILL_BATCH,
-        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, HelpTopic, LLAMA32_1B_Q4_MODEL,
-        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, Smoke1BArgs,
-        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation,
-        cpu_model, default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
+        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, HelpTopic, InspectTarget,
+        LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
+        PERFORMANCE_GOVERNOR_COMMAND, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind,
+        TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
+        default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
         is_help_flag, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, parse_bench_q4_layout_args,
         parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
         parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
-        parse_model_1b_args_with_path, parse_ready_1b_args_with_env,
+        parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
@@ -4815,10 +4958,9 @@ mod tests {
         parse_tui_command, print_runtime_trace_summary, ready_chat_enabled_from_env_value,
         ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
         ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
-        resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
-        runtime_options_from_gguf, shared_token_prefix_len, shell_command,
-        smoke_defaults_from_values, smoke_plan_command, trim_tui_history, tui_prompt_history,
-        validate_generation_budget,
+        resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
+        shared_token_prefix_len, shell_command, smoke_defaults_from_values, smoke_plan_command,
+        trim_tui_history, tui_prompt_history, validate_generation_budget,
     };
 
     #[test]
@@ -5293,25 +5435,6 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
-    fn resolve_model_path_arg_prefers_explicit_path() {
-        assert_eq!(
-            resolve_model_path_arg(
-                Some(&"/models/explicit.gguf".to_owned()),
-                Some("/models/env.gguf".to_owned())
-            ),
-            Some("/models/explicit.gguf".to_owned())
-        );
-    }
-
-    #[test]
-    fn resolve_model_path_arg_falls_back_to_env_path() {
-        assert_eq!(
-            resolve_model_path_arg(None, Some("/models/env.gguf".to_owned())),
-            Some("/models/env.gguf".to_owned())
-        );
-    }
-
-    #[test]
     fn generate_args_use_explicit_model_path_without_env() {
         let parsed = parse_generate_args_with_env(
             &[
@@ -5739,6 +5862,55 @@ flags\t\t: sse4_2 avx2
             resolve_llama32_3b_model_path_with_workspace(None, "/mnt/nanocamelid"),
             format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
         );
+    }
+
+    #[test]
+    fn inspect_1b_dry_run_resolves_model_without_requiring_file() {
+        let parsed = parse_inspect_args_with_env(
+            &["1b".to_owned(), "--dry-run".to_owned()],
+            None,
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("1B inspect dry run should parse");
+
+        assert_eq!(parsed.target, Some(InspectTarget::Llama32_1B));
+        assert_eq!(parsed.model_source, "workspace Q8_0 fallback");
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn inspect_alias_prefers_smoke_env_model_path() {
+        let parsed = parse_inspect_args_with_env(
+            &["1b".to_owned()],
+            None,
+            Some(("/models/custom.GGUF".to_owned(), SMOKE_MODEL_GGUF_ENV)),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("env-backed 1B inspect should parse");
+
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.model_source, SMOKE_MODEL_GGUF_ENV);
+    }
+
+    #[test]
+    fn inspect_args_reject_extra_positionals() {
+        let err = parse_inspect_args_with_env(
+            &["1b".to_owned(), "extra".to_owned()],
+            None,
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect_err("extra inspect arg should fail");
+
+        assert_eq!(err, "unexpected extra inspect argument");
     }
 
     #[test]

@@ -38,6 +38,7 @@ Quick 1B readiness check on a Pi workspace:
 
 ```bash
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- model 1b --dry-run
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --dry-run
 ./scripts/pi/model-1b.sh --dry-run
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/chat-1b.sh --dry-run
@@ -53,6 +54,8 @@ under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
 `model 1b --dry-run` prints the same selected source, Q4_0/Q8_0 default paths,
 and existence checks from the Rust CLI before the heavier inspect or smoke
 gates.
+`inspect 1b --dry-run` prints the resolved inspect command and model existence
+checks without opening the GGUF, so it is safe before the model has been copied.
 `./scripts/pi/model-1b.sh --dry-run` prints the same 1B model resolution plan
 and shows whether the Q4_0, Q8_0, and selected GGUF files exist before you run
 the heavier smoke gate.
@@ -333,12 +336,12 @@ On macOS, `validate.sh` refuses to guess a default target directory or use a
 non-`/Volumes` target. Set `CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` to an
 external drive path first so the repo does not create build artifacts on the
 internal disk. On prepared Pi workspaces, the same script defaults to
-`/mnt/nanocamelid/target`. The gate also runs `cargo run -- smoke 1b --dry-run`,
-`cargo run -- ready 1b --dry-run`, plus the Pi `smoke-1b.sh`, `ready-1b.sh`,
-`chat-1b.sh`, and `bench-1b-prefill.sh` launcher dry runs, plus the
-`context-pack-1b.sh` and installer dry runs, so the default Llama 3.2 1B command
-paths and build-entry target-dir guard stay covered without requiring the GGUF
-during local validation.
+`/mnt/nanocamelid/target`. The gate also runs the `model 1b`, `inspect 1b`,
+`smoke 1b`, and `ready 1b` CLI dry runs, plus the Pi `smoke-1b.sh`,
+`ready-1b.sh`, `chat-1b.sh`, and `bench-1b-prefill.sh` launcher dry runs, plus
+the `context-pack-1b.sh` and installer dry runs, so the default Llama 3.2 1B
+command paths and build-entry target-dir guard stay covered without requiring
+the GGUF during local validation.
 
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
