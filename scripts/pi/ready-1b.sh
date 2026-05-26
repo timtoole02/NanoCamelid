@@ -137,6 +137,11 @@ chat | model | q8-chat | q8-model)
   SMOKE_KIND="$1"
   shift
   ;;
+q8-*)
+  echo "Unknown smoke kind: $1" >&2
+  echo "Expected model, chat, q8-model, or q8-chat." >&2
+  exit 2
+  ;;
 esac
 if [[ $# -gt 2 ]]; then
   echo "Unexpected extra readiness argument: ${3}" >&2
