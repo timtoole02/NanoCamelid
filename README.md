@@ -318,7 +318,10 @@ NANOCAMELID_MODEL_GGUF=/path/to/model.gguf \
 
 `tui` opens an interactive terminal chat that keeps the model loaded, shows the
 connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
-session token-in/token-out counters, TTFT, and throughput.
+session token-in/token-out counters, TTFT, and throughput. The prompt surface is
+closer to a modern assistant CLI: slash commands expose model switching, nearby
+model discovery, live decoding settings, system prompts, transcript saving, and
+session history without restarting the process.
 
 `NANOCAMELID_PREFILL_BATCH` controls how many prompt tokens are ingested at once
 before decode begins. The default is `16`. Set it to `1` for the old
@@ -342,9 +345,19 @@ claims; it only bounds memory for short validation runs.
 
 ![NanoCamelid terminal chat showing model telemetry and token counters](docs/images/nanocamelid-tui.png)
 
-Inside the TUI, use `/model <path>` to load a different GGUF without restarting
-the process. A successful switch resets the conversation and token counters. If
-the new model fails to load, the current model stays active.
+Inside the TUI:
+
+- `/model <path>` loads a different GGUF without restarting the process. A
+  successful switch resets the conversation and token counters. If the new model
+  fails to load, the current model stays active.
+- `/models` lists GGUFs next to the current model.
+- `/temp [value]` and `/tokens [count]` show or change per-turn decoding
+  settings.
+- `/system [prompt]` sets a system prompt and resets chat state; `/system clear`
+  removes it.
+- `/status`, `/history`, `/trim <turns>`, and `/save <path>` manage the active
+  session.
+- `/clear`, `/exit`, and `/quit` reset or leave the chat.
 
 On a prepared Pi workspace with the Llama 3.2 1B Instruct Q4_0 or Q8_0 GGUF at
 the default model path, start the interactive 1B chat directly:

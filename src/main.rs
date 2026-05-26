@@ -780,7 +780,9 @@ fn print_tui_usage() {
         "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
     );
     println!();
-    println!("Commands inside the TUI: /help, /model <path>, /clear, /exit, /quit");
+    println!(
+        "Commands inside the TUI: /help, /model <path>, /models, /temp <value>, /tokens <count>, /system <prompt>, /status, /history, /save <path>, /clear, /exit"
+    );
 }
 
 fn print_ready_usage() {
@@ -2931,6 +2933,35 @@ struct ChatSession {
     pos: usize,
 }
 
+#[derive(Debug, Clone)]
+struct TuiSettings {
+    temp: f32,
+    max_tokens: usize,
+    system_prompt: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum TuiCommand {
+    Help,
+    ModelShow,
+    ModelLoad(String),
+    Models,
+    Clear,
+    Status,
+    History,
+    Save(String),
+    TempShow,
+    TempSet(f32),
+    TokensShow,
+    TokensSet(usize),
+    SystemShow,
+    SystemSet(String),
+    SystemClear,
+    Trim(usize),
+    Exit,
+    Unknown(String),
+}
+
 impl ChatSession {
     fn new(config: &model::LlamaModelConfig) -> Self {
         Self {
@@ -3026,6 +3057,11 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
     let mut session = ChatSession::new(&loaded.config);
     let mut total_in = 0usize;
     let mut total_out = 0usize;
+    let mut settings = TuiSettings {
+        temp,
+        max_tokens,
+        system_prompt: None,
+    };
 
     print_tui_banner(TuiBanner {
         model_name: &loaded.model_name,
@@ -3033,8 +3069,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         config: &loaded.config,
         kernel: selector.selected.name(),
         renderer: &loaded.renderer,
-        temp,
-        max_tokens,
+        settings: &settings,
         load_secs: loaded.load_secs,
         governor_recommendation,
     });
@@ -3060,78 +3095,173 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         if input.is_empty() {
             continue;
         }
-        if input == "/model" {
-            println!(
-                "{}current model{} {}",
-                ansi::LABEL,
-                ansi::RESET,
-                loaded.model_path.display()
-            );
-            continue;
-        }
-        if let Some(next_model) = input.strip_prefix("/model ") {
-            let next_model = next_model.trim();
-            let next_model_path = PathBuf::from(next_model);
-            match load_tui_model(&next_model_path, selector) {
-                Ok(next_loaded) => {
-                    loaded = next_loaded;
+        if input.starts_with('/') {
+            match parse_tui_command(input) {
+                TuiCommand::Exit => break,
+                TuiCommand::Help => {
+                    print_tui_commands();
+                }
+                TuiCommand::ModelShow => {
+                    println!(
+                        "{}current model{} {}",
+                        ansi::LABEL,
+                        ansi::RESET,
+                        loaded.model_path.display()
+                    );
+                }
+                TuiCommand::ModelLoad(next_model) => {
+                    let next_model_path = PathBuf::from(next_model);
+                    match load_tui_model(&next_model_path, selector) {
+                        Ok(next_loaded) => {
+                            loaded = next_loaded;
+                            history.clear();
+                            session = ChatSession::new(&loaded.config);
+                            total_in = 0;
+                            total_out = 0;
+                            print_tui_banner(TuiBanner {
+                                model_name: &loaded.model_name,
+                                model_path: &loaded.model_path,
+                                config: &loaded.config,
+                                kernel: selector.selected.name(),
+                                renderer: &loaded.renderer,
+                                settings: &settings,
+                                load_secs: loaded.load_secs,
+                                governor_recommendation,
+                            });
+                            println!(
+                                "{}model switched; conversation reset{}",
+                                ansi::DIM,
+                                ansi::RESET
+                            );
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "{}model switch failed; keeping current model:{} {err}",
+                                ansi::ERROR,
+                                ansi::RESET
+                            );
+                        }
+                    }
+                }
+                TuiCommand::Models => print_tui_models(&loaded.model_path),
+                TuiCommand::Clear => {
                     history.clear();
-                    session = ChatSession::new(&loaded.config);
+                    session.reset(&loaded.config);
                     total_in = 0;
                     total_out = 0;
-                    print_tui_banner(TuiBanner {
+                    println!("{}conversation cleared{}", ansi::DIM, ansi::RESET);
+                    print_tui_status(TuiStatus {
                         model_name: &loaded.model_name,
-                        model_path: &loaded.model_path,
-                        config: &loaded.config,
                         kernel: selector.selected.name(),
-                        renderer: &loaded.renderer,
-                        temp,
-                        max_tokens,
-                        load_secs: loaded.load_secs,
-                        governor_recommendation,
+                        settings: &settings,
+                        context_tokens: session.context_tokens.len(),
+                        turns: history.len(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        total_in,
+                        total_out,
+                        ttft_secs: None,
+                        elapsed_secs: 0.0,
                     });
-                    println!(
-                        "{}model switched; conversation reset{}",
-                        ansi::DIM,
-                        ansi::RESET
-                    );
                 }
-                Err(err) => {
-                    eprintln!(
-                        "{}model switch failed; keeping current model:{} {err}",
-                        ansi::ERROR,
-                        ansi::RESET
-                    );
-                }
-            }
-            continue;
-        }
-
-        match input {
-            "/exit" | "/quit" => break,
-            "/help" => {
-                print_tui_commands();
-                continue;
-            }
-            "/clear" => {
-                history.clear();
-                session.reset(&loaded.config);
-                total_in = 0;
-                total_out = 0;
-                println!("{}conversation cleared{}", ansi::DIM, ansi::RESET);
-                print_tui_status(TuiStatus {
+                TuiCommand::Status => print_tui_status(TuiStatus {
                     model_name: &loaded.model_name,
                     kernel: selector.selected.name(),
+                    settings: &settings,
+                    context_tokens: session.context_tokens.len(),
+                    turns: history.len(),
                     input_tokens: 0,
                     output_tokens: 0,
                     total_in,
                     total_out,
                     ttft_secs: None,
                     elapsed_secs: 0.0,
-                });
-                continue;
+                }),
+                TuiCommand::History => print_tui_history(&history),
+                TuiCommand::Save(path) => match save_tui_transcript(&path, &settings, &history) {
+                    Ok(()) => println!("{}saved{} {}", ansi::LABEL, ansi::RESET, path),
+                    Err(err) => eprintln!("{}save failed:{} {err}", ansi::ERROR, ansi::RESET),
+                },
+                TuiCommand::TempShow => {
+                    println!(
+                        "{}temperature{} {:.2}",
+                        ansi::LABEL,
+                        ansi::RESET,
+                        settings.temp
+                    );
+                }
+                TuiCommand::TempSet(next_temp) => {
+                    settings.temp = next_temp;
+                    println!(
+                        "{}temperature{} {:.2}",
+                        ansi::LABEL,
+                        ansi::RESET,
+                        settings.temp
+                    );
+                }
+                TuiCommand::TokensShow => {
+                    println!(
+                        "{}max output tokens{} {}",
+                        ansi::LABEL,
+                        ansi::RESET,
+                        settings.max_tokens
+                    );
+                }
+                TuiCommand::TokensSet(next_tokens) => {
+                    settings.max_tokens = next_tokens;
+                    println!(
+                        "{}max output tokens{} {}",
+                        ansi::LABEL,
+                        ansi::RESET,
+                        settings.max_tokens
+                    );
+                }
+                TuiCommand::SystemShow => {
+                    print_tui_system_prompt(settings.system_prompt.as_deref())
+                }
+                TuiCommand::SystemSet(prompt) => {
+                    settings.system_prompt = Some(prompt);
+                    history.clear();
+                    session.reset(&loaded.config);
+                    total_in = 0;
+                    total_out = 0;
+                    println!(
+                        "{}system prompt set; conversation reset{}",
+                        ansi::DIM,
+                        ansi::RESET
+                    );
+                }
+                TuiCommand::SystemClear => {
+                    settings.system_prompt = None;
+                    history.clear();
+                    session.reset(&loaded.config);
+                    total_in = 0;
+                    total_out = 0;
+                    println!(
+                        "{}system prompt cleared; conversation reset{}",
+                        ansi::DIM,
+                        ansi::RESET
+                    );
+                }
+                TuiCommand::Trim(keep_turns) => {
+                    trim_tui_history(&mut history, keep_turns);
+                    session.reset(&loaded.config);
+                    println!(
+                        "{}history trimmed to {} turns; KV cache will rebuild on next prompt{}",
+                        ansi::DIM,
+                        history.len(),
+                        ansi::RESET
+                    );
+                }
+                TuiCommand::Unknown(command) => {
+                    eprintln!(
+                        "{}unknown command:{} {command}. Try /help.",
+                        ansi::ERROR,
+                        ansi::RESET
+                    );
+                }
             }
-            _ => {}
+            continue;
         }
 
         history.push(ChatTurn {
@@ -3145,7 +3275,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         }
 
         let report = match generate_chat_turn(
-            &history,
+            &tui_prompt_history(settings.system_prompt.as_deref(), &history),
             &mut session,
             ChatGenerationEnv {
                 config: &loaded.config,
@@ -3153,8 +3283,8 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
                 tokenizer: &loaded.tokenizer,
                 runtime_options: loaded.runtime_options,
             },
-            temp,
-            max_tokens,
+            settings.temp,
+            settings.max_tokens,
         ) {
             Ok((assistant_text, report)) => {
                 history.push(ChatTurn {
@@ -3175,6 +3305,9 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
         print_tui_status(TuiStatus {
             model_name: &loaded.model_name,
             kernel: selector.selected.name(),
+            settings: &settings,
+            context_tokens: session.context_tokens.len(),
+            turns: history.len(),
             input_tokens: report.input_tokens,
             output_tokens: report.output_tokens,
             total_in,
@@ -3602,14 +3735,174 @@ fn runtime_options_from_gguf(
     }
 }
 
+fn parse_tui_command(input: &str) -> TuiCommand {
+    let (command, rest) = input.split_once(' ').unwrap_or((input, ""));
+    let rest = rest.trim();
+    match command {
+        "/help" | "/?" => TuiCommand::Help,
+        "/exit" | "/quit" => TuiCommand::Exit,
+        "/model" if rest.is_empty() => TuiCommand::ModelShow,
+        "/model" => TuiCommand::ModelLoad(rest.to_owned()),
+        "/models" => TuiCommand::Models,
+        "/clear" | "/reset" => TuiCommand::Clear,
+        "/status" | "/stats" => TuiCommand::Status,
+        "/history" => TuiCommand::History,
+        "/save" if rest.is_empty() => TuiCommand::Unknown("/save requires a path".to_owned()),
+        "/save" => TuiCommand::Save(rest.to_owned()),
+        "/temp" if rest.is_empty() => TuiCommand::TempShow,
+        "/temp" => rest
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(TuiCommand::TempSet)
+            .unwrap_or_else(|| {
+                TuiCommand::Unknown("/temp expects a non-negative number".to_owned())
+            }),
+        "/tokens" if rest.is_empty() => TuiCommand::TokensShow,
+        "/tokens" => rest
+            .parse::<usize>()
+            .ok()
+            .filter(|&value| value > 0)
+            .map(TuiCommand::TokensSet)
+            .unwrap_or_else(|| {
+                TuiCommand::Unknown("/tokens expects a positive integer".to_owned())
+            }),
+        "/system" if rest.is_empty() => TuiCommand::SystemShow,
+        "/system" if rest == "clear" || rest == "off" => TuiCommand::SystemClear,
+        "/system" => TuiCommand::SystemSet(rest.to_owned()),
+        "/trim" => rest
+            .parse::<usize>()
+            .ok()
+            .map(TuiCommand::Trim)
+            .unwrap_or_else(|| {
+                TuiCommand::Unknown("/trim expects an integer turn count".to_owned())
+            }),
+        other => TuiCommand::Unknown(other.to_owned()),
+    }
+}
+
+fn tui_prompt_history(system_prompt: Option<&str>, history: &[ChatTurn]) -> Vec<ChatTurn> {
+    let mut prompt_history =
+        Vec::with_capacity(history.len() + usize::from(system_prompt.is_some()));
+    if let Some(system_prompt) = system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        prompt_history.push(ChatTurn {
+            role: "system".to_owned(),
+            content: system_prompt.to_owned(),
+        });
+    }
+    prompt_history.extend_from_slice(history);
+    prompt_history
+}
+
+fn trim_tui_history(history: &mut Vec<ChatTurn>, keep_turns: usize) {
+    if keep_turns == 0 {
+        history.clear();
+    } else if history.len() > keep_turns {
+        let start = history.len() - keep_turns;
+        history.drain(0..start);
+    }
+}
+
+fn print_tui_models(current_model: &Path) {
+    let dir = current_model.parent().unwrap_or_else(|| Path::new("."));
+    match fs::read_dir(dir) {
+        Ok(entries) => {
+            println!("{}models{} {}", ansi::LABEL, ansi::RESET, dir.display());
+            let mut models = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| looks_like_gguf_path(&path.to_string_lossy()))
+                .collect::<Vec<_>>();
+            models.sort();
+            if models.is_empty() {
+                println!("  no GGUF files found");
+            }
+            for path in models.into_iter().take(32) {
+                let marker = if path == current_model { "*" } else { " " };
+                println!("  {marker} {}", path.display());
+            }
+        }
+        Err(err) => eprintln!(
+            "{}model list failed:{} {}: {err}",
+            ansi::ERROR,
+            ansi::RESET,
+            dir.display()
+        ),
+    }
+}
+
+fn print_tui_history(history: &[ChatTurn]) {
+    println!(
+        "{}history{} {} turns",
+        ansi::LABEL,
+        ansi::RESET,
+        history.len()
+    );
+    if history.is_empty() {
+        println!("  empty");
+        return;
+    }
+    for (idx, turn) in history.iter().enumerate() {
+        println!(
+            "  {:>2}. {:<9} {}",
+            idx + 1,
+            turn.role,
+            abbreviate_for_status(&turn.content, 120)
+        );
+    }
+}
+
+fn print_tui_system_prompt(system_prompt: Option<&str>) {
+    match system_prompt {
+        Some(prompt) => println!("{}system{} {}", ansi::LABEL, ansi::RESET, prompt),
+        None => println!("{}system{} none", ansi::LABEL, ansi::RESET),
+    }
+}
+
+fn save_tui_transcript(
+    path: &str,
+    settings: &TuiSettings,
+    history: &[ChatTurn],
+) -> Result<(), String> {
+    let mut out = String::new();
+    out.push_str("# NanoCamelid TUI Transcript\n\n");
+    out.push_str(&format!("temperature: {:.2}\n", settings.temp));
+    out.push_str(&format!("max_tokens: {}\n\n", settings.max_tokens));
+    if let Some(system_prompt) = settings.system_prompt.as_deref() {
+        out.push_str("## system\n\n");
+        out.push_str(system_prompt);
+        out.push_str("\n\n");
+    }
+    for turn in history {
+        out.push_str("## ");
+        out.push_str(&turn.role);
+        out.push_str("\n\n");
+        out.push_str(&turn.content);
+        out.push_str("\n\n");
+    }
+    fs::write(path, out).map_err(|err| err.to_string())
+}
+
+fn abbreviate_for_status(value: &str, max_chars: usize) -> String {
+    let value = value.replace('\n', " ");
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    let mut out = value
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    out.push_str("...");
+    out
+}
+
 struct TuiBanner<'a> {
     model_name: &'a str,
     model_path: &'a Path,
     config: &'a model::LlamaModelConfig,
     kernel: &'a str,
     renderer: &'a str,
-    temp: f32,
-    max_tokens: usize,
+    settings: &'a TuiSettings,
     load_secs: f64,
     governor_recommendation: Option<&'a str>,
 }
@@ -3617,6 +3910,9 @@ struct TuiBanner<'a> {
 struct TuiStatus<'a> {
     model_name: &'a str,
     kernel: &'a str,
+    settings: &'a TuiSettings,
+    context_tokens: usize,
+    turns: usize,
     input_tokens: usize,
     output_tokens: usize,
     total_in: usize,
@@ -3628,8 +3924,13 @@ struct TuiStatus<'a> {
 fn print_tui_banner(banner: TuiBanner<'_>) {
     println!();
     println!(
-        "{}llama NanoCamelid 0.1.0{} - Pi-local terminal chat",
+        "{}NanoCamelid{} - local model chat",
         ansi::TITLE,
+        ansi::RESET
+    );
+    println!(
+        "{}mode{} terminal assistant | type /help for commands",
+        ansi::LABEL,
         ansi::RESET
     );
     println!(
@@ -3650,10 +3951,18 @@ fn print_tui_banner(banner: TuiBanner<'_>) {
         banner.config.context_length,
         banner.kernel,
         banner.renderer,
-        banner.temp,
-        banner.max_tokens,
+        banner.settings.temp,
+        banner.settings.max_tokens,
         banner.load_secs
     );
+    if let Some(system_prompt) = banner.settings.system_prompt.as_deref() {
+        println!(
+            "{}system{} {}",
+            ansi::LABEL,
+            ansi::RESET,
+            abbreviate_for_status(system_prompt, 96)
+        );
+    }
     if let Some(recommendation) = banner.governor_recommendation {
         println!(
             "{}governor{} ondemand detected; for repeatable low-latency decode: {}",
@@ -3663,7 +3972,7 @@ fn print_tui_banner(banner: TuiBanner<'_>) {
         );
     }
     println!(
-        "{}commands{} /help /model <path> /clear /exit",
+        "{}commands{} /help /model <path> /models /temp /tokens /system /status /save /clear /exit",
         ansi::LABEL,
         ansi::RESET
     );
@@ -3672,11 +3981,19 @@ fn print_tui_banner(banner: TuiBanner<'_>) {
 
 fn print_tui_commands() {
     println!("{}commands{}", ansi::LABEL, ansi::RESET);
-    println!("  /model <path>  load another GGUF and reset the conversation");
-    println!("  /model         show the current GGUF path");
-    println!("  /clear  reset the conversation and token counters");
-    println!("  /exit   leave the chat");
-    println!("  /quit   leave the chat");
+    println!("  /model <path>       load another GGUF and reset the conversation");
+    println!("  /model              show the current GGUF path");
+    println!("  /models             list GGUFs next to the current model");
+    println!("  /temp [value]       show or set sampling temperature");
+    println!("  /tokens [count]     show or set max assistant tokens per turn");
+    println!("  /system [prompt]    show or set the system prompt and reset chat");
+    println!("  /system clear       clear the system prompt and reset chat");
+    println!("  /status             show model, session, and decoding settings");
+    println!("  /history            show the current conversation turns");
+    println!("  /trim <turns>       keep only the last N conversation turns");
+    println!("  /save <path>        write the conversation transcript");
+    println!("  /clear              reset the conversation and token counters");
+    println!("  /exit, /quit        leave the chat");
 }
 
 fn print_tui_status(status: TuiStatus<'_>) {
@@ -3690,10 +4007,14 @@ fn print_tui_status(status: TuiStatus<'_>) {
         .map(|secs| format!("{:.0} ms", secs * 1000.0))
         .unwrap_or_else(|| "n/a".to_owned());
     println!(
-        "{}connected | model {} | kernel {} | last in {} | last out {} | total in/out {}/{} | ttft {} | {:.2} tok/sec{}",
+        "{}connected | model {} | kernel {} | temp {:.2} | max {} | turns {} | ctx {} | last in {} | last out {} | total in/out {}/{} | ttft {} | {:.2} tok/sec{}",
         ansi::DIM,
         status.model_name,
         status.kernel,
+        status.settings.temp,
+        status.settings.max_tokens,
+        status.turns,
+        status.context_tokens,
         status.input_tokens,
         status.output_tokens,
         status.total_in,
@@ -3747,9 +4068,9 @@ mod tests {
     use nanocamelid::tokenizer::{SpecialTokens, TokenizerModel};
 
     use super::{
-        DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
+        ChatTurn, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
         LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, Smoke1BArgs,
-        SmokeDefaults, SmokeKind, cpu_features, cpu_governor_recommendation, cpu_model,
+        SmokeDefaults, SmokeKind, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
         is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
@@ -3757,12 +4078,12 @@ mod tests {
         parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults, parse_smoke_1b_args_with_env,
         parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
-        parse_tui_args_with_env_and_workspace, ready_chat_enabled_from_env_value,
-        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
-        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
-        resolve_llama32_3b_model_path_with_workspace, resolve_model_path_arg,
-        runtime_options_from_gguf, shared_token_prefix_len, shell_command, smoke_plan_command,
-        validate_generation_budget,
+        parse_tui_args_with_env_and_workspace, parse_tui_command,
+        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
+        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
+        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
+        resolve_model_path_arg, runtime_options_from_gguf, shared_token_prefix_len, shell_command,
+        smoke_plan_command, trim_tui_history, tui_prompt_history, validate_generation_budget,
     };
 
     #[test]
@@ -3896,6 +4217,71 @@ flags\t\t: sse4_2 avx2
         assert_eq!(shared_token_prefix_len(&[1, 2, 3], &[1, 2, 3, 4, 5]), 3);
         assert_eq!(shared_token_prefix_len(&[1, 2, 9], &[1, 2, 3, 4]), 2);
         assert_eq!(shared_token_prefix_len(&[8, 2], &[1, 2]), 0);
+    }
+
+    #[test]
+    fn tui_command_parser_handles_settings_and_session_commands() {
+        assert_eq!(parse_tui_command("/help"), TuiCommand::Help);
+        assert_eq!(parse_tui_command("/quit"), TuiCommand::Exit);
+        assert_eq!(parse_tui_command("/model"), TuiCommand::ModelShow);
+        assert_eq!(
+            parse_tui_command("/model /models/llama.gguf"),
+            TuiCommand::ModelLoad("/models/llama.gguf".to_owned())
+        );
+        assert_eq!(parse_tui_command("/models"), TuiCommand::Models);
+        assert_eq!(parse_tui_command("/status"), TuiCommand::Status);
+        assert_eq!(parse_tui_command("/history"), TuiCommand::History);
+        assert_eq!(
+            parse_tui_command("/save transcript.md"),
+            TuiCommand::Save("transcript.md".to_owned())
+        );
+        assert_eq!(parse_tui_command("/temp"), TuiCommand::TempShow);
+        assert_eq!(parse_tui_command("/temp 0.4"), TuiCommand::TempSet(0.4));
+        assert_eq!(parse_tui_command("/tokens"), TuiCommand::TokensShow);
+        assert_eq!(parse_tui_command("/tokens 32"), TuiCommand::TokensSet(32));
+        assert_eq!(
+            parse_tui_command("/system be terse"),
+            TuiCommand::SystemSet("be terse".to_owned())
+        );
+        assert_eq!(parse_tui_command("/system clear"), TuiCommand::SystemClear);
+        assert_eq!(parse_tui_command("/trim 4"), TuiCommand::Trim(4));
+        assert!(matches!(
+            parse_tui_command("/tokens 0"),
+            TuiCommand::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn tui_prompt_history_prepends_system_prompt_without_mutating_history() {
+        let history = vec![ChatTurn {
+            role: "user".to_owned(),
+            content: "hello".to_owned(),
+        }];
+        let prompt_history = tui_prompt_history(Some("be concise"), &history);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(prompt_history.len(), 2);
+        assert_eq!(prompt_history[0].role, "system");
+        assert_eq!(prompt_history[0].content, "be concise");
+        assert_eq!(prompt_history[1].role, "user");
+    }
+
+    #[test]
+    fn trim_tui_history_keeps_recent_turns() {
+        let mut history = (0..5)
+            .map(|idx| ChatTurn {
+                role: "user".to_owned(),
+                content: format!("turn {idx}"),
+            })
+            .collect::<Vec<_>>();
+
+        trim_tui_history(&mut history, 2);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].content, "turn 3");
+        assert_eq!(history[1].content, "turn 4");
+
+        trim_tui_history(&mut history, 0);
+        assert!(history.is_empty());
     }
 
     #[test]
