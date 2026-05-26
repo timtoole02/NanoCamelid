@@ -22,7 +22,8 @@ Runs NanoCamelid's standard local validation gate:
   14. ./scripts/pi/mixtral-cluster.sh --dry-run
   15. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
   16. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  17. ./scripts/install.sh --dry-run
+  17. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  18. ./scripts/install.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -162,7 +163,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- model 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- model 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
   exit 0
 fi
 
@@ -382,6 +383,14 @@ expect_output "remote_build context-pack dry run" "context_pack_command: NANOCAM
 
 echo "==> Checking remote Pi build launcher rejects invalid context packs..."
 expect_failure "remote_build invalid context cap" env NANOCAMELID_REMOTE_CONTEXT_PACKS=512,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+
+echo "==> Checking remote Pi build launcher plans optional 1B prefill sweep..."
+expect_output "remote_build prefill dry run" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Say\\ hello\\ in\\ one\\ sentence. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/bench-1b-prefill.sh" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+
+echo "==> Checking remote Pi build launcher rejects invalid prefill sweep settings..."
+expect_failure "remote_build invalid prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=1,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build invalid prefill token count" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build invalid prefill temperature" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TEMP=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking installer dry run target-dir safety..."
 ./scripts/install.sh --dry-run

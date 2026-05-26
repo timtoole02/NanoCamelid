@@ -13,6 +13,8 @@ Options:
 
 Useful env:
   NANOCAMELID_REMOTE_CONTEXT_PACKS  Optional comma-separated 1B context caps to run after readiness
+  NANOCAMELID_REMOTE_PREFILL_BENCH  Set to 1 to run the 1B prefill batch sweep after readiness
+  NANOCAMELID_REMOTE_PREFILL_BATCHES Optional comma-separated prefill batches for the remote sweep
 USAGE
 }
 
@@ -57,6 +59,12 @@ READY_TOKENS="${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}"
 READY_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
 READY_CHAT_LOWER="$(printf '%s' "$READY_CHAT" | tr '[:upper:]' '[:lower:]')"
 REMOTE_CONTEXT_PACKS="${NANOCAMELID_REMOTE_CONTEXT_PACKS:-}"
+REMOTE_PREFILL_BENCH="${NANOCAMELID_REMOTE_PREFILL_BENCH:-0}"
+REMOTE_PREFILL_BENCH_LOWER="$(printf '%s' "$REMOTE_PREFILL_BENCH" | tr '[:upper:]' '[:lower:]')"
+PREFILL_PROMPT="${NANOCAMELID_PREFILL_PROMPT:-$SMOKE_PROMPT}"
+PREFILL_TOKENS="${NANOCAMELID_PREFILL_TOKENS:-2}"
+PREFILL_TEMP="${NANOCAMELID_PREFILL_TEMP:-0.0}"
+PREFILL_BATCHES="${NANOCAMELID_REMOTE_PREFILL_BATCHES:-${NANOCAMELID_PREFILL_BATCHES:-1,16,32,64}}"
 
 if [[ -z "$PI_HOST" ]]; then
   usage
@@ -146,6 +154,24 @@ require_context_caps() {
   fi
 }
 
+require_prefill_batches() {
+  local raw_batches="$1"
+  local batch
+  local batch_count=0
+
+  for batch in ${raw_batches//,/ }; do
+    batch_count=$((batch_count + 1))
+    if [[ ! "$batch" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Prefill batch size must be a positive integer: $batch" >&2
+      exit 2
+    fi
+  done
+  if [[ "$batch_count" -eq 0 ]]; then
+    echo "Prefill batches must include at least one positive integer." >&2
+    exit 2
+  fi
+}
+
 redacted_deploy_key_label() {
   if [[ -n "$SSH_KEY" ]]; then
     echo "<ssh-key-path>"
@@ -179,6 +205,24 @@ print_readiness_command() {
   printf '\n'
 }
 
+prefill_bench_enabled() {
+  [[ "$REMOTE_PREFILL_BENCH_LOWER" != "0" && "$REMOTE_PREFILL_BENCH_LOWER" != "false" && "$REMOTE_PREFILL_BENCH_LOWER" != "no" ]]
+}
+
+print_prefill_bench_command() {
+  local model_arg="${1:-}"
+
+  printf 'prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=%s NANOCAMELID_PREFILL_TOKENS=%s NANOCAMELID_PREFILL_TEMP=%s NANOCAMELID_PREFILL_BATCHES=%s ./scripts/pi/bench-1b-prefill.sh' \
+    "$(shell_quote "$PREFILL_PROMPT")" \
+    "$(shell_quote "$PREFILL_TOKENS")" \
+    "$(shell_quote "$PREFILL_TEMP")" \
+    "$(shell_quote "$PREFILL_BATCHES")"
+  if [[ -n "$model_arg" ]]; then
+    printf ' %s' "$(shell_quote "$model_arg")"
+  fi
+  printf '\n'
+}
+
 if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" ]]; then
   if [[ -n "$REMOTE_SMOKE_GGUF" ]] && ! looks_like_gguf_path "$REMOTE_SMOKE_GGUF"; then
     echo "NANOCAMELID_REMOTE_SMOKE_GGUF must be a .gguf path: $REMOTE_SMOKE_GGUF" >&2
@@ -191,6 +235,11 @@ if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "
   fi
   if [[ -n "$REMOTE_CONTEXT_PACKS" ]]; then
     require_context_caps "$REMOTE_CONTEXT_PACKS"
+  fi
+  if prefill_bench_enabled; then
+    require_positive_integer "Prefill token count" "$PREFILL_TOKENS"
+    require_non_negative_float "Prefill temperature" "$PREFILL_TEMP"
+    require_prefill_batches "$PREFILL_BATCHES"
   fi
 fi
 
@@ -211,6 +260,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "ready_tokens: $READY_TOKENS"
   echo "ready_temp: $READY_TEMP"
   echo "context_pack_caps: ${REMOTE_CONTEXT_PACKS:-skipped}"
+  echo "prefill_bench_enabled: $REMOTE_PREFILL_BENCH"
+  echo "prefill_prompt: $PREFILL_PROMPT"
+  echo "prefill_tokens: $PREFILL_TOKENS"
+  echo "prefill_temp: $PREFILL_TEMP"
+  echo "prefill_batches: $PREFILL_BATCHES"
   printf 'deploy_command: scripts/deploy.sh %s %s %s %s\n' \
     "<pi-host>" \
     "$(redacted_deploy_key_label)" \
@@ -240,6 +294,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
       "$(shell_quote "$SMOKE_PROMPT")" \
       "$(shell_quote "$SMOKE_TOKENS")"
   fi
+  if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" ]] || ! prefill_bench_enabled; then
+    echo "prefill_bench_command: skipped"
+  elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
+    print_prefill_bench_command "$REMOTE_SMOKE_GGUF"
+  else
+    print_prefill_bench_command
+  fi
   exit 0
 fi
 
@@ -261,8 +322,14 @@ printf -v READY_PROMPT_ARG '%q' "$READY_PROMPT"
 printf -v READY_TOKENS_ARG '%q' "$READY_TOKENS"
 printf -v READY_TEMP_ARG '%q' "$READY_TEMP"
 printf -v REMOTE_CONTEXT_PACKS_ARG '%q' "$REMOTE_CONTEXT_PACKS"
+printf -v REMOTE_PREFILL_BENCH_ARG '%q' "$REMOTE_PREFILL_BENCH"
+printf -v REMOTE_PREFILL_BENCH_LOWER_ARG '%q' "$REMOTE_PREFILL_BENCH_LOWER"
+printf -v PREFILL_PROMPT_ARG '%q' "$PREFILL_PROMPT"
+printf -v PREFILL_TOKENS_ARG '%q' "$PREFILL_TOKENS"
+printf -v PREFILL_TEMP_ARG '%q' "$PREFILL_TEMP"
+printf -v PREFILL_BATCHES_ARG '%q' "$PREFILL_BATCHES"
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
-  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG REMOTE_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS_ARG bash" << 'EOF'
+  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG REMOTE_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS_ARG REMOTE_PREFILL_BENCH=$REMOTE_PREFILL_BENCH_ARG REMOTE_PREFILL_BENCH_LOWER=$REMOTE_PREFILL_BENCH_LOWER_ARG PREFILL_PROMPT=$PREFILL_PROMPT_ARG PREFILL_TOKENS=$PREFILL_TOKENS_ARG PREFILL_TEMP=$PREFILL_TEMP_ARG PREFILL_BATCHES=$PREFILL_BATCHES_ARG bash" << 'EOF'
   # Export Cargo path to make sure cargo commands work in non-interactive shells
   export PATH="$HOME/.cargo/bin:$PATH"
   if [ -f "$HOME/.cargo/env" ]; then
@@ -342,6 +409,23 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     fi
   }
 
+  run_prefill_bench() {
+    env_args=(
+      "NANOCAMELID_WORKSPACE=$PI_WORKSPACE"
+      "NANOCAMELID_REPO=$PI_REPO"
+      "NANOCAMELID_PREFILL_PROMPT=$PREFILL_PROMPT"
+      "NANOCAMELID_PREFILL_TOKENS=$PREFILL_TOKENS"
+      "NANOCAMELID_PREFILL_TEMP=$PREFILL_TEMP"
+      "NANOCAMELID_PREFILL_BATCHES=$PREFILL_BATCHES"
+    )
+
+    if [ $# -gt 0 ]; then
+      env "${env_args[@]}" ./scripts/pi/bench-1b-prefill.sh "$1"
+    else
+      env "${env_args[@]}" ./scripts/pi/bench-1b-prefill.sh
+    fi
+  }
+
   if [ "$REMOTE_SMOKE_ENABLED_LOWER" = "0" ] || [ "$REMOTE_SMOKE_ENABLED_LOWER" = "false" ] || [ "$REMOTE_SMOKE_ENABLED_LOWER" = "no" ]; then
     echo "==> Skipping model-backed 1B readiness; NANOCAMELID_REMOTE_SMOKE=$REMOTE_SMOKE_ENABLED"
   elif [ -n "$REMOTE_SMOKE_GGUF" ]; then
@@ -354,6 +438,10 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
         NANOCAMELID_CONTEXT_PACKS="$REMOTE_CONTEXT_PACKS" \
         ./scripts/pi/context-pack-1b.sh "$REMOTE_SMOKE_GGUF" "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
     fi
+    if [ "$REMOTE_PREFILL_BENCH_LOWER" != "0" ] && [ "$REMOTE_PREFILL_BENCH_LOWER" != "false" ] && [ "$REMOTE_PREFILL_BENCH_LOWER" != "no" ]; then
+      echo "==> Running explicit 1B prefill batch sweep: $PREFILL_BATCHES"
+      run_prefill_bench "$REMOTE_SMOKE_GGUF"
+    fi
   elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
     echo "==> Running default Pi-local 1B readiness gate: $REMOTE_SMOKE_KIND"
     run_ready_1b
@@ -363,6 +451,10 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
         NANOCAMELID_REPO="$PI_REPO" \
         NANOCAMELID_CONTEXT_PACKS="$REMOTE_CONTEXT_PACKS" \
         ./scripts/pi/context-pack-1b.sh "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+    fi
+    if [ "$REMOTE_PREFILL_BENCH_LOWER" != "0" ] && [ "$REMOTE_PREFILL_BENCH_LOWER" != "false" ] && [ "$REMOTE_PREFILL_BENCH_LOWER" != "no" ]; then
+      echo "==> Running default Pi-local 1B prefill batch sweep: $PREFILL_BATCHES"
+      run_prefill_bench
     fi
   else
     echo "==> Skipping model-backed 1B readiness; no explicit GGUF path was set and no default Pi-local 1B model was found."

@@ -722,6 +722,14 @@ NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024,2048,4096,8192 \
 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
+To add the real 1B prefill batch sweep after readiness, set:
+
+```bash
+NANOCAMELID_REMOTE_PREFILL_BENCH=1 \
+NANOCAMELID_REMOTE_PREFILL_BATCHES=1,16,32,64 \
+./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
+```
+
 To force a specific GGUF path that already exists on the Pi:
 
 ```bash
