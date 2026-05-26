@@ -100,14 +100,25 @@ case "$MODEL_SOURCE" in
     require_gguf_model_path "$MODEL_SOURCE" "$MODEL"
     ;;
 esac
-if [[ $# -gt 3 ]]; then
-  echo "Unexpected extra smoke argument: ${4}" >&2
+SMOKE_KIND="${NANOCAMELID_SMOKE_KIND:-chat}"
+case "${1:-}" in
+  chat | model | q8-chat | q8-model)
+    SMOKE_KIND="$1"
+    shift
+    ;;
+  q8-*)
+    echo "Unknown smoke kind: $1" >&2
+    echo "Expected model, chat, q8-model, or q8-chat." >&2
+    exit 2
+    ;;
+esac
+if [[ $# -gt 2 ]]; then
+  echo "Unexpected extra smoke argument: ${3}" >&2
   usage >&2
   exit 2
 fi
-SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-chat}}"
-SMOKE_PROMPT="${2:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
-SMOKE_TOKENS="${3:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
+SMOKE_PROMPT="${1:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
+SMOKE_TOKENS="${2:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"

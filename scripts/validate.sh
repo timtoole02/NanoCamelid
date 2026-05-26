@@ -272,6 +272,9 @@ expect_failure "model-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-
 echo "==> Checking 1B Pi smoke launcher dry run..."
 ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b selected source" "selected_source: " ./scripts/pi/smoke-1b.sh --dry-run
+expect_output "smoke-1b prompt without explicit kind" "smoke_kind: chat" ./scripts/pi/smoke-1b.sh "Say hello in one sentence." 3 --dry-run
+expect_output "smoke-1b token override without explicit kind" "smoke_tokens: 3" ./scripts/pi/smoke-1b.sh "Say hello in one sentence." 3 --dry-run
+expect_failure "smoke-1b invalid q8 kind" ./scripts/pi/smoke-1b.sh q8-broken --dry-run
 expect_failure "smoke-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/smoke-1b.sh --dry-run
 expect_failure "smoke-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/smoke-1b.sh
 
@@ -317,6 +320,9 @@ expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BAT
 echo "==> Checking 1B Pi context-pack launcher dry run..."
 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b selected source" "selected_source: " ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b prompt without explicit kind" "smoke_kind: chat" ./scripts/pi/context-pack-1b.sh "Say hello in one sentence." 3 512,1024 --dry-run
+expect_output "context-pack-1b caps without explicit kind" "context_caps: 512 1024" ./scripts/pi/context-pack-1b.sh "Say hello in one sentence." 3 512,1024 --dry-run
+expect_failure "context-pack-1b invalid q8 kind" ./scripts/pi/context-pack-1b.sh q8-broken --dry-run
 expect_failure "context-pack-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/context-pack-1b.sh --dry-run
 expect_failure "context-pack-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/context-pack-1b.sh
 
