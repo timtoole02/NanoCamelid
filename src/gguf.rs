@@ -130,7 +130,8 @@ impl GgufTensorType {
             Self::F16 => Some((1, 2)),
             Self::Q4_0 => Some((32, 18)),
             Self::Q4_1 => Some((32, 20)),
-            Self::Q5_0 | Self::Q5_1 => Some((32, 22)),
+            Self::Q5_0 => Some((32, 22)),
+            Self::Q5_1 => Some((32, 24)),
             Self::Q8_0 => Some((32, 34)),
             Self::Q8_1 => Some((32, 36)),
             Self::Q2K => Some((256, 84)),
@@ -370,7 +371,7 @@ pub fn summarize(file: &GgufFile) -> GgufSummary {
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
-    use super::{GgufFile, GgufMetadataValue};
+    use super::{GgufFile, GgufMetadataValue, GgufTensorType, tensor_nbytes};
 
     fn gguf_with_metadata(key: &str, value: GgufMetadataValue) -> GgufFile {
         let mut metadata = BTreeMap::new();
@@ -397,6 +398,20 @@ mod tests {
     fn metadata_bool_accepts_string_compat_values() {
         let gguf = gguf_with_metadata("flag", GgufMetadataValue::String("false".to_owned()));
         assert_eq!(gguf.metadata_bool("flag"), Some(false));
+    }
+
+    #[test]
+    fn q5_0_and_q5_1_have_distinct_block_sizes() {
+        assert_eq!(GgufTensorType::Q5_0.layout(), Some((32, 22)));
+        assert_eq!(GgufTensorType::Q5_1.layout(), Some((32, 24)));
+        assert_eq!(
+            tensor_nbytes("q5_0", &[896, 151_936], GgufTensorType::Q5_0).unwrap(),
+            93_592_576
+        );
+        assert_eq!(
+            tensor_nbytes("q5_1", &[896, 151_936], GgufTensorType::Q5_1).unwrap(),
+            102_100_992
+        );
     }
 }
 

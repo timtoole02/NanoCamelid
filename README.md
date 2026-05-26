@@ -165,6 +165,7 @@ context cap; the context pack checks run `smoke ... chat` at each listed cap.
 | --- | --- | --- | --- | --- | --- | --- |
 | Qwen2.5 0.5B Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `28.41 tok/sec` | 4 tokens at `36.30 tok/sec`; HWM about `1.32 GiB` | `max_logit_delta: 0.00000000`, generated `" SMART"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Qwen2.5-Coder 0.5B Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `32.16 tok/sec` | 4 tokens at `37.37 tok/sec`; HWM about `1.32 GiB` | `max_logit_delta: 0.00000000`, generated `"nodiscard"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"To"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Qwen2.5-Coder 0.5B Instruct Q5_K_M | `ready`; `qwen2`; `qwen_im` | 8 tokens at `9.98 tok/sec` | 8 tokens at `9.71 tok/sec`; direct load about `0.55s` | Not yet covered by scalar-vs-selected smoke helper | renderer `qwen_im`; generated `"Certainly! Below is a simple Rust function"` | Not yet run |
 | Qwen3 0.6B Instruct Q8_0 | `ready`; `qwen3`; `qwen_im` | 8 tokens at `5.90 tok/sec` | 8 tokens at `6.41 tok/sec`; sampled RSS about `1.41 GiB` | `max_logit_delta: 0.00000000`, generated `"0"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"0"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Qwen3 1.7B Instruct Q8_0 | `ready`; `qwen3`; `qwen_im` | 8 tokens at `2.86 tok/sec` | 8 tokens at `2.87 tok/sec`; sampled RSS about `3.56 GiB` | `max_logit_delta: 0.00000000`, generated zero-width space | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated zero-width space | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Qwen3 4B Instruct Q4_0 | `ready`; `qwen3`; `qwen_im` | 8 tokens at `2.22 tok/sec` | 8 tokens at `2.22 tok/sec`; sampled RSS about `5.50 GiB` | `max_logit_delta: 0.00000000`, generated `"ations"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"ations"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
@@ -590,6 +591,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | --- | --- | --- | --- |
 | Qwen2.5 0.5B Instruct | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `33.31 tok/sec`. |
 | Qwen2.5-Coder 0.5B Instruct | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `33.28 tok/sec`. |
+| Qwen2.5-Coder 0.5B Instruct | Q5_K_M | Working end-to-end | Official Q5_K_M GGUF inspects as `ready`; tensor mix includes `Q5_1`, `Q5_K`, `Q6_K`, and `Q8_0`; direct generation produced 8 tokens at `9.98 tok/sec`; Qwen chat rendering produced 8 tokens at `9.71 tok/sec`. |
 | DeepSeek-R1-Distill-Qwen 1.5B | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `13.25 tok/sec`. |
 | Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat at about `4.18 tok/sec`. |
 | Llama 3.2 1B Instruct | Q8_0 | Working end-to-end | Exact Q8_0 row inspects as `ready` with `llama32_1b_shape: ok`; forced Pi readiness run passes host probe, inspect, scalar-vs-SDOT chat smoke, and direct chat generation of `"Hello!"` at about `3.20 tok/sec`. |
@@ -627,6 +629,11 @@ Current Pi 2 evidence, measured on local release builds:
   `10.45s` (`1.34 tok/sec`).
 - Qwen2.5-Coder-7B-Instruct Q4_0 145-token chat prompt: prefill improved from
   `48.90s` at batch 1 to about `17.0s` with loop-inverted batch 16 prefill.
+- Qwen2.5-Coder-0.5B-Instruct Q5_K_M Pi smoke: official
+  `qwen2.5-coder-0.5b-instruct-q5_k_m.gguf` inspects as `ready`; the row
+  exercises mixed `Q5_1`, `Q5_K`, `Q6_K`, and `Q8_0` tensors; direct generation
+  produced 8 tokens at `9.98 tok/sec`; chat generation used `qwen_im` and
+  produced 8 tokens at `9.71 tok/sec`.
 - Strand Rust Coder 14B v1 Q6_K single-Pi capped-context smoke: load about
   `39-54s`, one-token prompt prefill about `6.6s`, 8 generated tokens in
   `46.06s` (`0.17 tok/sec`).

@@ -20,8 +20,8 @@ until full advertised-context memory behavior is validated.
 | `Q8_0` | Supported; scalar/NEON/SDOT paths | Pi-smoked baseline rows exist |
 | `Q4_0` | Supported; scalar plus default Pi fast paths | Multiple Pi-smoked rows exist |
 | `Q4_1` | Supported; scalar reference path | Pi-smoked through Gemma 3 1B IT tensor mix |
-| `Q5_0`, `Q5_1` | Supported; scalar reference path | Needs row-specific Pi smoke before model claims |
-| `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K` | Supported; scalar reference path | Needs row-specific Pi smoke before model claims |
+| `Q5_0`, `Q5_1` | Supported; scalar reference path | Q5_1 is covered by the Qwen2.5-Coder 0.5B Q5_K_M row |
+| `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K` | Supported; scalar reference path | Q5_K has row-specific Pi smoke coverage; Q2_K/Q3_K/Q4_K still need row claims |
 | `Q6_K` | Supported; scalar plus Pi SDOT path | Strand 14B capped-context smoke exists |
 | `IQ2_*`, `IQ3_*`, `IQ4_*` | Deferred | Add only when an exact target row needs it |
 | `MXFP4`, `NVFP4`, `TQ1_0`, `TQ2_0` | Deferred | Out of scope until a concrete model row justifies the complexity |
@@ -34,6 +34,7 @@ These rows have been loaded and generated on Raspberry Pi-class ARM64 hardware.
 | --- | --- | --- | --- | --- |
 | Qwen2.5 0.5B Instruct | `Qwen/Qwen2.5-0.5B-Instruct-GGUF`, `qwen2.5-0.5b-instruct-q4_0.gguf` | `qwen2` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected parity; 512/1024/2048/4096/8192 context packs pass |
 | Qwen2.5-Coder 0.5B Instruct | `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF`, `qwen2.5-coder-0.5b-instruct-q4_0.gguf` | `qwen2` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected parity; 512/1024/2048/4096/8192 context packs pass |
+| Qwen2.5-Coder 0.5B Instruct | `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF`, `qwen2.5-coder-0.5b-instruct-q5_k_m.gguf` | `qwen2` | Supported end-to-end | `ready`; `qwen_im`; mixed `Q5_1`, `Q5_K`, `Q6_K`, and `Q8_0` tensors load; direct generation produced 8 tokens at `9.98 tok/sec`; chat generation produced 8 tokens at `9.71 tok/sec` |
 | Qwen3 0.6B Instruct | `Qwen/Qwen3-0.6B-GGUF`, `qwen3-0.6b-q8_0.gguf` | `qwen3` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `1.41 GiB` |
 | Qwen3 1.7B Instruct | `Qwen/Qwen3-1.7B-GGUF`, `qwen3-1.7b-q8_0.gguf` | `qwen3` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `3.56 GiB` |
 | Qwen3 4B Instruct | `miku552/Qwen3-4B-Q4_0-GGUF`, `qwen3-4b-q4_0.gguf` | `qwen3` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `5.50 GiB` |

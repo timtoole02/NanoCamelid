@@ -774,7 +774,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q8_0 => {
-            let blocks = decode_q8_0_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q8_0_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * 32);
             for block in blocks {
                 let scale = block.scale_f32();
@@ -785,7 +786,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q4_0 => {
-            let blocks = decode_q4_0_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q4_0_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * 32);
             for block in blocks {
                 let scale = block.scale_f32();
@@ -796,7 +798,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q4_1 => {
-            let blocks = decode_q4_1_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q4_1_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * 32);
             for block in blocks {
                 let scale = block.scale_f32();
@@ -808,7 +811,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q5_0 => {
-            let blocks = decode_q5_0_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q5_0_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * 32);
             for block in blocks {
                 let scale = block.scale_f32();
@@ -819,7 +823,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q5_1 => {
-            let blocks = decode_q5_1_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q5_1_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * 32);
             for block in blocks {
                 let scale = block.scale_f32();
@@ -831,7 +836,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q2K => {
-            let blocks = decode_q2_k_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q2_k_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
             for block in blocks {
                 let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
@@ -841,7 +847,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q3K => {
-            let blocks = decode_q3_k_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q3_k_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
             for block in blocks {
                 let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
@@ -851,7 +858,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q4K => {
-            let blocks = decode_q4_k_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q4_k_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
             for block in blocks {
                 let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
@@ -861,7 +869,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q5K => {
-            let blocks = decode_q5_k_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q5_k_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
             for block in blocks {
                 let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
@@ -871,7 +880,8 @@ fn load_f32_or_f16(mmap: &Mmap, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             Ok(data)
         }
         GgufTensorType::Q6K => {
-            let blocks = decode_q6_k_blocks(bytes).map_err(|e| e.to_string())?;
+            let blocks = decode_q6_k_blocks(bytes)
+                .map_err(|e| format!("{name} ({:?}) decode failed: {e}", desc.tensor_type))?;
             let mut data = Vec::with_capacity(blocks.len() * QK_K_BLOCK_SIZE);
             for block in blocks {
                 let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
