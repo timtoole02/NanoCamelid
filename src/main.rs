@@ -2968,6 +2968,7 @@ fn print_smoke_dry_run(title: &str, target: &str, model_path: &Path, parsed: &Sm
     println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
+    println!("context_limit: {}", context_limit_plan_value());
     println!("smoke_kind: {}", parsed.kind.label());
     println!("smoke_prompt: {}", parsed.prompt);
     println!("smoke_tokens: {}", parsed.max_tokens);
@@ -3067,6 +3068,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         println!("selected_source: {}", smoke.model_source);
         println!("model: {}", model_path.display());
         println!("model_exists: {}", model_path.is_file());
+        println!("context_limit: {}", context_limit_plan_value());
         println!("smoke_kind: {}", smoke.kind.label());
         println!("smoke_prompt: {}", smoke.prompt);
         println!("smoke_tokens: {}", smoke.max_tokens);
@@ -3175,6 +3177,13 @@ fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> 
         &parsed.prompt,
         &parsed.max_tokens.to_string(),
     ])
+}
+
+fn context_limit_plan_value() -> String {
+    env::var(CONTEXT_LIMIT_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "unset".to_owned())
 }
 
 fn shell_command(args: &[&str]) -> String {

@@ -156,6 +156,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "selected_source: $MODEL_SOURCE"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"

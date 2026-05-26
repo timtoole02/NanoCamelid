@@ -439,8 +439,8 @@ nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in
 Use `--no-chat` or `--smoke-only` for the audit plus inspect plus smoke-only
 form when you want the gate to validate the model path without launching the
 final direct chat turn. Use `--dry-run` to print the resolved 1B model path,
-smoke settings, host probe command, model audit command, and direct-chat gate
-without loading the GGUF. For
+active `NANOCAMELID_CONTEXT_LIMIT` cap, smoke settings, host probe command,
+model audit command, and direct-chat gate without loading the GGUF. For
 non-interactive automation, the CLI and `ready-1b.sh` also honor
 `NANOCAMELID_READY_SMOKE_KIND`, `NANOCAMELID_READY_SMOKE_PROMPT`, and
 `NANOCAMELID_READY_SMOKE_TOKENS` as smoke defaults before the final direct chat
@@ -491,13 +491,14 @@ model:
 ```
 
 `ready-1b.sh` uses the same Pi target directory and model defaults, then runs
-`inspect`, `smoke 1b`, and `chat` against the resolved GGUF. A leading `.gguf`
-argument overrides the model path. An optional leading `chat`, `model`,
-`q8-chat`, or `q8-model` argument selects the smoke gate kind. The remaining
-optional arguments override the final direct-chat prompt and token budget; when
-omitted, direct chat reuses the selected smoke prompt and token budget. Set
-`--no-chat`, `--smoke-only`, or `NANOCAMELID_READY_CHAT=0` to stop after inspect
-and smoke when you only need the readiness gate:
+the host probe, strict 1B shape audit, `inspect`, `smoke 1b`, and `chat` against
+the resolved GGUF. A leading `.gguf` argument overrides the model path. An
+optional leading `chat`, `model`, `q8-chat`, or `q8-model` argument selects the
+smoke gate kind. The remaining optional arguments override the final direct-chat
+prompt and token budget; when omitted, direct chat reuses the selected smoke
+prompt and token budget. Set `--no-chat`, `--smoke-only`, or
+`NANOCAMELID_READY_CHAT=0` to stop after inspect and smoke when you only need
+the readiness gate:
 
 ```bash
 ./scripts/pi/ready-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf "Say hello in one sentence." 8
