@@ -202,6 +202,54 @@ shell_command() {
   printf '\n'
 }
 
+json_string() {
+  local value="$1"
+  local out='"'
+  local i ch
+
+  for ((i = 0; i < ${#value}; i++)); do
+    ch="${value:i:1}"
+    case "$ch" in
+      '"') out+='\"' ;;
+      "\\") out+='\\' ;;
+      $'\n') out+='\n' ;;
+      $'\r') out+='\r' ;;
+      $'\t') out+='\t' ;;
+      *) out+="$ch" ;;
+    esac
+  done
+
+  out+='"'
+  printf '%s' "$out"
+}
+
+context_limit_plan_value() {
+  if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
+    printf '%s' "$NANOCAMELID_CONTEXT_LIMIT"
+  else
+    printf 'unset'
+  fi
+}
+
+ready_1b_status_json() {
+  local direct_chat="$1"
+  local chat_tokens="$2"
+  local chat_tokens_json="null"
+
+  if [[ -n "$chat_tokens" ]]; then
+    chat_tokens_json="$chat_tokens"
+  fi
+
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"direct_chat":%s,"chat_tokens":%s}\n' \
+    "$(json_string "$MODEL")" \
+    "$(json_string "$MODEL_SOURCE")" \
+    "$(json_string "$(context_limit_plan_value)")" \
+    "$SMOKE_KIND" \
+    "$SMOKE_TOKENS" \
+    "$direct_chat" \
+    "$chat_tokens_json"
+}
+
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid Llama 3.2 1B readiness launcher dry run"
   echo "repo: $REPO"
@@ -223,6 +271,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_tokens: $SMOKE_TOKENS"
   echo "direct_chat: $([[ "$CHAT_ENABLED_LOWER" == "0" || "$CHAT_ENABLED_LOWER" == "false" || "$CHAT_ENABLED_LOWER" == "no" ]] && echo disabled || echo enabled)"
   echo "status_on_success: ready_1b_status: ok"
+  case "$CHAT_ENABLED_LOWER" in
+    0 | false | no)
+      echo "json_on_success: $(ready_1b_status_json false "")"
+      ;;
+    *)
+      echo "json_on_success: $(ready_1b_status_json true "$CHAT_TOKENS")"
+      ;;
+  esac
   printf 'probe_command: '
   shell_command nanocamelid probe
   printf 'model_command: '
@@ -288,6 +344,7 @@ case "$CHAT_ENABLED_LOWER" in
 0 | false | no)
   echo "==> Skipping direct 1B chat turn; NANOCAMELID_READY_CHAT=$CHAT_ENABLED"
   echo "ready_1b_status: ok"
+  echo "json: $(ready_1b_status_json false "")"
   exit 0
   ;;
 esac
@@ -295,3 +352,4 @@ esac
 echo "==> Running direct 1B chat turn"
 run_nanocamelid chat "$MODEL" "$CHAT_PROMPT" "$CHAT_TEMP" "$CHAT_TOKENS"
 echo "ready_1b_status: ok"
+echo "json: $(ready_1b_status_json true "$CHAT_TOKENS")"
