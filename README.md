@@ -80,6 +80,9 @@ cap, smoke kind, smoke token count, and direct-chat token count.
 without requiring the GGUF to exist yet.
 `./scripts/pi/context-pack-1b.sh` reruns the 1B smoke gate across context caps
 from `NANOCAMELID_CONTEXT_PACKS`, defaulting to `512,1024,2048,4096,8192`.
+Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
+`json:` status row listing the selected 1B model, smoke kind, token count, and
+validated context caps; dry runs print the same row as `json_on_success:`.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the real 1B prefill batch
 sweep plan and validates any `NANOCAMELID_CONTEXT_LIMIT` cap before the model is
 loaded.

@@ -79,6 +79,42 @@ shell_command() {
   printf '\n'
 }
 
+json_string() {
+  local value="$1"
+  local out='"'
+  local i ch
+
+  for ((i = 0; i < ${#value}; i++)); do
+    ch="${value:i:1}"
+    case "$ch" in
+      '"') out+='\"' ;;
+      "\\") out+='\\' ;;
+      $'\n') out+='\n' ;;
+      $'\r') out+='\r' ;;
+      $'\t') out+='\t' ;;
+      *) out+="$ch" ;;
+    esac
+  done
+
+  out+='"'
+  printf '%s' "$out"
+}
+
+json_integer_array() {
+  local first=1
+  local value
+
+  printf '['
+  for value in "$@"; do
+    if [[ "$first" == "0" ]]; then
+      printf ','
+    fi
+    first=0
+    printf '%s' "$value"
+  done
+  printf ']'
+}
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -163,6 +199,15 @@ else
   launcher_mode="unavailable"
 fi
 
+context_pack_status_json() {
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"smoke_kind":"%s","smoke_tokens":%s,"context_caps":%s}\n' \
+    "$(json_string "$MODEL")" \
+    "$(json_string "$MODEL_SOURCE")" \
+    "$SMOKE_KIND" \
+    "$SMOKE_TOKENS" \
+    "$(json_integer_array "${CONTEXT_PACKS[@]}")"
+}
+
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid Llama 3.2 1B context-pack launcher dry run"
   echo "repo: $REPO"
@@ -176,6 +221,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
   echo "context_caps: ${CONTEXT_PACKS[*]}"
+  echo "status_on_success: context_pack_1b_status: ok"
+  echo "json_on_success: $(context_pack_status_json)"
   for cap in "${CONTEXT_PACKS[@]}"; do
     printf 'context_%s_command: NANOCAMELID_CONTEXT_LIMIT=%s ' "$cap" "$cap"
     shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
@@ -222,3 +269,6 @@ for cap in "${CONTEXT_PACKS[@]}"; do
   export NANOCAMELID_CONTEXT_LIMIT="$cap"
   run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 done
+
+echo "context_pack_1b_status: ok"
+echo "json: $(context_pack_status_json)"
