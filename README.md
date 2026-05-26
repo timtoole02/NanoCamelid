@@ -218,7 +218,7 @@ it is not a practical Pi target yet:
 - Q6_K SDOT preserved the initial smoke output and reduced a capped one-token
   Strand run from about `78s` to about `54s`.
 
-Mixtral Q4_0 now has an experimental three-Pi cluster smoke. NanoCamelid can
+Mixtral Q4_0 now has exact-row three-Pi cluster chat support. NanoCamelid can
 parse the expert-indexed MoE tensors, render the Mistral/Mixtral `[INST]` chat
 prompt, route through the top experts, and produce prompt-level chat output
 across the Pi pipeline. This is not a single-Pi support claim: full Mixtral
@@ -236,8 +236,11 @@ Latest Mixtral cluster chat evidence:
 - prompt: `Write one short sentence about Raspberry Pi clusters.`
 - rendered prompt: `<s>[INST] Write one short sentence about Raspberry Pi clusters. [/INST]`
 - generated text: `Raspberry Pi clusters are groups of`
+- handshake: master, middle, and final worker agreed on protocol, layer ranges,
+  hidden width, context cap, KV width, vocab size, and MoE expert shape before
+  activation streaming
 - generated tokens: `8`
-- throughput: about `1.12 tok/sec`
+- throughput: about `1.26 tok/sec`
 
 Use the Pi launcher to print the exact current run plan without hard-coding node
 addresses in the repo:
@@ -592,7 +595,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
 | Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
-| Mixtral 8x7B Instruct v0.1 | Q4_0 | Experimental MoE cluster chat smoke | Expert-indexed MoE tensors inspect as `ready`; three-Pi `master-chat` rendered the `[INST]` prompt and generated 8 tokens at about `1.12 tok/sec`. Single-Pi full generation OOMs on 16 GB Pi RAM. |
+| Mixtral 8x7B Instruct v0.1 | Q4_0 | Supported three-Pi cluster chat | Expert-indexed MoE tensors inspect as `ready`; three-Pi `master-chat` handshake validated the `0..11`, `11..22`, `22..32` split, rendered the `[INST]` prompt, and generated 8 tokens at about `1.26 tok/sec`. Single-Pi full generation OOMs on 16 GB Pi RAM. |
 | Qwen2.5-Coder 32B Instruct | Q4_0 | Cluster smoke only | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec`; this is not a single-Pi claim. |
 | Llama 3 70B Instruct | Q4_0 | Token-level cluster smoke only | Three-Pi token-level smoke generated two tokens at about `0.17 tok/sec`; full prompt-level chat still needs tokenizer support for the tested GGUF. |
 
