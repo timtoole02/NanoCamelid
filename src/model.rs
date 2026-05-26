@@ -12,7 +12,7 @@ use crate::q8::{
     Q2KBlock, Q3KBlock, Q4_0Block, Q4_1Block, Q4KBlock, Q5_0Block, Q5_1Block, Q5KBlock, Q6KBlock,
     Q8_0Block, QK_K_BLOCK_SIZE, decode_q2_k_blocks, decode_q3_k_blocks, decode_q4_0_blocks,
     decode_q4_1_blocks, decode_q4_k_blocks, decode_q5_0_blocks, decode_q5_1_blocks,
-    decode_q5_k_blocks, decode_q6_k_blocks, decode_q8_0_blocks, swizzle_q4_0_1x4,
+    decode_q5_k_blocks, decode_q6_k_blocks, decode_q8_0_blocks, swizzle_q4_0_1x4, swizzle_q8_0_1x4,
 };
 use memmap2::Mmap;
 
@@ -259,8 +259,12 @@ impl DistributedLlamaWeights {
     }
 }
 
+pub const Q8_SWIZZLE_1X4_ENV: &str = "NANOCAMELID_Q8_SWIZZLE_1X4";
+pub const Q8_PAGE_ALIGN_1X4_ENV: &str = "NANOCAMELID_Q8_PAGE_ALIGN_1X4";
+
 pub enum QuantizedMatrix {
     Q8_0(Vec<Q8_0Block>),
+    Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix),
     Q4_0(Vec<Q4_0Block>),
     Q4_1(Vec<Q4_1Block>),
     Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix),
@@ -278,6 +282,80 @@ pub struct Q4_0Swizzled1x4Matrix {
     pub page_aligned_1x4: Option<PageAlignedQ4_0Swizzled1x4>,
     pub rows: usize,
     pub cols: usize,
+}
+
+pub struct Q8_0Swizzled1x4Matrix {
+    pub swizzled_1x4: Vec<Q8_0Block>,
+    pub page_aligned_1x4: Option<PageAlignedQ8_0Swizzled1x4>,
+    pub rows: usize,
+    pub cols: usize,
+}
+
+pub struct PageAlignedQ8_0Swizzled1x4 {
+    chunks: Vec<NonNull<Q8_0Block>>,
+    blocks_per_row: usize,
+    layout: Layout,
+}
+
+unsafe impl Send for PageAlignedQ8_0Swizzled1x4 {}
+unsafe impl Sync for PageAlignedQ8_0Swizzled1x4 {}
+
+impl PageAlignedQ8_0Swizzled1x4 {
+    pub(crate) fn from_swizzled(
+        swizzled: &[Q8_0Block],
+        rows: usize,
+        blocks_per_row: usize,
+    ) -> Self {
+        debug_assert!(rows.is_multiple_of(4));
+        debug_assert_eq!(swizzled.len(), rows * blocks_per_row);
+        let chunk_blocks = blocks_per_row * 4;
+        let chunk_bytes = chunk_blocks * std::mem::size_of::<Q8_0Block>();
+        let layout = Layout::from_size_align(chunk_bytes, 4096).unwrap();
+        let mut chunks = Vec::with_capacity(rows / 4);
+        for chunk_idx in 0..rows / 4 {
+            let ptr = unsafe { alloc(layout) as *mut Q8_0Block };
+            let Some(non_null) = NonNull::new(ptr) else {
+                handle_alloc_error(layout);
+            };
+            let src_start = chunk_idx * chunk_blocks;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    swizzled[src_start..src_start + chunk_blocks].as_ptr(),
+                    non_null.as_ptr(),
+                    chunk_blocks,
+                );
+            }
+            chunks.push(non_null);
+        }
+
+        Self {
+            chunks,
+            blocks_per_row,
+            layout,
+        }
+    }
+
+    pub(crate) fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+
+    pub(crate) fn blocks_per_row(&self) -> usize {
+        self.blocks_per_row
+    }
+
+    pub(crate) fn chunk_ptr(&self, chunk_idx: usize) -> *const Q8_0Block {
+        self.chunks[chunk_idx].as_ptr()
+    }
+}
+
+impl Drop for PageAlignedQ8_0Swizzled1x4 {
+    fn drop(&mut self) {
+        for ptr in &self.chunks {
+            unsafe {
+                dealloc(ptr.as_ptr().cast::<u8>(), self.layout);
+            }
+        }
+    }
 }
 
 pub struct PageAlignedQ4_0Swizzled1x4 {
@@ -917,9 +995,7 @@ fn load_quantized_matrix(
     let bytes = tensor_bytes(mmap, desc)?;
 
     match desc.tensor_type {
-        GgufTensorType::Q8_0 => decode_q8_0_blocks(bytes)
-            .map(QuantizedMatrix::Q8_0)
-            .map_err(|e| e.to_string()),
+        GgufTensorType::Q8_0 => load_q8_0_matrix(bytes, desc),
         GgufTensorType::Q4_0 => load_q4_0_matrix(bytes, desc),
         GgufTensorType::Q4_1 => decode_q4_1_blocks(bytes)
             .map(QuantizedMatrix::Q4_1)
@@ -949,6 +1025,60 @@ fn load_quantized_matrix(
             "expected Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, or Q6_K tensor type for {name}, got {other:?}"
         )),
     }
+}
+
+fn load_q8_0_matrix(bytes: &[u8], desc: &GgufTensorDescriptor) -> Result<QuantizedMatrix, String> {
+    let row_major = decode_q8_0_blocks(bytes).map_err(|e| e.to_string())?;
+    if !q8_swizzle_1x4_enabled() {
+        return Ok(QuantizedMatrix::Q8_0(row_major));
+    }
+
+    let dims = descriptor_dims(desc)?;
+    let Some((&cols, rest)) = dims.split_first() else {
+        return Ok(QuantizedMatrix::Q8_0(row_major));
+    };
+    let &[rows] = rest else {
+        return Ok(QuantizedMatrix::Q8_0(row_major));
+    };
+    if rows == 0
+        || cols == 0
+        || !rows.is_multiple_of(4)
+        || !cols.is_multiple_of(32)
+        || row_major.len() != rows * (cols / 32)
+    {
+        return Ok(QuantizedMatrix::Q8_0(row_major));
+    }
+
+    let blocks_per_row = cols / 32;
+    let swizzled_1x4 = swizzle_q8_0_1x4(&row_major, rows, blocks_per_row);
+    let page_aligned_1x4 = q8_page_align_1x4_enabled()
+        .then(|| PageAlignedQ8_0Swizzled1x4::from_swizzled(&swizzled_1x4, rows, blocks_per_row));
+    Ok(QuantizedMatrix::Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix {
+        swizzled_1x4,
+        page_aligned_1x4,
+        rows,
+        cols,
+    }))
+}
+
+fn q8_swizzle_1x4_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q8_SWIZZLE_1X4_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(true)
+    })
+}
+
+fn q8_page_align_1x4_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q8_PAGE_ALIGN_1X4_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
 }
 
 fn load_q4_0_matrix(bytes: &[u8], desc: &GgufTensorDescriptor) -> Result<QuantizedMatrix, String> {
