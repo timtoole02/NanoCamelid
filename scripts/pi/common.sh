@@ -94,3 +94,16 @@ require_gguf_model_path() {
     exit 2
   fi
 }
+
+require_optional_context_limit() {
+  local value="${NANOCAMELID_CONTEXT_LIMIT:-}"
+
+  if [[ -z "$value" ]]; then
+    return
+  fi
+
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "NANOCAMELID_CONTEXT_LIMIT must be a positive integer: $value" >&2
+    exit 2
+  fi
+}

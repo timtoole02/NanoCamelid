@@ -294,13 +294,12 @@ fn main() -> ExitCode {
                         Ok(parsed) => {
                             let model_path = Path::new(&parsed.model_path);
                             if parsed.dry_run {
-                                print_smoke_dry_run(
+                                return print_smoke_dry_run(
                                     "NanoCamelid Llama 3.2 1B smoke dry run",
                                     "1b",
                                     model_path,
                                     &parsed,
                                 );
-                                return ExitCode::SUCCESS;
                             }
                             if !model_path.is_file() {
                                 eprintln!("{}", llama32_1b_model_not_found_message(model_path));
@@ -327,13 +326,12 @@ fn main() -> ExitCode {
                         Ok(parsed) => {
                             let model_path = Path::new(&parsed.model_path);
                             if parsed.dry_run {
-                                print_smoke_dry_run(
+                                return print_smoke_dry_run(
                                     "NanoCamelid Llama 3.2 3B smoke dry run",
                                     "3b",
                                     model_path,
                                     &parsed,
                                 );
-                                return ExitCode::SUCCESS;
                             }
                             if !model_path.is_file() {
                                 eprintln!("{}", llama32_3b_model_not_found_message(model_path));
@@ -2972,7 +2970,17 @@ fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode
     }
 }
 
-fn print_smoke_dry_run(title: &str, target: &str, model_path: &Path, parsed: &Smoke1BArgs) {
+fn print_smoke_dry_run(
+    title: &str,
+    target: &str,
+    model_path: &Path,
+    parsed: &Smoke1BArgs,
+) -> ExitCode {
+    if let Err(err) = validate_context_limit_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+
     println!("{title}");
     println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
@@ -2985,6 +2993,7 @@ fn print_smoke_dry_run(title: &str, target: &str, model_path: &Path, parsed: &Sm
         "smoke_command: {}",
         smoke_plan_command(target, model_path, parsed)
     );
+    ExitCode::SUCCESS
 }
 
 fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
@@ -3064,6 +3073,11 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     };
 
     if parsed.dry_run {
+        if let Err(err) = validate_context_limit_env() {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+
         let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
         let q4_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
         let q8_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q8_MODEL);
@@ -3193,6 +3207,10 @@ fn context_limit_plan_value() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "unset".to_owned())
+}
+
+fn validate_context_limit_env() -> Result<(), String> {
+    parse_context_limit_env().map(|_| ())
 }
 
 fn shell_command(args: &[&str]) -> String {
@@ -3506,20 +3524,28 @@ fn validate_generation_budget(
 }
 
 fn apply_context_limit(config: &mut model::LlamaModelConfig) -> Result<(), String> {
-    let Some(limit) = env::var(CONTEXT_LIMIT_ENV)
+    let Some(limit) = parse_context_limit_env()? else {
+        return Ok(());
+    };
+    config.context_length = config.context_length.min(limit);
+    Ok(())
+}
+
+fn parse_context_limit_env() -> Result<Option<usize>, String> {
+    let Some(raw_limit) = env::var(CONTEXT_LIMIT_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
     else {
-        return Ok(());
+        return Ok(None);
     };
-    let limit = limit
+
+    let limit = raw_limit
         .parse::<usize>()
-        .map_err(|err| format!("{CONTEXT_LIMIT_ENV} must be a positive integer: {err}"))?;
+        .map_err(|_| format!("{CONTEXT_LIMIT_ENV} must be a positive integer: {raw_limit}"))?;
     if limit == 0 {
         return Err(format!("{CONTEXT_LIMIT_ENV} must be greater than zero"));
     }
-    config.context_length = config.context_length.min(limit);
-    Ok(())
+    Ok(Some(limit))
 }
 
 fn cpu_model(cpuinfo: &str) -> Option<&str> {
