@@ -173,7 +173,7 @@ context cap; the context pack checks run `smoke ... chat` at each listed cap.
 | Gemma 3 1B IT Q4_0 | `ready`; `gemma3`; `gemma_turn` | 8 tokens at `3.78 tok/sec` | 8 tokens at `3.83 tok/sec`; sampled RSS about `2.20 GiB` | `max_logit_delta: 0.00000000`, generated `"擬"` | renderer `gemma_turn`; `max_logit_delta: 0.00000000`, generated `"擬"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | DeepSeek-R1-Distill-Qwen 1.5B Q4_0 | `ready`; `qwen2`; `deepseek_r1_qwen` | 8 tokens at `12.38 tok/sec` | 4 tokens at `15.59 tok/sec`; HWM about `2.83 GiB` | `max_logit_delta: 0.00000000`, generated `"!"` | renderer `deepseek_r1_qwen`; `max_logit_delta: 0.00000000` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Llama 3.2 1B Instruct Q4_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `4.11 tok/sec` | 2 tokens at `3.61 tok/sec`; HWM about `2.37 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
-| Llama 3.2 1B Instruct Q8_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `3.49 tok/sec` | 2 tokens at `3.12 tok/sec`; HWM about `3.31 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
+| Llama 3.2 1B Instruct Q8_0 | `ready`; `llama`; `llama3_instruct`; `llama32_1b_shape: ok` | 8 tokens at `3.49 tok/sec` | End-to-end ready run generated `"Hello!"` at `3.20 tok/sec`; HWM about `3.31 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello!"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Llama 3.2 3B Instruct Q4_0 | `ready`; `llama`; `llama3_instruct` | 8 tokens at `2.29 tok/sec` | 2 tokens at `2.04 tok/sec`; HWM about `4.93 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `llama3_instruct`; `max_logit_delta: 0.00000000`, generated `"Hello"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Mistral 7B Instruct v0.1 Q4_0 | `ready`; tested GGUF reports `llama`; `mistral_inst_token_fallback` | 8 tokens at `2.91 tok/sec` | 4 tokens at `3.53 tok/sec`; HWM about `8.21 GiB` | `max_logit_delta: 0.00000000`, generated `","` | renderer `mistral_inst_token_fallback`; `max_logit_delta: 0.00000000` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
 | Qwen2.5-Coder-7B-Instruct Q4_0 | `ready`; `qwen2`; `qwen_im` | 8 tokens at `2.88 tok/sec` | 4 tokens at `3.54 tok/sec`; HWM about `10.14 GiB` | `max_logit_delta: 0.00000000`, generated `"odzi"` | renderer `qwen_im`; `max_logit_delta: 0.00000000`, generated `"One"` | `512`, `1024`, `2048`, `4096`, `8192`: all exact parity |
@@ -591,7 +591,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | Qwen2.5-Coder 0.5B Instruct | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `33.28 tok/sec`. |
 | DeepSeek-R1-Distill-Qwen 1.5B | Q4_0 | Working | Pi smoke reports `ready`; 8-token generation runs at about `13.25 tok/sec`. |
 | Llama 3.2 1B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity and interactive TUI chat at about `4.18 tok/sec`. |
-| Llama 3.2 1B Instruct | Q8_0 | Working baseline | Baseline path for Q8 validation and Q4 comparison; short chat evidence is about `3.63 tok/sec`. |
+| Llama 3.2 1B Instruct | Q8_0 | Working end-to-end | Exact Q8_0 row inspects as `ready` with `llama32_1b_shape: ok`; forced Pi readiness run passes host probe, inspect, scalar-vs-SDOT chat smoke, and direct chat generation of `"Hello!"` at about `3.20 tok/sec`. |
 | Llama 3.2 3B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity; direct generation runs at about `2.22 tok/sec`; capped `8096` context smoke and TUI launch pass. |
 | Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
@@ -609,7 +609,10 @@ Current Pi 2 evidence, measured on local release builds:
 
 - Llama 3.2 1B Instruct Q4_0 short generation, default fast profile:
   `4.18 tok/sec`.
-- Llama 3.2 1B Instruct Q8_0 short chat: about `3.63 tok/sec`.
+- Llama 3.2 1B Instruct Q8_0 forced end-to-end readiness run:
+  `ready`, `llama3_instruct`, `llama32_1b_shape: ok`,
+  `max_logit_delta: 0.00000000`, generated `"Hello!"` at about
+  `3.20 tok/sec`.
 - Llama 3.2 3B Instruct Q4_0 direct generation: about `2.22 tok/sec`;
   chat smoke generated `"Hello!"` with `max_logit_delta: 0.00000000`;
   capped 8096-context chat smoke and TUI launch pass.
