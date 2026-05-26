@@ -1122,12 +1122,15 @@ fn parse_tui_args_with_env_and_workspace(
 
     let temp = args
         .get(option_idx)
-        .and_then(|value| value.parse::<f32>().ok())
+        .map(|value| parse_non_negative_f32(value, "tui temp must be a non-negative number"))
+        .transpose()?
         .unwrap_or(0.0);
-    let max_tokens = args
-        .get(option_idx + 1)
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(128);
+    let max_tokens = parse_optional_positive_usize(
+        args.get(option_idx + 1),
+        "tui max_tokens must be a positive integer",
+    )?
+    .unwrap_or(128);
+    reject_extra_positionals(args, option_idx + 2, "unexpected extra tui argument")?;
 
     Ok(TuiArgs {
         model_path,
@@ -1168,12 +1171,15 @@ fn parse_generate_args_with_env_and_workspace(
     };
     let temp = args
         .get(prompt_idx + 1)
-        .and_then(|value| value.parse::<f32>().ok())
+        .map(|value| parse_non_negative_f32(value, "generate temp must be a non-negative number"))
+        .transpose()?
         .unwrap_or(0.0);
-    let max_tokens = args
-        .get(prompt_idx + 2)
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(128);
+    let max_tokens = parse_optional_positive_usize(
+        args.get(prompt_idx + 2),
+        "generate max_tokens must be a positive integer",
+    )?
+    .unwrap_or(128);
+    reject_extra_positionals(args, prompt_idx + 3, "unexpected extra generate argument")?;
 
     Ok(GenerateArgs {
         model_path,
@@ -1631,6 +1637,13 @@ fn parse_optional_positive_usize(
     };
     match value.parse::<usize>() {
         Ok(parsed) if parsed > 0 => Ok(Some(parsed)),
+        _ => Err(error),
+    }
+}
+
+fn parse_non_negative_f32(value: &str, error: &'static str) -> Result<f32, &'static str> {
+    match value.parse::<f32>() {
+        Ok(parsed) if parsed.is_finite() && parsed >= 0.0 => Ok(parsed),
         _ => Err(error),
     }
 }
@@ -4909,6 +4922,45 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn generate_args_reject_invalid_temp_token_count_and_extra_args() {
+        let bad_temp = parse_generate_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "Hello".to_owned(),
+                "bad".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("invalid generate temp should fail");
+        assert_eq!(bad_temp, "generate temp must be a non-negative number");
+
+        let bad_tokens = parse_generate_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "Hello".to_owned(),
+                "0.0".to_owned(),
+                "0".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("zero generate token count should fail");
+        assert_eq!(bad_tokens, "generate max_tokens must be a positive integer");
+
+        let extra = parse_generate_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "Hello".to_owned(),
+                "0.0".to_owned(),
+                "8".to_owned(),
+                "extra".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("extra generate argument should fail");
+        assert_eq!(extra, "unexpected extra generate argument");
+    }
+
+    #[test]
     fn tui_args_use_explicit_model_path_without_env() {
         let parsed = parse_tui_args_with_env(
             &[
@@ -4983,6 +5035,42 @@ flags\t\t: sse4_2 avx2
             err,
             "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF"
         );
+    }
+
+    #[test]
+    fn tui_args_reject_invalid_temp_token_count_and_extra_args() {
+        let bad_temp = parse_tui_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "-0.1".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("negative TUI temp should fail");
+        assert_eq!(bad_temp, "tui temp must be a non-negative number");
+
+        let bad_tokens = parse_tui_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "0.0".to_owned(),
+                "bad".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("invalid TUI token count should fail");
+        assert_eq!(bad_tokens, "tui max_tokens must be a positive integer");
+
+        let extra = parse_tui_args_with_env(
+            &[
+                "/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned(),
+                "0.0".to_owned(),
+                "8".to_owned(),
+                "extra".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("extra TUI arg should fail");
+        assert_eq!(extra, "unexpected extra tui argument");
     }
 
     #[test]
