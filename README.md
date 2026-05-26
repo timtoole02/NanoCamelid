@@ -595,7 +595,7 @@ hardware with the current GGUF path. They are not broad family claims.
 | Llama 3.2 3B Instruct | Q4_0 | Working | Pi smoke passes with scalar-vs-selected-kernel logit parity; direct generation runs at about `2.22 tok/sec`; capped `8096` context smoke and TUI launch pass. |
 | Mistral 7B Instruct v0.1 | Q4_0 | Working for tested row | Tested GGUF reports a Llama-style architecture; 4-token smoke runs at about `3.68 tok/sec`. |
 | Qwen2.5-Coder-7B-Instruct | Q4_0 | Smoke passing | Official Q4_0 GGUF loads, Qwen chat rendering runs, and Pi smoke/chat generation passes with exact scalar-vs-selected logit parity on the smoke gate. |
-| Strand Rust Coder 14B v1 | Q6_K | Working but slow | Official Q6_K GGUF inspects and runs with `NANOCAMELID_CONTEXT_LIMIT=128`, but current throughput is too slow for practical Pi use. |
+| Strand Rust Coder 14B v1 | Q6_K | Supported three-Pi cluster chat | Official Q6_K GGUF inspects and runs on one Pi, but the practical path is the three-Pi split. Current-head `master-chat` with Q6_K SDOT generated 6 tokens at about `1.26 tok/sec` with the `0..16`, `16..32`, `32..48` split. |
 | Mixtral 8x7B Instruct v0.1 | Q4_0 | Supported three-Pi cluster chat | Expert-indexed MoE tensors inspect as `ready`; three-Pi `master-chat` handshake validated the `0..11`, `11..22`, `22..32` split, rendered the `[INST]` prompt, and generated 8 tokens at about `1.26 tok/sec`. Single-Pi full generation OOMs on 16 GB Pi RAM. |
 | Qwen2.5-Coder 32B Instruct | Q4_0 | Cluster smoke only | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec`; this is not a single-Pi claim. |
 | Llama 3 70B Instruct | Q4_0 | Supported three-Pi cluster chat | Tested GGUF inspects as `ready`, uses the `llama3_instruct` chat renderer, and three-Pi `master-chat` generated 4 tokens with the `0..27`, `27..54`, `54..80` split at about `0.29 tok/sec` after a 19-token prompt ingest. This is not a single-Pi claim. |
@@ -626,11 +626,13 @@ Current Pi 2 evidence, measured on local release builds:
   `10.45s` (`1.34 tok/sec`).
 - Qwen2.5-Coder-7B-Instruct Q4_0 145-token chat prompt: prefill improved from
   `48.90s` at batch 1 to about `17.0s` with loop-inverted batch 16 prefill.
-- Strand Rust Coder 14B v1 Q6_K capped-context smoke: load about `39-54s`,
-  one-token prompt prefill about `6.6s`, 8 generated tokens in `46.06s`
-  (`0.17 tok/sec`).
-- Experimental Q6_K SDOT on Pi 2 preserved the Strand 14B one-token smoke output
-  and reduced a capped one-token wall-clock run from `78s` to `54s`.
+- Strand Rust Coder 14B v1 Q6_K single-Pi capped-context smoke: load about
+  `39-54s`, one-token prompt prefill about `6.6s`, 8 generated tokens in
+  `46.06s` (`0.17 tok/sec`).
+- Strand Rust Coder 14B v1 Q6_K three-Pi cluster chat: Q6_K SDOT, split
+  `0..16`, `16..32`, `32..48`, prompt ingest about `11.74s`, generated
+  `"**Generated Code:**\n\n```"` as 6 tokens in `4.78s` (`1.26 tok/sec`).
+  Use `scripts/pi/strand-cluster.sh` for the repeatable launch plan.
 - Llama 3 70B Instruct Q4_0 three-Pi `master-chat`: 19-token prompt ingest
   took about `100.39s`; generated `"Raspberry Pi clusters"` as 4 tokens in
   `13.93s` (`0.29 tok/sec`) with the `0..27`, `27..54`, `54..80` split.
@@ -850,6 +852,35 @@ cargo run --release --bin cluster_tcp_smoke -- \
 
 Use `master-chat` instead of `master-generate` for chat-template rows such as
 Mixtral.
+
+For Strand Rust Coder 14B v1 Q6_K specifically, use the 48-layer split that has
+been Pi-smoked with Q6_K SDOT enabled: `0..16` on the master, `16..32` on the
+middle worker, and `32..48` on the final worker. The launcher below wraps the
+same commands and keeps the node addresses in environment variables:
+
+```bash
+./scripts/pi/strand-cluster.sh --dry-run
+```
+
+Start the final worker:
+
+```bash
+./scripts/pi/strand-cluster.sh final /path/to/Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf
+```
+
+Start the middle worker:
+
+```bash
+NANOCAMELID_CLUSTER_FINAL_ADDR=<final-worker-host>:5007 \
+./scripts/pi/strand-cluster.sh middle /path/to/Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf
+```
+
+Run chat generation from the master:
+
+```bash
+NANOCAMELID_CLUSTER_MIDDLE_ADDR=<middle-worker-host>:5006 \
+./scripts/pi/strand-cluster.sh master /path/to/Fortytwo_Strand-Rust-Coder-14B-v1-Q6_K.gguf
+```
 
 For Mixtral 8x7B Q4_0 specifically, use the 32-layer split that has been
 Pi-smoked: `0..11` on the master, `11..22` on the middle worker, and `22..32`
