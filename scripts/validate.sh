@@ -9,6 +9,7 @@ Runs NanoCamelid's standard local validation gate:
   1. cargo fmt -- --check
   2. cargo test
   3. cargo clippy --all-targets -- -D warnings
+  4. cargo run -- ready 1b --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -148,7 +149,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- ready 1b --dry-run"
   exit 0
 fi
 
@@ -167,3 +168,6 @@ cargo test
 
 echo "==> Running clippy..."
 cargo clippy --all-targets -- -D warnings
+
+echo "==> Checking 1B readiness CLI dry run..."
+cargo run -- ready 1b --dry-run

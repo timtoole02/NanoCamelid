@@ -303,7 +303,9 @@ On macOS, `validate.sh` refuses to guess a default target directory or use a
 non-`/Volumes` target. Set `CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` to an
 external drive path first so the repo does not create build artifacts on the
 internal disk. On prepared Pi workspaces, the same script defaults to
-`/mnt/nanocamelid/target`.
+`/mnt/nanocamelid/target`. The gate also runs `cargo run -- ready 1b --dry-run`
+so the default Llama 3.2 1B readiness command path stays covered without
+requiring the GGUF during local validation.
 
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
