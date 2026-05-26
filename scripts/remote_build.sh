@@ -65,6 +65,7 @@ PREFILL_PROMPT="${NANOCAMELID_PREFILL_PROMPT:-$SMOKE_PROMPT}"
 PREFILL_TOKENS="${NANOCAMELID_PREFILL_TOKENS:-2}"
 PREFILL_TEMP="${NANOCAMELID_PREFILL_TEMP:-0.0}"
 PREFILL_BATCHES="${NANOCAMELID_REMOTE_PREFILL_BATCHES:-${NANOCAMELID_PREFILL_BATCHES:-1,16,32,64}}"
+SSH_CONNECT_TIMEOUT="${NANOCAMELID_SSH_CONNECT_TIMEOUT:-10}"
 
 if [[ -z "$PI_HOST" ]]; then
   usage
@@ -92,9 +93,20 @@ if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "
 fi
 
 if [[ ! -f "$SSH_KEY" ]]; then
-  SSH_OPTS=()
+  SSH_OPTS=(
+    -o BatchMode=yes
+    -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+  )
 else
-  SSH_OPTS=(-i "$SSH_KEY")
+  SSH_OPTS=(
+    -i "$SSH_KEY"
+    -o BatchMode=yes
+    -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+  )
 fi
 
 shell_quote() {
@@ -248,6 +260,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "target: <pi-user>@<pi-host>"
   echo "target_redacted: true"
   echo "deploy_mode: $DEPLOY_MODE"
+  echo "ssh_batch_mode: yes"
+  echo "ssh_connect_timeout_sec: $SSH_CONNECT_TIMEOUT"
   echo "remote_workspace: $PI_WORKSPACE"
   echo "remote_repo: $PI_REPO"
   echo "cargo_target_dir: $PI_TARGET_DIR"

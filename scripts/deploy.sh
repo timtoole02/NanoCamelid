@@ -10,6 +10,7 @@ PI_WORKSPACE="${NANOCAMELID_REMOTE_WORKSPACE:-/mnt/nanocamelid}"
 PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
 PUBLIC_REPO_URL="${NANOCAMELID_PUBLIC_REPO_URL:-https://github.com/timtoole02/NanoCamelid.git}"
 PI_BRANCH="${NANOCAMELID_REMOTE_BRANCH:-main}"
+SSH_CONNECT_TIMEOUT="${NANOCAMELID_SSH_CONNECT_TIMEOUT:-10}"
 
 if [[ -z "$PI_HOST" ]]; then
   echo "Usage: $0 <pi-ip-or-hostname> [ssh-key-path] [pi-username] [rsync|git-ff]" >&2
@@ -23,9 +24,20 @@ if [[ ! -f "$SSH_KEY" ]]; then
   if [[ -n "$SSH_KEY" ]]; then
     echo "Warning: configured SSH private key was not found; using default ssh agent." >&2
   fi
-  SSH_OPTS=()
+  SSH_OPTS=(
+    -o BatchMode=yes
+    -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+  )
 else
-  SSH_OPTS=(-i "$SSH_KEY")
+  SSH_OPTS=(
+    -i "$SSH_KEY"
+    -o BatchMode=yes
+    -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+  )
 fi
 
 # Derive repo root relative to this script's location
@@ -33,14 +45,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "Connecting to target Pi to check/create directories..."
-ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" "mkdir -p '$PI_REPO'"
+ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" "mkdir -p '$PI_REPO'"
 
 if [[ "$DEPLOY_MODE" == "git-ff" ]]; then
   echo "Updating Pi checkout with clean git fast-forward mode..."
   printf -v REMOTE_PI_REPO '%q' "$PI_REPO"
   printf -v REMOTE_PUBLIC_REPO_URL '%q' "$PUBLIC_REPO_URL"
   printf -v REMOTE_PI_BRANCH '%q' "$PI_BRANCH"
-  ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" \
+  ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     "PI_REPO=$REMOTE_PI_REPO PUBLIC_REPO_URL=$REMOTE_PUBLIC_REPO_URL PI_BRANCH=$REMOTE_PI_BRANCH bash" <<'EOF'
 set -euo pipefail
 
@@ -106,10 +118,8 @@ elif [[ "$DEPLOY_MODE" != "rsync" ]]; then
 fi
 
 echo "Syncing NanoCamelid folder via rsync from $REPO_ROOT to target Pi..."
-RSYNC_SSH=()
-if [[ ${#SSH_OPTS[@]} -gt 0 ]]; then
-  RSYNC_SSH=(-e "ssh -i $SSH_KEY")
-fi
+RSYNC_SSH_CMD="$(printf '%q ' ssh "${SSH_OPTS[@]}")"
+RSYNC_SSH=(-e "$RSYNC_SSH_CMD")
 rsync -avz \
   --exclude 'target/' \
   --exclude '.git/' \
