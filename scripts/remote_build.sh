@@ -93,6 +93,13 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+looks_like_gguf_path() {
+  case "${1:-}" in
+    *.[gG][gG][uU][fF] | *.[gG][gG][uU][fF]/) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_positive_integer() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
 }
@@ -148,6 +155,10 @@ redacted_deploy_key_label() {
 }
 
 if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" ]]; then
+  if [[ -n "$REMOTE_SMOKE_GGUF" ]] && ! looks_like_gguf_path "$REMOTE_SMOKE_GGUF"; then
+    echo "NANOCAMELID_REMOTE_SMOKE_GGUF must be a .gguf path: $REMOTE_SMOKE_GGUF" >&2
+    exit 2
+  fi
   require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
   if [[ "$READY_CHAT_LOWER" != "0" && "$READY_CHAT_LOWER" != "false" && "$READY_CHAT_LOWER" != "no" ]]; then
     require_positive_integer "Readiness token count" "$READY_TOKENS"

@@ -161,6 +161,11 @@ if looks_like_gguf_path "${1:-}"; then
   MODEL_SOURCE="explicit argument"
   shift
 fi
+case "$MODEL_SOURCE" in
+  NANOCAMELID_MODEL_GGUF)
+    require_gguf_model_path "$MODEL_SOURCE" "$MODEL"
+    ;;
+esac
 if [[ $# -gt 4 ]]; then
   echo "Unexpected extra prefill benchmark argument: ${5}" >&2
   usage >&2

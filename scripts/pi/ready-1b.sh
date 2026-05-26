@@ -125,6 +125,11 @@ if looks_like_gguf_path "${1:-}"; then
   MODEL_SOURCE="explicit argument"
   shift
 fi
+case "$MODEL_SOURCE" in
+  NANOCAMELID_SMOKE_GGUF | NANOCAMELID_MODEL_GGUF)
+    require_gguf_model_path "$MODEL_SOURCE" "$MODEL"
+    ;;
+esac
 SMOKE_KIND="${NANOCAMELID_READY_SMOKE_KIND:-${NANOCAMELID_SMOKE_KIND:-chat}}"
 case "${1:-}" in
 chat | model | q8-chat | q8-model)

@@ -77,3 +77,20 @@ require_safe_cargo_target_dir() {
     esac
   fi
 }
+
+looks_like_gguf_path() {
+  case "${1:-}" in
+    *.[gG][gG][uU][fF] | *.[gG][gG][uU][fF]/) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+require_gguf_model_path() {
+  local label="$1"
+  local path="$2"
+
+  if ! looks_like_gguf_path "$path"; then
+    echo "$label must be a .gguf path: $path" >&2
+    exit 2
+  fi
+}

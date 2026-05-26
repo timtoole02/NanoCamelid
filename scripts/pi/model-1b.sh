@@ -34,6 +34,16 @@ looks_like_gguf_path() {
   esac
 }
 
+require_gguf_model_path() {
+  local label="$1"
+  local path="$2"
+
+  if ! looks_like_gguf_path "$path"; then
+    echo "$label must be a .gguf path: $path" >&2
+    exit 2
+  fi
+}
+
 DRY_RUN=0
 POSITIONAL_ARGS=()
 for arg in "$@"; do
@@ -84,6 +94,12 @@ else
   MODEL="$Q8_MODEL"
   MODEL_SOURCE="workspace Q8_0 fallback"
 fi
+
+case "$MODEL_SOURCE" in
+  NANOCAMELID_SMOKE_GGUF | NANOCAMELID_MODEL_GGUF)
+    require_gguf_model_path "$MODEL_SOURCE" "$MODEL"
+    ;;
+esac
 
 echo "NanoCamelid Llama 3.2 1B model audit"
 echo "workspace: $WORKSPACE"

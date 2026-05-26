@@ -224,10 +224,12 @@ cargo run -- model 1b --dry-run
 
 echo "==> Checking 1B model audit CLI rejects non-GGUF model args..."
 expect_failure "model 1b invalid model arg" cargo run -- model 1b not-a-model --dry-run
+expect_failure "model 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- model 1b --dry-run
 
 echo "==> Checking 1B smoke CLI dry run..."
 cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b selected source" "selected_source: " cargo run -- smoke 1b --dry-run
+expect_failure "smoke 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- smoke 1b --dry-run
 
 echo "==> Checking 1B smoke CLI rejects invalid token count..."
 expect_failure "smoke 1b invalid token count" cargo run -- smoke 1b chat "Say hello in one sentence." 0 --dry-run
@@ -238,6 +240,7 @@ expect_output "ready 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama
 expect_output "ready 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- ready 1b --dry-run
 expect_output "ready 1b probe command" "probe_command: nanocamelid probe" cargo run -- ready 1b --dry-run
 expect_output_order "ready 1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" cargo run -- ready 1b --dry-run
+expect_failure "ready 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- ready 1b --dry-run
 
 echo "==> Checking 1B readiness CLI rejects invalid direct chat env..."
 expect_failure "ready 1b invalid direct chat temperature" env NANOCAMELID_READY_TEMP=bad cargo run -- ready 1b --dry-run
@@ -251,10 +254,12 @@ echo "==> Checking 1B model audit dry run..."
 
 echo "==> Checking 1B model audit rejects non-GGUF model args..."
 expect_failure "model-1b invalid model arg" ./scripts/pi/model-1b.sh not-a-model --dry-run
+expect_failure "model-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/model-1b.sh --dry-run
 
 echo "==> Checking 1B Pi smoke launcher dry run..."
 ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b selected source" "selected_source: " ./scripts/pi/smoke-1b.sh --dry-run
+expect_failure "smoke-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/smoke-1b.sh --dry-run
 expect_failure "smoke-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/smoke-1b.sh
 
 echo "==> Checking 1B Pi readiness launcher dry run..."
@@ -264,11 +269,13 @@ expect_output "ready-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama
 expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b probe command" "probe_command: nanocamelid probe" ./scripts/pi/ready-1b.sh --dry-run
 expect_output_order "ready-1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" ./scripts/pi/ready-1b.sh --dry-run
+expect_failure "ready-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/ready-1b.sh --dry-run
 expect_failure "ready-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/ready-1b.sh --no-chat
 
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b selected source" "selected_source: " ./scripts/pi/chat-1b.sh --dry-run
+expect_failure "chat-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/chat-1b.sh
 
 echo "==> Checking 1B Pi chat launcher rejects invalid temperature..."
@@ -280,6 +287,7 @@ env NANOCAMELID_CHAT_SMOKE=0 NANOCAMELID_CHAT_SMOKE_KIND=bad NANOCAMELID_CHAT_SM
 echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill selected source" "selected_source: " ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_failure "bench-1b-prefill invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/bench-1b-prefill.sh
 
 echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid generated token count..."
@@ -294,6 +302,7 @@ expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BAT
 echo "==> Checking 1B Pi context-pack launcher dry run..."
 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b selected source" "selected_source: " ./scripts/pi/context-pack-1b.sh --dry-run
+expect_failure "context-pack-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/context-pack-1b.sh --dry-run
 expect_failure "context-pack-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/context-pack-1b.sh
 
 echo "==> Checking 1B Pi context-pack launcher rejects invalid context cap..."
@@ -327,6 +336,7 @@ expect_failure "remote_build invalid deploy mode" ./scripts/remote_build.sh "<re
 
 echo "==> Checking remote Pi build launcher rejects invalid smoke token count..."
 expect_failure "remote_build invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build invalid explicit model path" env NANOCAMELID_REMOTE_SMOKE_GGUF=not-a-model ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher rejects invalid readiness temperature..."
 expect_failure "remote_build invalid readiness temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run

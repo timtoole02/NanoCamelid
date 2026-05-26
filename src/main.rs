@@ -1342,6 +1342,10 @@ fn parse_model_1b_args_with_env(
     workspace: &str,
     q4_exists: bool,
 ) -> Result<Model1BAuditArgs, &'static str> {
+    let env_model_path = require_env_gguf_path(
+        env_model_path,
+        "1B model audit env path must be a .gguf path",
+    )?;
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
 
@@ -1460,6 +1464,10 @@ fn parse_ready_1b_args_inner(
     smoke_defaults: SmokeDefaults,
     chat_enabled_default: bool,
 ) -> Result<Ready1BArgs, &'static str> {
+    let env_model_path = require_env_gguf_path(
+        env_model_path,
+        "ready 1B env model path must be a .gguf path",
+    )?;
     let mut chat_enabled_override = None;
     let mut dry_run = false;
     let mut smoke_args = Vec::with_capacity(args.len());
@@ -1594,6 +1602,10 @@ fn parse_smoke_1b_args_with_env_and_defaults(
     q4_exists: bool,
     defaults: SmokeDefaults,
 ) -> Result<Smoke1BArgs, &'static str> {
+    let env_model_path = require_env_gguf_path(
+        env_model_path,
+        "1B smoke env model path must be a .gguf path",
+    )?;
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
@@ -1716,6 +1728,10 @@ fn parse_smoke_3b_args_with_env_and_defaults(
     workspace: &str,
     defaults: SmokeDefaults,
 ) -> Result<Smoke1BArgs, &'static str> {
+    let env_model_path = require_env_gguf_path(
+        env_model_path,
+        "3B smoke env model path must be a .gguf path",
+    )?;
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
@@ -1838,6 +1854,18 @@ fn reject_extra_positionals(
     } else {
         Ok(())
     }
+}
+
+fn require_env_gguf_path(
+    env_model_path: Option<(String, &'static str)>,
+    error: &'static str,
+) -> Result<Option<(String, &'static str)>, &'static str> {
+    if let Some((path, _source)) = &env_model_path
+        && !looks_like_gguf_path(path)
+    {
+        return Err(error);
+    }
+    Ok(env_model_path)
 }
 
 fn parse_bench_q8_dot_args(args: &[String]) -> Result<BenchQ8DotArgs, &'static str> {
@@ -5704,6 +5732,19 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn model_1b_audit_rejects_non_gguf_env_path() {
+        let err = parse_model_1b_args_with_path(
+            &[],
+            Some("/models/not-a-gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("non-GGUF env model audit path should fail");
+
+        assert_eq!(err, "1B model audit env path must be a .gguf path");
+    }
+
+    #[test]
     fn smoke_1b_args_default_to_chat_prompt_and_pi_model() {
         let parsed = parse_smoke_1b_args_with_env(&[], None, "/mnt/nanocamelid", true)
             .expect("default 1B smoke args should parse");
@@ -5880,6 +5921,19 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.kind, SmokeKind::Q8Chat);
         assert_eq!(parsed.model_path, "/models/env.gguf");
         assert_eq!(parsed.model_source, "NANOCAMELID_MODEL_GGUF");
+    }
+
+    #[test]
+    fn smoke_1b_args_reject_non_gguf_env_model_path() {
+        let err = parse_smoke_1b_args_with_env(
+            &["chat".to_owned()],
+            Some("/models/not-a-gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("non-GGUF env smoke path should fail");
+
+        assert_eq!(err, "1B smoke env model path must be a .gguf path");
     }
 
     #[test]
@@ -6098,6 +6152,19 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.chat_enabled_override, Some(false));
         assert_eq!(parsed.chat_prompt_override, None);
         assert_eq!(parsed.chat_tokens_override, None);
+    }
+
+    #[test]
+    fn ready_1b_args_reject_non_gguf_env_model_path() {
+        let err = parse_ready_1b_args_with_env(
+            &["--dry-run".to_owned()],
+            Some("/models/not-a-gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("non-GGUF env readiness path should fail");
+
+        assert_eq!(err, "ready 1B env model path must be a .gguf path");
     }
 
     #[test]
