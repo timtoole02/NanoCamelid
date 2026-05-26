@@ -203,10 +203,21 @@ impl Tokenizer {
         };
         if model == TokenizerModel::Gpt2Bpe {
             let pre_tokenizer = file.metadata_string("tokenizer.ggml.pre");
-            if !matches!(
-                pre_tokenizer,
-                Some("llama-bpe" | "qwen2" | "deepseek-r1-qwen" | "smollm" | "smaug-bpe" | "lfm2")
-            ) {
+            let missing_llama_bpe = pre_tokenizer.is_none()
+                && file.metadata_string("general.architecture") == Some("llama");
+            if !missing_llama_bpe
+                && !matches!(
+                    pre_tokenizer,
+                    Some(
+                        "llama-bpe"
+                            | "qwen2"
+                            | "deepseek-r1-qwen"
+                            | "smollm"
+                            | "smaug-bpe"
+                            | "lfm2"
+                    )
+                )
+            {
                 return Err(format!(
                     "unsupported GPT-2/BPE pre-tokenizer: {pre_tokenizer:?}"
                 ));
@@ -435,6 +446,8 @@ impl Tokenizer {
             || {
                 if self.has_qwen_im_tokens() {
                     Some("qwen_im_token_fallback")
+                } else if self.has_llama3_instruct_tokens() {
+                    Some("llama3_instruct")
                 } else {
                     self.has_mistral_inst_tokens()
                         .then_some("mistral_inst_token_fallback")
@@ -503,6 +516,14 @@ impl Tokenizer {
                 renderer: "qwen_im_token_fallback",
             };
         }
+        if self.chat_template.is_none() && self.has_llama3_instruct_tokens() {
+            return RenderedChatPrompt {
+                text: render_llama3_instruct_prompt(messages),
+                add_special: true,
+                parse_special: self.chat_prompt_parse_special(),
+                renderer: "llama3_instruct",
+            };
+        }
         if self.has_mistral_inst_tokens() {
             return RenderedChatPrompt {
                 text: render_mistral_inst_prompt(messages),
@@ -518,6 +539,13 @@ impl Tokenizer {
             parse_special: self.chat_prompt_parse_special(),
             renderer: "role_colon_fallback",
         }
+    }
+
+    fn has_llama3_instruct_tokens(&self) -> bool {
+        self.model == TokenizerModel::Gpt2Bpe
+            && self.token_to_id.contains_key("<|start_header_id|>")
+            && self.token_to_id.contains_key("<|end_header_id|>")
+            && self.token_to_id.contains_key("<|eot_id|>")
     }
 
     fn has_qwen_im_tokens(&self) -> bool {
@@ -1470,6 +1498,94 @@ mod tests {
 
         assert_eq!(tokenizer.model, TokenizerModel::Gpt2Bpe);
         assert!(!tokenizer.config.add_bos);
+    }
+
+    #[test]
+    fn tokenizer_accepts_missing_llama_bpe_pre_tokenizer_for_llama_arch() {
+        let tokenizer = Tokenizer::from_gguf(&tokenizer_fixture([
+            (
+                "general.architecture",
+                GgufMetadataValue::String("llama".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.model",
+                GgufMetadataValue::String("gpt2".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.tokens",
+                GgufMetadataValue::Array(vec![
+                    GgufMetadataValue::String("<unk>".to_owned()),
+                    GgufMetadataValue::String("<|begin_of_text|>".to_owned()),
+                    GgufMetadataValue::String("<|end_of_text|>".to_owned()),
+                    GgufMetadataValue::String("<|start_header_id|>".to_owned()),
+                    GgufMetadataValue::String("<|end_header_id|>".to_owned()),
+                    GgufMetadataValue::String("<|eot_id|>".to_owned()),
+                    GgufMetadataValue::String("hello".to_owned()),
+                ]),
+            ),
+            (
+                "tokenizer.ggml.token_type",
+                GgufMetadataValue::Array(vec![
+                    GgufMetadataValue::I32(2),
+                    GgufMetadataValue::I32(3),
+                    GgufMetadataValue::I32(3),
+                    GgufMetadataValue::I32(3),
+                    GgufMetadataValue::I32(3),
+                    GgufMetadataValue::I32(3),
+                    GgufMetadataValue::I32(1),
+                ]),
+            ),
+            (
+                "tokenizer.ggml.scores",
+                GgufMetadataValue::Array(vec![
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                ]),
+            ),
+            (
+                "tokenizer.ggml.add_bos_token",
+                GgufMetadataValue::Bool(false),
+            ),
+        ]))
+        .expect("Llama GPT-2/BPE tokenizer without pre metadata should load");
+
+        assert_eq!(tokenizer.model, TokenizerModel::Gpt2Bpe);
+        assert_eq!(tokenizer.chat_template_format(), Some("llama3_instruct"));
+        assert_eq!(
+            tokenizer.render_chat_prompt(&[ChatMessage {
+                role: "user",
+                content: "hello",
+            }]),
+            RenderedChatPrompt {
+                text: "<|start_header_id|>user<|end_header_id|>\n\nhello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n".to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: "llama3_instruct",
+            }
+        );
+        assert!(!tokenizer.config.add_bos);
+    }
+
+    #[test]
+    fn tokenizer_rejects_missing_bpe_pre_tokenizer_for_non_llama_arch() {
+        let err = Tokenizer::from_gguf(&tokenizer_fixture([
+            (
+                "general.architecture",
+                GgufMetadataValue::String("qwen2".to_owned()),
+            ),
+            (
+                "tokenizer.ggml.model",
+                GgufMetadataValue::String("gpt2".to_owned()),
+            ),
+        ]))
+        .expect_err("non-Llama GPT-2/BPE tokenizer without pre metadata should fail");
+
+        assert!(err.contains("unsupported GPT-2/BPE pre-tokenizer: None"));
     }
 
     #[test]

@@ -1128,6 +1128,7 @@ impl Default for SmokeDefaults {
 struct Smoke1BArgs {
     kind: SmokeKind,
     model_path: String,
+    model_source: &'static str,
     prompt: String,
     max_tokens: usize,
     dry_run: bool,
@@ -1392,7 +1393,7 @@ fn parse_smoke_1b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
     let defaults = smoke_defaults_from_env()?;
     parse_smoke_1b_args_with_env_and_defaults(
         args,
-        smoke_model_path_from_env(),
+        smoke_model_path_and_source_from_env(),
         &workspace,
         q4_exists,
         defaults,
@@ -1407,7 +1408,7 @@ fn parse_ready_1b_args(args: &[String]) -> Result<Ready1BArgs, &'static str> {
     let chat_enabled_default = ready_chat_enabled();
     parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
         args,
-        smoke_model_path_from_env(),
+        smoke_model_path_and_source_from_env(),
         &workspace,
         q4_exists,
         smoke_defaults,
@@ -1425,7 +1426,7 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
 ) -> Result<Ready1BArgs, &'static str> {
     parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
         args,
-        env_model_path,
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
         workspace,
         q4_exists,
         smoke_defaults,
@@ -1435,7 +1436,7 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
 
 fn parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
     args: &[String],
-    env_model_path: Option<String>,
+    env_model_path: Option<(String, &'static str)>,
     workspace: &str,
     q4_exists: bool,
     smoke_defaults: SmokeDefaults,
@@ -1453,7 +1454,7 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
 
 fn parse_ready_1b_args_inner(
     args: &[String],
-    env_model_path: Option<String>,
+    env_model_path: Option<(String, &'static str)>,
     workspace: &str,
     q4_exists: bool,
     smoke_defaults: SmokeDefaults,
@@ -1475,10 +1476,18 @@ fn parse_ready_1b_args_inner(
     let first_looks_like_model = smoke_args
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
-    let (model_path, mut option_idx) = match (smoke_args.first(), env_model_path) {
-        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
-        (_, Some(path)) => (path, 0),
-        _ => (default_llama32_1b_model_path(workspace, q4_exists), 0),
+    let (model_path, model_source, mut option_idx) = match (smoke_args.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), "explicit argument", 1),
+        (_, Some((path, source))) => (path, source, 0),
+        _ => (
+            default_llama32_1b_model_path(workspace, q4_exists),
+            if q4_exists {
+                "workspace Q4_0 default"
+            } else {
+                "workspace Q8_0 fallback"
+            },
+            0,
+        ),
     };
 
     let kind = match smoke_args.get(option_idx).map(String::as_str) {
@@ -1521,6 +1530,7 @@ fn parse_ready_1b_args_inner(
     let smoke = Smoke1BArgs {
         kind,
         model_path,
+        model_source,
         prompt: smoke_prompt,
         max_tokens: smoke_tokens,
         dry_run: false,
@@ -1539,7 +1549,7 @@ fn parse_smoke_3b_args(args: &[String]) -> Result<Smoke1BArgs, &'static str> {
     let defaults = smoke_defaults_from_env()?;
     parse_smoke_3b_args_with_env_and_defaults(
         args,
-        smoke_model_path_from_env(),
+        smoke_model_path_and_source_from_env(),
         &workspace,
         defaults,
     )
@@ -1570,7 +1580,7 @@ fn parse_smoke_1b_args_with_env(
 ) -> Result<Smoke1BArgs, &'static str> {
     parse_smoke_1b_args_with_env_and_defaults(
         args,
-        env_model_path,
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
         workspace,
         q4_exists,
         SmokeDefaults::default(),
@@ -1579,7 +1589,7 @@ fn parse_smoke_1b_args_with_env(
 
 fn parse_smoke_1b_args_with_env_and_defaults(
     args: &[String],
-    env_model_path: Option<String>,
+    env_model_path: Option<(String, &'static str)>,
     workspace: &str,
     q4_exists: bool,
     defaults: SmokeDefaults,
@@ -1596,10 +1606,18 @@ fn parse_smoke_1b_args_with_env_and_defaults(
     let first_looks_like_model = positionals
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
-    let (model_path, mut option_idx) = match (positionals.first(), env_model_path) {
-        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
-        (_, Some(path)) => (path, 0),
-        _ => (default_llama32_1b_model_path(workspace, q4_exists), 0),
+    let (model_path, model_source, mut option_idx) = match (positionals.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), "explicit argument", 1),
+        (_, Some((path, source))) => (path, source, 0),
+        _ => (
+            default_llama32_1b_model_path(workspace, q4_exists),
+            if q4_exists {
+                "workspace Q4_0 default"
+            } else {
+                "workspace Q8_0 fallback"
+            },
+            0,
+        ),
     };
 
     let kind = match positionals.get(option_idx).map(String::as_str) {
@@ -1628,6 +1646,7 @@ fn parse_smoke_1b_args_with_env_and_defaults(
     Ok(Smoke1BArgs {
         kind,
         model_path,
+        model_source,
         prompt,
         max_tokens,
         dry_run,
@@ -1685,7 +1704,7 @@ fn parse_smoke_3b_args_with_env(
 ) -> Result<Smoke1BArgs, &'static str> {
     parse_smoke_3b_args_with_env_and_defaults(
         args,
-        env_model_path,
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
         workspace,
         SmokeDefaults::default(),
     )
@@ -1693,7 +1712,7 @@ fn parse_smoke_3b_args_with_env(
 
 fn parse_smoke_3b_args_with_env_and_defaults(
     args: &[String],
-    env_model_path: Option<String>,
+    env_model_path: Option<(String, &'static str)>,
     workspace: &str,
     defaults: SmokeDefaults,
 ) -> Result<Smoke1BArgs, &'static str> {
@@ -1709,10 +1728,14 @@ fn parse_smoke_3b_args_with_env_and_defaults(
     let first_looks_like_model = positionals
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
-    let (model_path, mut option_idx) = match (positionals.first(), env_model_path) {
-        (Some(path), _) if first_looks_like_model => (path.clone(), 1),
-        (_, Some(path)) => (path, 0),
-        _ => (default_llama32_3b_model_path(workspace), 0),
+    let (model_path, model_source, mut option_idx) = match (positionals.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), "explicit argument", 1),
+        (_, Some((path, source))) => (path, source, 0),
+        _ => (
+            default_llama32_3b_model_path(workspace),
+            "workspace 3B Q4_0 default",
+            0,
+        ),
     };
 
     let kind = match positionals.get(option_idx).map(String::as_str) {
@@ -1741,6 +1764,7 @@ fn parse_smoke_3b_args_with_env_and_defaults(
     Ok(Smoke1BArgs {
         kind,
         model_path,
+        model_source,
         prompt,
         max_tokens,
         dry_run,
@@ -1958,6 +1982,17 @@ fn smoke_model_path_from_env() -> Option<String> {
     env::var(SMOKE_MODEL_GGUF_ENV)
         .ok()
         .or_else(default_model_path_from_env)
+}
+
+fn smoke_model_path_and_source_from_env() -> Option<(String, &'static str)> {
+    env::var(SMOKE_MODEL_GGUF_ENV)
+        .ok()
+        .map(|path| (path, SMOKE_MODEL_GGUF_ENV))
+        .or_else(|| {
+            env::var(DEFAULT_MODEL_GGUF_ENV)
+                .ok()
+                .map(|path| (path, DEFAULT_MODEL_GGUF_ENV))
+        })
 }
 
 fn model_1b_env_path_and_source() -> Option<(String, &'static str)> {
@@ -2812,6 +2847,7 @@ fn smoke_q8_chat(model_path: &Path, prompt: &str, max_tokens: usize) -> ExitCode
 
 fn print_smoke_dry_run(title: &str, target: &str, model_path: &Path, parsed: &Smoke1BArgs) {
     println!("{title}");
+    println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
     println!("smoke_kind: {}", parsed.kind.label());
@@ -2878,6 +2914,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
 
     if parsed.dry_run {
         println!("NanoCamelid Llama 3.2 1B readiness dry run");
+        println!("selected_source: {}", smoke.model_source);
         println!("model: {}", model_path.display());
         println!("model_exists: {}", model_path.is_file());
         println!("smoke_kind: {}", smoke.kind.label());
@@ -5547,6 +5584,7 @@ flags\t\t: sse4_2 avx2
             .expect("default 1B smoke args should parse");
 
         assert_eq!(parsed.kind, SmokeKind::Q8Chat);
+        assert_eq!(parsed.model_source, "workspace Q4_0 default");
         assert_eq!(
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
@@ -5716,6 +5754,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(parsed.kind, SmokeKind::Q8Chat);
         assert_eq!(parsed.model_path, "/models/env.gguf");
+        assert_eq!(parsed.model_source, "NANOCAMELID_MODEL_GGUF");
     }
 
     #[test]
@@ -5771,6 +5810,7 @@ flags\t\t: sse4_2 avx2
         let parsed = Smoke1BArgs {
             kind: SmokeKind::Q8Model,
             model_path: "/models/ignored.gguf".to_owned(),
+            model_source: "explicit argument",
             prompt: "Hello Pi".to_owned(),
             max_tokens: 2,
             dry_run: true,
@@ -5927,6 +5967,7 @@ flags\t\t: sse4_2 avx2
         assert!(parsed.dry_run);
         assert_eq!(parsed.smoke.kind, SmokeKind::Q8Chat);
         assert_eq!(parsed.smoke.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.smoke.model_source, "explicit argument");
         assert_eq!(parsed.smoke.prompt, "Say hi");
         assert_eq!(parsed.smoke.max_tokens, 4);
         assert_eq!(parsed.chat_enabled_override, Some(false));
