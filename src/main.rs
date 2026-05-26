@@ -1328,6 +1328,11 @@ fn parse_ready_1b_args_inner(
         smoke_args.get(option_idx + 1),
         "ready 1B token count must be a positive integer",
     )?;
+    reject_extra_positionals(
+        &smoke_args,
+        option_idx + 2,
+        "unexpected extra ready 1B argument",
+    )?;
     let smoke_only = !chat_enabled_override.unwrap_or(chat_enabled_default);
 
     let (smoke_prompt, smoke_tokens, chat_prompt_override, chat_tokens_override) = if smoke_only {
@@ -1447,6 +1452,11 @@ fn parse_smoke_1b_args_with_env_and_defaults(
         "1B smoke max_tokens must be a positive integer",
     )?
     .unwrap_or(defaults.max_tokens);
+    reject_extra_positionals(
+        &positionals,
+        option_idx + 2,
+        "unexpected extra 1B smoke argument",
+    )?;
 
     Ok(Smoke1BArgs {
         kind,
@@ -1555,6 +1565,11 @@ fn parse_smoke_3b_args_with_env_and_defaults(
         "3B smoke max_tokens must be a positive integer",
     )?
     .unwrap_or(defaults.max_tokens);
+    reject_extra_positionals(
+        &positionals,
+        option_idx + 2,
+        "unexpected extra 3B smoke argument",
+    )?;
 
     Ok(Smoke1BArgs {
         kind,
@@ -1593,6 +1608,7 @@ fn parse_smoke_args_with_env(
         "smoke max_tokens must be a positive integer",
     )?
     .unwrap_or(1);
+    reject_extra_positionals(args, prompt_idx + 2, "unexpected extra smoke argument")?;
 
     Ok(SmokeQ8ModelArgs {
         model_path,
@@ -1611,6 +1627,18 @@ fn parse_optional_positive_usize(
     match value.parse::<usize>() {
         Ok(parsed) if parsed > 0 => Ok(Some(parsed)),
         _ => Err(error),
+    }
+}
+
+fn reject_extra_positionals(
+    args: &[String],
+    first_extra_idx: usize,
+    error: &'static str,
+) -> Result<(), &'static str> {
+    if args.get(first_extra_idx).is_some() {
+        Err(error)
+    } else {
+        Ok(())
     }
 }
 
@@ -4872,6 +4900,22 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn smoke_q8_model_args_reject_extra_positionals_after_token_count() {
+        let err = parse_smoke_args_with_env(
+            &[
+                "/models/model.gguf".to_owned(),
+                "Hello".to_owned(),
+                "2".to_owned(),
+                "unexpected".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("extra q8 smoke arg should fail");
+
+        assert_eq!(err, "unexpected extra smoke argument");
+    }
+
+    #[test]
     fn default_1b_smoke_path_prefers_q4_when_present() {
         assert_eq!(
             default_llama32_1b_model_path("/mnt/nanocamelid", true),
@@ -5420,6 +5464,24 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn ready_1b_args_reject_extra_positionals_after_token_count() {
+        let err = parse_ready_1b_args_with_env(
+            &[
+                "chat".to_owned(),
+                "Say hi".to_owned(),
+                "4".to_owned(),
+                "unexpected".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("extra ready 1B arg should fail");
+
+        assert_eq!(err, "unexpected extra ready 1B argument");
+    }
+
+    #[test]
     fn smoke_1b_args_reject_unknown_q8_kind() {
         let err =
             parse_smoke_1b_args_with_env(&["q8-broken".to_owned()], None, "/mnt/nanocamelid", true)
@@ -5442,6 +5504,24 @@ flags\t\t: sse4_2 avx2
         .expect_err("invalid 1B smoke token count should fail");
 
         assert_eq!(err, "1B smoke max_tokens must be a positive integer");
+    }
+
+    #[test]
+    fn smoke_1b_args_reject_extra_positionals_after_token_count() {
+        let err = parse_smoke_1b_args_with_env(
+            &[
+                "chat".to_owned(),
+                "Hello".to_owned(),
+                "2".to_owned(),
+                "unexpected".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("extra 1B smoke arg should fail");
+
+        assert_eq!(err, "unexpected extra 1B smoke argument");
     }
 
     #[test]
@@ -5522,6 +5602,23 @@ flags\t\t: sse4_2 avx2
         .expect_err("zero-token 3B smoke should fail");
 
         assert_eq!(err, "3B smoke max_tokens must be a positive integer");
+    }
+
+    #[test]
+    fn smoke_3b_args_reject_extra_positionals_after_token_count() {
+        let err = parse_smoke_3b_args_with_env(
+            &[
+                "chat".to_owned(),
+                "Hello".to_owned(),
+                "2".to_owned(),
+                "unexpected".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+        )
+        .expect_err("extra 3B smoke arg should fail");
+
+        assert_eq!(err, "unexpected extra 3B smoke argument");
     }
 
     #[test]
