@@ -112,6 +112,11 @@ chat | model | q8-chat | q8-model)
   shift
   ;;
 esac
+if [[ $# -gt 2 ]]; then
+  echo "Unexpected extra readiness argument: ${3}" >&2
+  usage >&2
+  exit 2
+fi
 SMOKE_PROMPT="${NANOCAMELID_READY_SMOKE_PROMPT:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${NANOCAMELID_READY_SMOKE_TOKENS:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
 CHAT_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"

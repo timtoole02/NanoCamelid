@@ -89,6 +89,11 @@ if looks_like_gguf_path "${1:-}"; then
   MODEL="$1"
   shift
 fi
+if [[ $# -gt 3 ]]; then
+  echo "Unexpected extra smoke argument: ${4}" >&2
+  usage >&2
+  exit 2
+fi
 SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-chat}}"
 SMOKE_PROMPT="${2:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${3:-${NANOCAMELID_SMOKE_TOKENS:-8}}"

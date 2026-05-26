@@ -99,6 +99,11 @@ if looks_like_gguf_path "${1:-}"; then
   MODEL="$1"
   shift
 fi
+if [[ $# -gt 2 ]]; then
+  echo "Unexpected extra chat argument: ${3}" >&2
+  usage >&2
+  exit 2
+fi
 TEMP="${1:-${NANOCAMELID_TEMP:-0.0}}"
 MAX_TOKENS="${2:-${NANOCAMELID_MAX_TOKENS:-64}}"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
