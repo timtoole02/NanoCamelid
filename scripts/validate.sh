@@ -17,8 +17,9 @@ Target-dir resolution:
   4. $HOME/.cache/nanocamelid/target on non-macOS hosts
 
 On macOS, set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to an external
-/Volumes path so validation does not create build artifacts on the internal
-disk. Dry runs print the resolved commands without creating the target dir.
+/Volumes path that resolves back under /Volumes, so validation does not create
+build artifacts on the internal disk. Dry runs print the resolved commands
+without creating the target dir.
 USAGE
 }
 
@@ -83,6 +84,50 @@ validate_target_dir() {
         exit 2
         ;;
     esac
+
+    local resolved_target_dir
+    resolved_target_dir="$(resolve_existing_prefix "$target_dir")"
+    case "$resolved_target_dir" in
+      /Volumes/*) ;;
+      *)
+        echo "Refusing to use a Cargo target dir that resolves outside /Volumes on macOS: $target_dir -> $resolved_target_dir" >&2
+        echo "Set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to a real external drive path." >&2
+        exit 2
+        ;;
+    esac
+  fi
+}
+
+resolve_existing_prefix() {
+  local path="$1"
+  local suffix=""
+  local parent
+
+  while [[ ! -e "$path" ]]; do
+    parent="$(dirname "$path")"
+    if [[ "$parent" == "$path" ]]; then
+      printf '%s%s\n' "$path" "$suffix"
+      return
+    fi
+    suffix="/$(basename "$path")$suffix"
+    path="$parent"
+  done
+
+  if [[ -d "$path" ]]; then
+    (
+      cd -P -- "$path"
+      local resolved_pwd="$PWD"
+      if [[ "$resolved_pwd" == //* ]]; then
+        resolved_pwd="/${resolved_pwd#//}"
+      fi
+      if [[ "$resolved_pwd" == "/" ]]; then
+        printf '/%s\n' "${suffix#/}"
+      else
+        printf '%s%s\n' "$resolved_pwd" "$suffix"
+      fi
+    )
+  else
+    printf '%s%s\n' "$path" "$suffix"
   fi
 }
 
