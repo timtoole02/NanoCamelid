@@ -10,6 +10,9 @@ Builds and validates NanoCamelid on a Raspberry Pi workspace.
 
 Options:
   --dry-run   Print the resolved deploy/build/readiness plan without SSH or deploy
+
+Useful env:
+  NANOCAMELID_REMOTE_CONTEXT_PACKS  Optional comma-separated 1B context caps to run after readiness
 USAGE
 }
 
@@ -53,6 +56,7 @@ READY_PROMPT="${NANOCAMELID_READY_PROMPT:-$SMOKE_PROMPT}"
 READY_TOKENS="${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}"
 READY_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
 READY_CHAT_LOWER="$(printf '%s' "$READY_CHAT" | tr '[:upper:]' '[:lower:]')"
+REMOTE_CONTEXT_PACKS="${NANOCAMELID_REMOTE_CONTEXT_PACKS:-}"
 
 if [[ -z "$PI_HOST" ]]; then
   usage
@@ -117,6 +121,24 @@ require_non_negative_float() {
   fi
 }
 
+require_context_caps() {
+  local raw_caps="$1"
+  local cap
+  local cap_count=0
+
+  for cap in ${raw_caps//,/ }; do
+    cap_count=$((cap_count + 1))
+    if [[ ! "$cap" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Context cap must be a positive integer: $cap" >&2
+      exit 2
+    fi
+  done
+  if [[ "$cap_count" -eq 0 ]]; then
+    echo "Context caps must include at least one positive integer." >&2
+    exit 2
+  fi
+}
+
 redacted_deploy_key_label() {
   if [[ -n "$SSH_KEY" ]]; then
     echo "<ssh-key-path>"
@@ -130,6 +152,9 @@ if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "
   if [[ "$READY_CHAT_LOWER" != "0" && "$READY_CHAT_LOWER" != "false" && "$READY_CHAT_LOWER" != "no" ]]; then
     require_positive_integer "Readiness token count" "$READY_TOKENS"
     require_non_negative_float "Readiness temperature" "$READY_TEMP"
+  fi
+  if [[ -n "$REMOTE_CONTEXT_PACKS" ]]; then
+    require_context_caps "$REMOTE_CONTEXT_PACKS"
   fi
 fi
 
@@ -149,6 +174,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "ready_prompt: $READY_PROMPT"
   echo "ready_tokens: $READY_TOKENS"
   echo "ready_temp: $READY_TEMP"
+  echo "context_pack_caps: ${REMOTE_CONTEXT_PACKS:-skipped}"
   printf 'deploy_command: scripts/deploy.sh %s %s %s %s\n' \
     "<pi-host>" \
     "$(redacted_deploy_key_label)" \
@@ -177,6 +203,22 @@ if [[ "$DRY_RUN" == "1" ]]; then
       "$(shell_quote "$READY_TOKENS")" \
       "$(shell_quote "$READY_TEMP")"
   fi
+  if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" || -z "$REMOTE_CONTEXT_PACKS" ]]; then
+    echo "context_pack_command: skipped"
+  elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
+    printf 'context_pack_command: NANOCAMELID_CONTEXT_PACKS=%s ./scripts/pi/context-pack-1b.sh %s %s %s %s\n' \
+      "$(shell_quote "$REMOTE_CONTEXT_PACKS")" \
+      "$(shell_quote "$REMOTE_SMOKE_GGUF")" \
+      "$(shell_quote "$REMOTE_SMOKE_KIND")" \
+      "$(shell_quote "$SMOKE_PROMPT")" \
+      "$(shell_quote "$SMOKE_TOKENS")"
+  else
+    printf 'context_pack_command: NANOCAMELID_CONTEXT_PACKS=%s ./scripts/pi/context-pack-1b.sh %s %s %s\n' \
+      "$(shell_quote "$REMOTE_CONTEXT_PACKS")" \
+      "$(shell_quote "$REMOTE_SMOKE_KIND")" \
+      "$(shell_quote "$SMOKE_PROMPT")" \
+      "$(shell_quote "$SMOKE_TOKENS")"
+  fi
   exit 0
 fi
 
@@ -197,8 +239,9 @@ printf -v READY_CHAT_ARG '%q' "$READY_CHAT"
 printf -v READY_PROMPT_ARG '%q' "$READY_PROMPT"
 printf -v READY_TOKENS_ARG '%q' "$READY_TOKENS"
 printf -v READY_TEMP_ARG '%q' "$READY_TEMP"
+printf -v REMOTE_CONTEXT_PACKS_ARG '%q' "$REMOTE_CONTEXT_PACKS"
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
-  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG bash" << 'EOF'
+  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG REMOTE_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS_ARG bash" << 'EOF'
   # Export Cargo path to make sure cargo commands work in non-interactive shells
   export PATH="$HOME/.cargo/bin:$PATH"
   if [ -f "$HOME/.cargo/env" ]; then
@@ -264,6 +307,13 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
       NANOCAMELID_READY_TOKENS="$READY_TOKENS" \
       NANOCAMELID_READY_TEMP="$READY_TEMP" \
       ./scripts/pi/ready-1b.sh "$REMOTE_SMOKE_GGUF"
+    if [ -n "$REMOTE_CONTEXT_PACKS" ]; then
+      echo "==> Running explicit 1B context-pack smoke gate: $REMOTE_CONTEXT_PACKS"
+      NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
+        NANOCAMELID_REPO="$PI_REPO" \
+        NANOCAMELID_CONTEXT_PACKS="$REMOTE_CONTEXT_PACKS" \
+        ./scripts/pi/context-pack-1b.sh "$REMOTE_SMOKE_GGUF" "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+    fi
   elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
     echo "==> Running default Pi-local 1B readiness gate: $REMOTE_SMOKE_KIND"
     NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
@@ -276,6 +326,13 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
       NANOCAMELID_READY_TOKENS="$READY_TOKENS" \
       NANOCAMELID_READY_TEMP="$READY_TEMP" \
       ./scripts/pi/ready-1b.sh
+    if [ -n "$REMOTE_CONTEXT_PACKS" ]; then
+      echo "==> Running default Pi-local 1B context-pack smoke gate: $REMOTE_CONTEXT_PACKS"
+      NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
+        NANOCAMELID_REPO="$PI_REPO" \
+        NANOCAMELID_CONTEXT_PACKS="$REMOTE_CONTEXT_PACKS" \
+        ./scripts/pi/context-pack-1b.sh "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+    fi
   else
     echo "==> Skipping model-backed 1B readiness; no explicit GGUF path was set and no default Pi-local 1B model was found."
   fi

@@ -697,6 +697,13 @@ NANOCAMELID_REMOTE_SMOKE=0 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-use
 `false` and `no` are also accepted falsey values for
 `NANOCAMELID_REMOTE_SMOKE`.
 
+To run the capped 1B context-pack smoke sweep after the readiness gate, set:
+
+```bash
+NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024,2048,4096,8192 \
+./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
+```
+
 To force a specific GGUF path that already exists on the Pi:
 
 ```bash
