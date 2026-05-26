@@ -39,6 +39,34 @@ looks_like_gguf_path() {
   esac
 }
 
+is_positive_integer() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+require_positive_integer() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_positive_integer "$value"; then
+    echo "$label must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
+is_non_negative_float() {
+  [[ "${1:-}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]
+}
+
+require_non_negative_float() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_non_negative_float "$value"; then
+    echo "$label must be a non-negative number: $value" >&2
+    exit 2
+  fi
+}
+
 shell_quote() {
   printf '%q' "$1"
 }
@@ -79,11 +107,18 @@ if looks_like_gguf_path "${1:-}"; then
   MODEL="$1"
   shift
 fi
+if [[ $# -gt 4 ]]; then
+  echo "Unexpected extra prefill benchmark argument: ${5}" >&2
+  usage >&2
+  exit 2
+fi
 
 PROMPT="${1:-${NANOCAMELID_PREFILL_PROMPT:-Explain one practical Raspberry Pi inference bottleneck in two short sentences.}}"
 MAX_TOKENS="${2:-${NANOCAMELID_PREFILL_TOKENS:-2}}"
 TEMP="${3:-${NANOCAMELID_PREFILL_TEMP:-0.0}}"
 BATCHES_RAW="${4:-${NANOCAMELID_PREFILL_BATCHES:-1,16,32,64}}"
+require_positive_integer "Generated token count" "$MAX_TOKENS"
+require_non_negative_float "Temperature" "$TEMP"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"

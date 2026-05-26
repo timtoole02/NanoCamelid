@@ -304,9 +304,9 @@ non-`/Volumes` target. Set `CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` to an
 external drive path first so the repo does not create build artifacts on the
 internal disk. On prepared Pi workspaces, the same script defaults to
 `/mnt/nanocamelid/target`. The gate also runs `cargo run -- ready 1b --dry-run`
-plus the Pi `smoke-1b.sh`, `ready-1b.sh`, and `chat-1b.sh` launcher dry runs so
-the default Llama 3.2 1B command paths stay covered without requiring the GGUF
-during local validation.
+plus the Pi `smoke-1b.sh`, `ready-1b.sh`, `chat-1b.sh`, and
+`bench-1b-prefill.sh` launcher dry runs so the default Llama 3.2 1B command
+paths stay covered without requiring the GGUF during local validation.
 
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
