@@ -119,12 +119,18 @@ fn main() -> ExitCode {
             }
 
             match parse_generate_args(&args[1..]) {
-                Ok(parsed) => run_generation(
-                    Path::new(&parsed.model_path),
-                    &parsed.prompt,
-                    parsed.temp,
-                    parsed.max_tokens,
-                ),
+                Ok(parsed) => {
+                    if parsed.dry_run {
+                        print_generation_dry_run("generate", &parsed)
+                    } else {
+                        run_generation(
+                            Path::new(&parsed.model_path),
+                            &parsed.prompt,
+                            parsed.temp,
+                            parsed.max_tokens,
+                        )
+                    }
+                }
                 Err(err) => {
                     eprintln!("{err}");
                     print_help(HelpTopic::Generate);
@@ -139,12 +145,18 @@ fn main() -> ExitCode {
             }
 
             match parse_generate_args(&args[1..]) {
-                Ok(parsed) => run_chat(
-                    Path::new(&parsed.model_path),
-                    &parsed.prompt,
-                    parsed.temp,
-                    parsed.max_tokens,
-                ),
+                Ok(parsed) => {
+                    if parsed.dry_run {
+                        print_generation_dry_run("chat", &parsed)
+                    } else {
+                        run_chat(
+                            Path::new(&parsed.model_path),
+                            &parsed.prompt,
+                            parsed.temp,
+                            parsed.max_tokens,
+                        )
+                    }
+                }
                 Err(err) => {
                     eprintln!("{err}");
                     print_help(HelpTopic::Chat);
@@ -629,15 +641,15 @@ fn print_usage() {
     );
     println!("  inspect 1b [--dry-run]                    Inspect the default Llama 3.2 1B path");
     println!("  inspect 3b [--dry-run]                    Inspect the default Llama 3.2 3B path");
-    println!("  generate <model.gguf> <prompt> [temp] [max_tokens]");
-    println!("  generate 1b <prompt> [temp] [max_tokens]");
-    println!("  generate 3b <prompt> [temp] [max_tokens]");
+    println!("  generate <model.gguf> <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  generate 1b <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  generate 3b <prompt> [temp] [max_tokens] [--dry-run]");
     println!(
         "                                            Generate text from prompt on Raspberry Pi 5"
     );
-    println!("  chat <model.gguf> <prompt> [temp] [max_tokens]");
-    println!("  chat 1b <prompt> [temp] [max_tokens]");
-    println!("  chat 3b <prompt> [temp] [max_tokens]");
+    println!("  chat <model.gguf> <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  chat 1b <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  chat 3b <prompt> [temp] [max_tokens] [--dry-run]");
     println!(
         "                                            Render a single-turn chat prompt before generation"
     );
@@ -734,11 +746,11 @@ fn print_generate_usage() {
     println!("NanoCamelid generate");
     println!();
     println!("Usage:");
-    println!("  nanocamelid generate <model.gguf> <prompt> [temp] [max_tokens]");
-    println!("  nanocamelid generate 1b <prompt> [temp] [max_tokens]");
-    println!("  nanocamelid generate 3b <prompt> [temp] [max_tokens]");
+    println!("  nanocamelid generate <model.gguf> <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  nanocamelid generate 1b <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  nanocamelid generate 3b <prompt> [temp] [max_tokens] [--dry-run]");
     println!(
-        "  nanocamelid generate <prompt> [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set"
+        "  nanocamelid generate <prompt> [temp] [max_tokens] [--dry-run]   with NANOCAMELID_MODEL_GGUF set"
     );
     println!();
     println!("Args:");
@@ -748,6 +760,11 @@ fn print_generate_usage() {
     );
     println!("  [temp]                                    Sampling temperature, default 0.0");
     println!("  [max_tokens]                              Maximum tokens to generate, default 128");
+    println!();
+    println!("Options:");
+    println!(
+        "  --dry-run                                Print the resolved generation plan without loading the model"
+    );
     println!();
     println!("Env:");
     println!(
@@ -776,10 +793,12 @@ fn print_chat_usage() {
     println!("NanoCamelid chat");
     println!();
     println!("Usage:");
-    println!("  nanocamelid chat <model.gguf> <prompt> [temp] [max_tokens]");
-    println!("  nanocamelid chat 1b <prompt> [temp] [max_tokens]");
-    println!("  nanocamelid chat 3b <prompt> [temp] [max_tokens]");
-    println!("  nanocamelid chat <prompt> [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set");
+    println!("  nanocamelid chat <model.gguf> <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  nanocamelid chat 1b <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  nanocamelid chat 3b <prompt> [temp] [max_tokens] [--dry-run]");
+    println!(
+        "  nanocamelid chat <prompt> [temp] [max_tokens] [--dry-run]   with NANOCAMELID_MODEL_GGUF set"
+    );
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
@@ -788,6 +807,11 @@ fn print_chat_usage() {
     );
     println!("  [temp]                                    Sampling temperature, default 0.0");
     println!("  [max_tokens]                              Maximum tokens to generate, default 128");
+    println!();
+    println!("Options:");
+    println!(
+        "  --dry-run                                Print the resolved chat plan without loading the model"
+    );
     println!();
     println!("Env:");
     println!(
@@ -1042,6 +1066,7 @@ struct GenerateArgs {
     prompt: String,
     temp: f32,
     max_tokens: usize,
+    dry_run: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1329,39 +1354,54 @@ fn parse_generate_args_with_env_and_workspace(
     workspace: &str,
     q4_exists: bool,
 ) -> Result<GenerateArgs, &'static str> {
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => positionals.push(arg.clone()),
+        }
+    }
+
     let (model_path, prompt_idx) = parse_model_path_position(
-        args,
+        &positionals,
         env_model_path,
         workspace,
         q4_exists,
         "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
     )?;
 
-    let prompt = match args.get(prompt_idx) {
+    let prompt = match positionals.get(prompt_idx) {
         Some(prompt) => prompt.clone(),
+        None if dry_run => "<prompt>".to_owned(),
         None => {
             return Err(
                 "missing prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first",
             );
         }
     };
-    let temp = args
+    let temp = positionals
         .get(prompt_idx + 1)
         .map(|value| parse_non_negative_f32(value, "generate temp must be a non-negative number"))
         .transpose()?
         .unwrap_or(0.0);
     let max_tokens = parse_optional_positive_usize(
-        args.get(prompt_idx + 2),
+        positionals.get(prompt_idx + 2),
         "generate max_tokens must be a positive integer",
     )?
     .unwrap_or(128);
-    reject_extra_positionals(args, prompt_idx + 3, "unexpected extra generate argument")?;
+    reject_extra_positionals(
+        &positionals,
+        prompt_idx + 3,
+        "unexpected extra generate argument",
+    )?;
 
     Ok(GenerateArgs {
         model_path,
         prompt,
         temp,
         max_tokens,
+        dry_run,
     })
 }
 
@@ -2718,6 +2758,34 @@ fn print_tui_dry_run(parsed: &TuiArgs) -> ExitCode {
             "nanocamelid",
             "tui",
             &model_path.display().to_string(),
+            &parsed.temp.to_string(),
+            &parsed.max_tokens.to_string(),
+        ])
+    );
+    ExitCode::SUCCESS
+}
+
+fn print_generation_dry_run(command: &str, parsed: &GenerateArgs) -> ExitCode {
+    if let Err(err) = validate_context_limit_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+
+    let model_path = Path::new(&parsed.model_path);
+    println!("NanoCamelid {command} dry run");
+    println!("model: {}", model_path.display());
+    println!("model_exists: {}", model_path.is_file());
+    println!("prompt: {}", parsed.prompt);
+    println!("temp: {}", parsed.temp);
+    println!("max_tokens: {}", parsed.max_tokens);
+    println!("context_limit: {}", context_limit_plan_value());
+    println!(
+        "{command}_command: {}",
+        shell_command(&[
+            "nanocamelid",
+            command,
+            &model_path.display().to_string(),
+            &parsed.prompt,
             &parsed.temp.to_string(),
             &parsed.max_tokens.to_string(),
         ])
@@ -5578,6 +5646,46 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.prompt, "Say hello");
         assert_eq!(parsed.temp, 0.0);
         assert_eq!(parsed.max_tokens, 8);
+    }
+
+    #[test]
+    fn generate_args_accept_1b_dry_run_without_prompt() {
+        let parsed = parse_generate_args_with_env_and_workspace(
+            &["1b".to_owned(), "--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("1B dry-run path should not require a prompt");
+
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.prompt, "<prompt>");
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn chat_style_generate_args_do_not_treat_dry_run_as_prompt() {
+        let parsed = parse_generate_args_with_env_and_workspace(
+            &[
+                "1b".to_owned(),
+                "--dry-run".to_owned(),
+                "Say hello".to_owned(),
+                "0.0".to_owned(),
+                "8".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("dry-run flag should be removed from chat-style args");
+
+        assert_eq!(parsed.prompt, "Say hello");
+        assert_eq!(parsed.temp, 0.0);
+        assert_eq!(parsed.max_tokens, 8);
+        assert!(parsed.dry_run);
     }
 
     #[test]

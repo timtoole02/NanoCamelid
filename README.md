@@ -43,6 +43,7 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --dry-run
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/chat-1b.sh --dry-run
 ./scripts/pi/context-pack-1b.sh --dry-run
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- chat 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
 CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
@@ -64,7 +65,8 @@ scalar-vs-selected smoke validation; dry runs print `shape_audit: enabled` so
 automation can confirm the guard is in the plan without opening the GGUF.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
-override.
+override. `generate 1b --dry-run` and `chat 1b --dry-run` print the resolved
+model path and command plan without loading the GGUF.
 `ready 1b` runs the host fast-path probe, strict Llama 3.2 1B shape audit,
 inspect, scalar-vs-selected smoke validation, and one direct chat turn. Set
 `NANOCAMELID_READY_CHAT=0` for probe+audit+inspect+smoke only, or set
