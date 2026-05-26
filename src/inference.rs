@@ -7,14 +7,23 @@ use crate::q8::{
     Q8DotKernel, Q8DotKernelSelector, QK_K_BLOCK_SIZE,
 };
 use rayon::prelude::*;
-use std::{env, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    env,
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 pub const MATMUL_MIN_ROWS_ENV: &str = "NANOCAMELID_MATMUL_MIN_ROWS";
 pub const Q4_1X4_SDOT_ENV: &str = "NANOCAMELID_Q4_1X4_SDOT";
 pub const Q6K_SDOT_ENV: &str = "NANOCAMELID_Q6K_SDOT";
 pub const ATTENTION_HEAD_PARALLEL_ENV: &str = "NANOCAMELID_ATTENTION_HEAD_PARALLEL";
 pub const KV_CACHE_F16_ENV: &str = "NANOCAMELID_KV_CACHE_F16";
+pub const ROPE_CACHE_ENV: &str = "NANOCAMELID_ROPE_CACHE";
+pub const TRACE_ENV: &str = "NANOCAMELID_TRACE";
 const DEFAULT_MATMUL_MIN_ROWS: usize = 128;
+const MAX_STACK_BATCH_SUMS: usize = 64;
 
 fn matmul_min_rows() -> usize {
     static MIN_ROWS: OnceLock<usize> = OnceLock::new();
@@ -69,6 +78,73 @@ fn kv_cache_f16_enabled() -> bool {
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
             .unwrap_or(false)
     })
+}
+
+fn rope_cache_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(ROPE_CACHE_ENV)
+            .ok()
+            .map(|value| {
+                !matches!(
+                    value.as_str(),
+                    "0" | "false" | "FALSE" | "off" | "OFF" | "no"
+                )
+            })
+            .unwrap_or(true)
+    })
+}
+
+fn trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(TRACE_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TraceStats {
+    pub calls: u64,
+    pub total: Duration,
+}
+
+fn trace_store() -> &'static Mutex<HashMap<&'static str, TraceStats>> {
+    static STORE: OnceLock<Mutex<HashMap<&'static str, TraceStats>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[inline]
+fn trace_record(stage: &'static str, elapsed: Duration) {
+    if !trace_enabled() {
+        return;
+    }
+    let Ok(mut store) = trace_store().lock() else {
+        return;
+    };
+    let stats = store.entry(stage).or_default();
+    stats.calls += 1;
+    stats.total += elapsed;
+}
+
+pub fn trace_reset() {
+    if let Ok(mut store) = trace_store().lock() {
+        store.clear();
+    }
+}
+
+pub fn trace_snapshot() -> Vec<(&'static str, TraceStats)> {
+    let Ok(store) = trace_store().lock() else {
+        return Vec::new();
+    };
+    let mut rows = store
+        .iter()
+        .map(|(&stage, &stats)| (stage, stats))
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.total));
+    rows
 }
 
 fn for_each_matmul_row<F>(out: &mut [f32], compute_row: F)
@@ -307,6 +383,19 @@ pub fn apply_rope(
     freq_base: f32,
     rope_scaling: RopeScaling,
 ) {
+    if rope_cache_enabled() {
+        apply_rope_cached(
+            data,
+            pos,
+            head_count,
+            head_dim,
+            rope_dim,
+            freq_base,
+            rope_scaling,
+        );
+        return;
+    }
+
     for head in 0..head_count {
         let head_start = head * head_dim;
         for i in 0..(rope_dim / 2) {
@@ -338,6 +427,135 @@ pub fn apply_rope(
             let angle = pos as f32 * theta;
             let (sin, cos) = angle.sin_cos();
 
+            let x0 = data[dim0];
+            let x1 = data[dim1];
+
+            data[dim0] = x0 * cos - x1 * sin;
+            data[dim1] = x0 * sin + x1 * cos;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq)]
+struct RopeCacheKey {
+    pos: usize,
+    rope_dim: usize,
+    freq_base_bits: u32,
+    factor_bits: Option<u32>,
+    original_context_length_bits: Option<u32>,
+    low_freq_factor_bits: Option<u32>,
+    high_freq_factor_bits: Option<u32>,
+}
+
+impl PartialEq for RopeCacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos
+            && self.rope_dim == other.rope_dim
+            && self.freq_base_bits == other.freq_base_bits
+            && self.factor_bits == other.factor_bits
+            && self.original_context_length_bits == other.original_context_length_bits
+            && self.low_freq_factor_bits == other.low_freq_factor_bits
+            && self.high_freq_factor_bits == other.high_freq_factor_bits
+    }
+}
+
+impl Hash for RopeCacheKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.pos.hash(state);
+        self.rope_dim.hash(state);
+        self.freq_base_bits.hash(state);
+        self.factor_bits.hash(state);
+        self.original_context_length_bits.hash(state);
+        self.low_freq_factor_bits.hash(state);
+        self.high_freq_factor_bits.hash(state);
+    }
+}
+
+type RopeAngleTable = Arc<[(f32, f32)]>;
+type RopeCache = Mutex<HashMap<RopeCacheKey, RopeAngleTable>>;
+
+fn rope_cache() -> &'static RopeCache {
+    static CACHE: OnceLock<RopeCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn rope_cache_key(
+    pos: usize,
+    rope_dim: usize,
+    freq_base: f32,
+    rope_scaling: RopeScaling,
+) -> RopeCacheKey {
+    RopeCacheKey {
+        pos,
+        rope_dim,
+        freq_base_bits: freq_base.to_bits(),
+        factor_bits: rope_scaling.factor.map(f32::to_bits),
+        original_context_length_bits: rope_scaling.original_context_length.map(f32::to_bits),
+        low_freq_factor_bits: rope_scaling.low_freq_factor.map(f32::to_bits),
+        high_freq_factor_bits: rope_scaling.high_freq_factor.map(f32::to_bits),
+    }
+}
+
+fn cached_rope_angles(
+    pos: usize,
+    rope_dim: usize,
+    freq_base: f32,
+    rope_scaling: RopeScaling,
+) -> Arc<[(f32, f32)]> {
+    let key = rope_cache_key(pos, rope_dim, freq_base, rope_scaling);
+    if let Ok(cache) = rope_cache().lock()
+        && let Some(angles) = cache.get(&key)
+    {
+        return Arc::clone(angles);
+    }
+
+    let mut angles = Vec::with_capacity(rope_dim / 2);
+    for i in 0..(rope_dim / 2) {
+        let mut theta = freq_base.powf(-((i * 2) as f32) / rope_dim as f32);
+        if let (Some(factor), Some(orig_len), Some(low), Some(high)) = (
+            rope_scaling.factor,
+            rope_scaling.original_context_length,
+            rope_scaling.low_freq_factor,
+            rope_scaling.high_freq_factor,
+        ) {
+            let wavelength = (2.0 * std::f32::consts::PI) / theta;
+            let low_freq_wavelength = orig_len / low;
+            let high_freq_wavelength = orig_len / high;
+            if wavelength >= high_freq_wavelength {
+                if wavelength > low_freq_wavelength {
+                    theta /= factor;
+                } else {
+                    let smooth = (orig_len / wavelength - low) / (high - low);
+                    theta = ((1.0 - smooth) * theta / factor) + (smooth * theta);
+                }
+            }
+        }
+        angles.push((pos as f32 * theta).sin_cos());
+    }
+
+    let angles = Arc::<[(f32, f32)]>::from(angles);
+    if let Ok(mut cache) = rope_cache().lock() {
+        Arc::clone(cache.entry(key).or_insert_with(|| Arc::clone(&angles)))
+    } else {
+        angles
+    }
+}
+
+fn apply_rope_cached(
+    data: &mut [f32],
+    pos: usize,
+    head_count: usize,
+    head_dim: usize,
+    rope_dim: usize,
+    freq_base: f32,
+    rope_scaling: RopeScaling,
+) {
+    let angles = cached_rope_angles(pos, rope_dim, freq_base, rope_scaling);
+    for head in 0..head_count {
+        let head_start = head * head_dim;
+        for (i, &(sin, cos)) in angles.iter().enumerate() {
+            let dim0 = head_start + (i * 2);
+            let dim1 = dim0 + 1;
             let x0 = data[dim0];
             let x1 = data[dim1];
 
@@ -987,14 +1205,33 @@ fn compute_q4_0_swizzled_1x4_sdot_batch_chunk(
     chunk_idx: usize,
     ctx: SwizzledBatchChunkContext<'_>,
 ) {
+    let batch_size = ctx.shape.batch_size;
+    if batch_size <= MAX_STACK_BATCH_SUMS {
+        let mut token_sums = [[0.0_f32; 4]; MAX_STACK_BATCH_SUMS];
+        compute_q4_0_swizzled_1x4_sdot_batch_chunk_with_sums(
+            chunk_idx,
+            ctx,
+            &mut token_sums[..batch_size],
+        );
+    } else {
+        let mut token_sums = vec![[0.0_f32; 4]; batch_size];
+        compute_q4_0_swizzled_1x4_sdot_batch_chunk_with_sums(chunk_idx, ctx, &mut token_sums);
+    }
+}
+
+fn compute_q4_0_swizzled_1x4_sdot_batch_chunk_with_sums(
+    chunk_idx: usize,
+    ctx: SwizzledBatchChunkContext<'_>,
+    token_sums: &mut [[f32; 4]],
+) {
     let BatchMatmulShape {
         batch_size,
         rows,
         cols,
     } = ctx.shape;
+    debug_assert_eq!(batch_size, token_sums.len());
     let chunk_base = chunk_idx * ctx.blocks_per_row * 4;
     let row_base = chunk_idx * 4;
-    let mut token_sums = vec![[0.0_f32; 4]; batch_size];
     for b in 0..ctx.blocks_per_row {
         let w_base = chunk_base + b * 4;
         let row0 = &ctx.w[w_base];
@@ -1049,8 +1286,8 @@ fn compute_q4_0_swizzled_1x4_sdot_batch_chunk(
         }
     }
 
-    for (token_idx, sums) in token_sums.into_iter().enumerate() {
-        for (lane, sum) in sums.into_iter().enumerate() {
+    for (token_idx, sums) in token_sums.iter().enumerate() {
+        for (lane, &sum) in sums.iter().enumerate() {
             unsafe {
                 write_batch_out(ctx.out_addr, token_idx, rows, row_base + lane, sum);
             }
@@ -1140,14 +1377,33 @@ fn compute_q4_0_page_aligned_1x4_sdot_batch_chunk(
     chunk_idx: usize,
     ctx: PageAlignedBatchChunkContext<'_>,
 ) {
+    let batch_size = ctx.shape.batch_size;
+    if batch_size <= MAX_STACK_BATCH_SUMS {
+        let mut token_sums = [[0.0_f32; 4]; MAX_STACK_BATCH_SUMS];
+        compute_q4_0_page_aligned_1x4_sdot_batch_chunk_with_sums(
+            chunk_idx,
+            ctx,
+            &mut token_sums[..batch_size],
+        );
+    } else {
+        let mut token_sums = vec![[0.0_f32; 4]; batch_size];
+        compute_q4_0_page_aligned_1x4_sdot_batch_chunk_with_sums(chunk_idx, ctx, &mut token_sums);
+    }
+}
+
+fn compute_q4_0_page_aligned_1x4_sdot_batch_chunk_with_sums(
+    chunk_idx: usize,
+    ctx: PageAlignedBatchChunkContext<'_>,
+    token_sums: &mut [[f32; 4]],
+) {
     let BatchMatmulShape {
         batch_size,
         rows,
         cols,
     } = ctx.shape;
+    debug_assert_eq!(batch_size, token_sums.len());
     let chunk = ctx.matrix.chunk_ptr(chunk_idx);
     let row_base = chunk_idx * 4;
-    let mut token_sums = vec![[0.0_f32; 4]; batch_size];
     for b in 0..ctx.blocks_per_row {
         let w_base = b * 4;
         let row0 = unsafe { &*chunk.add(w_base) };
@@ -1202,8 +1458,8 @@ fn compute_q4_0_page_aligned_1x4_sdot_batch_chunk(
         }
     }
 
-    for (token_idx, sums) in token_sums.into_iter().enumerate() {
-        for (lane, sum) in sums.into_iter().enumerate() {
+    for (token_idx, sums) in token_sums.iter().enumerate() {
+        for (lane, &sum) in sums.iter().enumerate() {
             unsafe {
                 write_batch_out(ctx.out_addr, token_idx, rows, row_base + lane, sum);
             }
@@ -2332,6 +2588,7 @@ pub fn run_layer_range_batch(
     debug_assert!(layer_start + layers.len() <= config.block_count);
 
     for (local_layer_idx, layer) in layers.iter().enumerate() {
+        let layer_started = Instant::now();
         let layer_idx = layer_start + local_layer_idx;
         let hidden_len = batch_size * config.embedding_length;
         let q_len = batch_size * config.attention_output_width;
@@ -2340,6 +2597,7 @@ pub fn run_layer_range_batch(
         let ffn_len = batch_size * config.feed_forward_length;
 
         ws.residual[..hidden_len].copy_from_slice(&ws.hidden[..hidden_len]);
+        let stage_started = Instant::now();
         rms_norm_batch(
             &mut ws.norm_x[..hidden_len],
             &ws.hidden[..hidden_len],
@@ -2348,6 +2606,8 @@ pub fn run_layer_range_batch(
             batch_size,
             config.embedding_length,
         );
+        trace_record("batch.attn_norm", stage_started.elapsed());
+        let stage_started = Instant::now();
         quantize_f32_to_q8_0_batch(
             &ws.norm_x[..hidden_len],
             &mut ws.x_i8[..batch_size * config.embedding_length],
@@ -2355,12 +2615,14 @@ pub fn run_layer_range_batch(
             batch_size,
             config.embedding_length,
         );
+        trace_record("batch.attn_quant", stage_started.elapsed());
 
         let attention_shape = BatchMatmulShape {
             batch_size,
             rows: config.attention_output_width,
             cols: config.embedding_length,
         };
+        let stage_started = Instant::now();
         matmul_quantized_batch(
             &mut ws.q[..q_len],
             &ws.x_i8[..batch_size * config.embedding_length],
@@ -2375,12 +2637,14 @@ pub fn run_layer_range_batch(
             batch_size,
             config.attention_output_width,
         );
+        trace_record("batch.wq", stage_started.elapsed());
 
         let kv_shape = BatchMatmulShape {
             batch_size,
             rows: config.kv_width,
             cols: config.embedding_length,
         };
+        let stage_started = Instant::now();
         matmul_quantized_batch(
             &mut ws.k[..kv_len],
             &ws.x_i8[..batch_size * config.embedding_length],
@@ -2395,6 +2659,8 @@ pub fn run_layer_range_batch(
             batch_size,
             config.kv_width,
         );
+        trace_record("batch.wk", stage_started.elapsed());
+        let stage_started = Instant::now();
         matmul_quantized_batch(
             &mut ws.v[..kv_len],
             &ws.x_i8[..batch_size * config.embedding_length],
@@ -2409,7 +2675,9 @@ pub fn run_layer_range_batch(
             batch_size,
             config.kv_width,
         );
+        trace_record("batch.wv", stage_started.elapsed());
 
+        let stage_started = Instant::now();
         for token_idx in 0..batch_size {
             let pos = start_pos + token_idx;
             let q_start = token_idx * config.attention_output_width;
@@ -2439,6 +2707,7 @@ pub fn run_layer_range_batch(
                 &ws.v[kv_start..kv_start + config.kv_width],
             );
         }
+        trace_record("batch.rope_store_kv", stage_started.elapsed());
 
         let k_cache = cache.get_k_cache(layer_idx);
         let v_cache = cache.get_v_cache(layer_idx);
@@ -2446,6 +2715,7 @@ pub fn run_layer_range_batch(
         ws.attn_output[..attn_len].fill(0.0);
         let parallel_heads = attention_head_parallel_enabled();
 
+        let stage_started = Instant::now();
         for token_idx in 0..batch_size {
             let pos = start_pos + token_idx;
             let q_token_start = token_idx * config.attention_output_width;
@@ -2480,7 +2750,9 @@ pub fn run_layer_range_batch(
                 parallel_heads,
             );
         }
+        trace_record("batch.attention", stage_started.elapsed());
 
+        let stage_started = Instant::now();
         quantize_f32_to_q8_0_batch(
             &ws.attn_output[..attn_len],
             &mut ws.x_i8[..batch_size * config.attention_output_width],
@@ -2488,6 +2760,8 @@ pub fn run_layer_range_batch(
             batch_size,
             config.attention_output_width,
         );
+        trace_record("batch.wo_quant", stage_started.elapsed());
+        let stage_started = Instant::now();
         matmul_quantized_batch(
             &mut ws.hidden[..hidden_len],
             &ws.x_i8[..batch_size * config.attention_output_width],
@@ -2501,8 +2775,10 @@ pub fn run_layer_range_batch(
             options.q8_selector,
         );
         add_residual_batch(&mut ws.hidden[..hidden_len], &ws.residual[..hidden_len]);
+        trace_record("batch.wo", stage_started.elapsed());
 
         ws.residual[..hidden_len].copy_from_slice(&ws.hidden[..hidden_len]);
+        let stage_started = Instant::now();
         rms_norm_batch(
             &mut ws.norm_x[..hidden_len],
             &ws.hidden[..hidden_len],
@@ -2511,8 +2787,10 @@ pub fn run_layer_range_batch(
             batch_size,
             config.embedding_length,
         );
+        trace_record("batch.ffn_norm", stage_started.elapsed());
         match &layer.ffn {
             LlamaFfnWeights::Dense { w1, w3, w2 } => {
+                let stage_started = Instant::now();
                 quantize_f32_to_q8_0_batch(
                     &ws.norm_x[..hidden_len],
                     &mut ws.x_i8[..batch_size * config.embedding_length],
@@ -2520,12 +2798,14 @@ pub fn run_layer_range_batch(
                     batch_size,
                     config.embedding_length,
                 );
+                trace_record("batch.ffn_quant", stage_started.elapsed());
 
                 let ffn_shape = BatchMatmulShape {
                     batch_size,
                     rows: config.feed_forward_length,
                     cols: config.embedding_length,
                 };
+                let stage_started = Instant::now();
                 matmul_quantized_batch(
                     &mut ws.ffn_gate[..ffn_len],
                     &ws.x_i8[..batch_size * config.embedding_length],
@@ -2534,6 +2814,8 @@ pub fn run_layer_range_batch(
                     ffn_shape,
                     options.q8_selector,
                 );
+                trace_record("batch.w1", stage_started.elapsed());
+                let stage_started = Instant::now();
                 matmul_quantized_batch(
                     &mut ws.ffn_up[..ffn_len],
                     &ws.x_i8[..batch_size * config.embedding_length],
@@ -2542,12 +2824,16 @@ pub fn run_layer_range_batch(
                     ffn_shape,
                     options.q8_selector,
                 );
+                trace_record("batch.w3", stage_started.elapsed());
+                let stage_started = Instant::now();
                 fused_silu_mul(
                     &mut ws.ffn_gate_up[..ffn_len],
                     &ws.ffn_gate[..ffn_len],
                     &ws.ffn_up[..ffn_len],
                 );
+                trace_record("batch.silu_mul", stage_started.elapsed());
 
+                let stage_started = Instant::now();
                 quantize_f32_to_q8_0_batch(
                     &ws.ffn_gate_up[..ffn_len],
                     &mut ws.x_i8[..batch_size * config.feed_forward_length],
@@ -2555,11 +2841,13 @@ pub fn run_layer_range_batch(
                     batch_size,
                     config.feed_forward_length,
                 );
+                trace_record("batch.down_quant", stage_started.elapsed());
                 let down_shape = BatchMatmulShape {
                     batch_size,
                     rows: config.embedding_length,
                     cols: config.feed_forward_length,
                 };
+                let stage_started = Instant::now();
                 matmul_quantized_batch(
                     &mut ws.hidden[..hidden_len],
                     &ws.x_i8[..batch_size * config.feed_forward_length],
@@ -2569,6 +2857,7 @@ pub fn run_layer_range_batch(
                     options.q8_selector,
                 );
                 add_residual_batch(&mut ws.hidden[..hidden_len], &ws.residual[..hidden_len]);
+                trace_record("batch.w2", stage_started.elapsed());
             }
             LlamaFfnWeights::MoE {
                 router,
@@ -2602,6 +2891,7 @@ pub fn run_layer_range_batch(
                 }
             }
         }
+        trace_record("batch.layer_total", layer_started.elapsed());
     }
 }
 
@@ -2824,6 +3114,7 @@ pub fn run_layer_range(
     debug_assert!(layer_start + layers.len() <= config.block_count);
 
     for (local_layer_idx, layer) in layers.iter().enumerate() {
+        let layer_started = Instant::now();
         let layer_idx = layer_start + local_layer_idx;
 
         // --- Attention block ---
@@ -2831,17 +3122,22 @@ pub fn run_layer_range(
         ws.residual.copy_from_slice(&ws.hidden);
 
         // RMSNorm
+        let stage_started = Instant::now();
         rms_norm(
             &mut ws.norm_x,
             &ws.hidden,
             &layer.attention_norm,
             config.rms_norm_epsilon,
         );
+        trace_record("decode.attn_norm", stage_started.elapsed());
 
         // Quantize normalized activations for Q8 matmul
+        let stage_started = Instant::now();
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
+        trace_record("decode.attn_quant", stage_started.elapsed());
 
         // Q, K, V Projections
+        let stage_started = Instant::now();
         matmul_quantized(
             &mut ws.q,
             &ws.x_i8,
@@ -2854,6 +3150,8 @@ pub fn run_layer_range(
         if let Some(bias) = &layer.wq_bias {
             add_bias(&mut ws.q, bias);
         }
+        trace_record("decode.wq", stage_started.elapsed());
+        let stage_started = Instant::now();
         matmul_quantized(
             &mut ws.k,
             &ws.x_i8,
@@ -2866,6 +3164,8 @@ pub fn run_layer_range(
         if let Some(bias) = &layer.wk_bias {
             add_bias(&mut ws.k, bias);
         }
+        trace_record("decode.wk", stage_started.elapsed());
+        let stage_started = Instant::now();
         matmul_quantized(
             &mut ws.v,
             &ws.x_i8,
@@ -2878,8 +3178,10 @@ pub fn run_layer_range(
         if let Some(bias) = &layer.wav_bias {
             add_bias(&mut ws.v, bias);
         }
+        trace_record("decode.wv", stage_started.elapsed());
 
         // Apply RoPE
+        let stage_started = Instant::now();
         apply_rope(
             &mut ws.q,
             pos,
@@ -2899,9 +3201,12 @@ pub fn run_layer_range(
             config.rope_freq_base,
             options.rope_scaling,
         );
+        trace_record("decode.rope", stage_started.elapsed());
 
         // Store to KV Cache
+        let stage_started = Instant::now();
         cache.store_kv(layer_idx, pos, &ws.k, &ws.v);
+        trace_record("decode.store_kv", stage_started.elapsed());
 
         // Retrieve K, V history
         let k_cache = cache.get_k_cache(layer_idx);
@@ -2912,6 +3217,7 @@ pub fn run_layer_range(
 
         // Compute attention outputs per head
         ws.attn_output.fill(0.0);
+        let stage_started = Instant::now();
         apply_attention_heads(
             &mut ws.attn_output,
             &mut ws.attn_scores,
@@ -2929,9 +3235,13 @@ pub fn run_layer_range(
             },
             attention_head_parallel_enabled(),
         );
+        trace_record("decode.attention", stage_started.elapsed());
 
         // Projection O (wo)
+        let stage_started = Instant::now();
         quantize_f32_to_q8_0(&ws.attn_output, &mut ws.x_i8, &mut ws.x_scales);
+        trace_record("decode.wo_quant", stage_started.elapsed());
+        let stage_started = Instant::now();
         matmul_quantized(
             &mut ws.hidden,
             &ws.x_i8,
@@ -2946,24 +3256,30 @@ pub fn run_layer_range(
         for i in 0..config.embedding_length {
             ws.hidden[i] += ws.residual[i];
         }
+        trace_record("decode.wo", stage_started.elapsed());
 
         // --- FFN block ---
         ws.residual.copy_from_slice(&ws.hidden);
 
         // RMSNorm
+        let stage_started = Instant::now();
         rms_norm(
             &mut ws.norm_x,
             &ws.hidden,
             &layer.ffn_norm,
             config.rms_norm_epsilon,
         );
+        trace_record("decode.ffn_norm", stage_started.elapsed());
 
         match &layer.ffn {
             LlamaFfnWeights::Dense { w1, w3, w2 } => {
                 // Quantize
+                let stage_started = Instant::now();
                 quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
+                trace_record("decode.ffn_quant", stage_started.elapsed());
 
                 // Gate (w1) & Up (w3) matmuls
+                let stage_started = Instant::now();
                 matmul_quantized(
                     &mut ws.ffn_gate,
                     &ws.x_i8,
@@ -2973,6 +3289,8 @@ pub fn run_layer_range(
                     config.embedding_length,
                     options.q8_selector,
                 );
+                trace_record("decode.w1", stage_started.elapsed());
+                let stage_started = Instant::now();
                 matmul_quantized(
                     &mut ws.ffn_up,
                     &ws.x_i8,
@@ -2982,12 +3300,18 @@ pub fn run_layer_range(
                     config.embedding_length,
                     options.q8_selector,
                 );
+                trace_record("decode.w3", stage_started.elapsed());
 
                 // Fused SiLU activation on Gate and element-wise product with Up
+                let stage_started = Instant::now();
                 fused_silu_mul(&mut ws.ffn_gate_up, &ws.ffn_gate, &ws.ffn_up);
+                trace_record("decode.silu_mul", stage_started.elapsed());
 
                 // Down projection (w2)
+                let stage_started = Instant::now();
                 quantize_f32_to_q8_0(&ws.ffn_gate_up, &mut ws.x_i8, &mut ws.x_scales);
+                trace_record("decode.down_quant", stage_started.elapsed());
+                let stage_started = Instant::now();
                 matmul_quantized(
                     &mut ws.hidden,
                     &ws.x_i8,
@@ -3002,6 +3326,7 @@ pub fn run_layer_range(
                 for i in 0..config.embedding_length {
                     ws.hidden[i] += ws.residual[i];
                 }
+                trace_record("decode.w2", stage_started.elapsed());
             }
             LlamaFfnWeights::MoE {
                 router,
@@ -3028,6 +3353,7 @@ pub fn run_layer_range(
                 );
             }
         }
+        trace_record("decode.layer_total", layer_started.elapsed());
     }
 }
 

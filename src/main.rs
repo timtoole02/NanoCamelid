@@ -17,6 +17,8 @@ const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
 const WORKER_CORES_ENV: &str = "NANOCAMELID_WORKER_CORES";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
+const ROPE_CACHE_ENV: &str = inference::ROPE_CACHE_ENV;
+const TRACE_ENV: &str = inference::TRACE_ENV;
 const READY_CHAT_ENV: &str = "NANOCAMELID_READY_CHAT";
 const SMOKE_KIND_ENV: &str = "NANOCAMELID_SMOKE_KIND";
 const SMOKE_PROMPT_ENV: &str = "NANOCAMELID_SMOKE_PROMPT";
@@ -367,6 +369,22 @@ fn main() -> ExitCode {
     }
 }
 
+fn print_runtime_trace_summary() {
+    let rows = inference::trace_snapshot();
+    if rows.is_empty() {
+        return;
+    }
+    println!("\nRuntime trace:");
+    for (stage, stats) in rows.into_iter().take(24) {
+        let total_ms = stats.total.as_secs_f64() * 1000.0;
+        let avg_ms = total_ms / stats.calls.max(1) as f64;
+        println!(
+            "  {stage:<22} calls {:>6} total {:>10.3} ms avg {:>8.4} ms",
+            stats.calls, total_ms, avg_ms
+        );
+    }
+}
+
 fn setup_thread_pool() {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let worker_core_indices =
@@ -702,6 +720,10 @@ fn print_generate_usage() {
     println!(
         "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
     );
+    println!(
+        "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings"
+    );
+    println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
     println!();
     println!(
         "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path or a 1b/3b alias."
@@ -738,6 +760,10 @@ fn print_chat_usage() {
     println!(
         "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
     );
+    println!(
+        "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings"
+    );
+    println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
     println!();
     println!(
         "Chat uses recognized tokenizer chat templates when present, including the Llama 3 instruct header/eot format."
@@ -779,6 +805,10 @@ fn print_tui_usage() {
     println!(
         "  {CONTEXT_LIMIT_ENV}                         Optional runtime context cap for short long-context smoke runs"
     );
+    println!(
+        "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings after each turn"
+    );
+    println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
     println!();
     println!(
         "Commands inside the TUI: /help, /model <path>, /models, /temp <value>, /tokens <count>, /system <prompt>, /status, /history, /save <path>, /clear, /exit"
@@ -878,6 +908,10 @@ fn print_bench_usage() {
         "  NANOCAMELID_ATTENTION_HEAD_PARALLEL       Enable experimental head-parallel attention"
     );
     println!("  NANOCAMELID_KV_CACHE_F16                  Store KV cache entries as f16");
+    println!(
+        "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings"
+    );
+    println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
     println!(
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
     );
@@ -1262,10 +1296,10 @@ fn parse_ready_1b_args_with_env_and_smoke_defaults(
     };
 
     let positional_prompt = smoke_args.get(option_idx).cloned();
-    let positional_tokens = smoke_args
-        .get(option_idx + 1)
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&value| value > 0);
+    let positional_tokens = parse_optional_positive_usize(
+        smoke_args.get(option_idx + 1),
+        "ready 1B token count must be a positive integer",
+    )?;
     let smoke_only = chat_enabled_override == Some(false);
 
     let (smoke_prompt, smoke_tokens, chat_prompt_override, chat_tokens_override) = if smoke_only {
@@ -1352,10 +1386,11 @@ fn parse_smoke_1b_args_with_env_and_defaults(
         .get(option_idx)
         .cloned()
         .unwrap_or_else(|| defaults.prompt.clone());
-    let max_tokens = positionals
-        .get(option_idx + 1)
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(defaults.max_tokens);
+    let max_tokens = parse_optional_positive_usize(
+        positionals.get(option_idx + 1),
+        "1B smoke max_tokens must be a positive integer",
+    )?
+    .unwrap_or(defaults.max_tokens);
 
     Ok(Smoke1BArgs {
         kind,
@@ -1430,10 +1465,11 @@ fn parse_smoke_3b_args_with_env(
         .get(option_idx)
         .cloned()
         .unwrap_or_else(|| DEFAULT_1B_SMOKE_PROMPT.to_owned());
-    let max_tokens = positionals
-        .get(option_idx + 1)
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
+    let max_tokens = parse_optional_positive_usize(
+        positionals.get(option_idx + 1),
+        "3B smoke max_tokens must be a positive integer",
+    )?
+    .unwrap_or(DEFAULT_1B_SMOKE_TOKENS);
 
     Ok(Smoke1BArgs {
         kind,
@@ -1467,16 +1503,30 @@ fn parse_smoke_args_with_env(
         .get(prompt_idx)
         .cloned()
         .unwrap_or_else(|| "Hello".to_owned());
-    let max_tokens = args
-        .get(prompt_idx + 1)
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1);
+    let max_tokens = parse_optional_positive_usize(
+        args.get(prompt_idx + 1),
+        "smoke max_tokens must be a positive integer",
+    )?
+    .unwrap_or(1);
 
     Ok(SmokeQ8ModelArgs {
         model_path,
         prompt,
         max_tokens,
     })
+}
+
+fn parse_optional_positive_usize(
+    value: Option<&String>,
+    error: &'static str,
+) -> Result<Option<usize>, &'static str> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value.parse::<usize>() {
+        Ok(parsed) if parsed > 0 => Ok(Some(parsed)),
+        _ => Err(error),
+    }
 }
 
 fn looks_like_gguf_path(value: &str) -> bool {
@@ -3274,6 +3324,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
             return ExitCode::FAILURE;
         }
 
+        inference::trace_reset();
         let report = match generate_chat_turn(
             &tui_prompt_history(settings.system_prompt.as_deref(), &history),
             &mut session,
@@ -3299,6 +3350,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
                 continue;
             }
         };
+        print_runtime_trace_summary();
 
         total_in += report.input_tokens;
         total_out += report.output_tokens;
@@ -3632,6 +3684,7 @@ where
     let mut batch_ws = inference::LlamaBatchWorkspace::new(&config, prefill_batch_size());
     let selector = q8::Q8DotKernelSelector::from_env();
     let runtime_options = runtime_options_from_gguf(&gguf, selector);
+    inference::trace_reset();
 
     println!("Selected dot-product kernel: {}", selector.selected.name());
     println!("\nGenerating response:\n");
@@ -3720,6 +3773,7 @@ where
         elapsed,
         generated_tokens.len() as f64 / elapsed
     );
+    print_runtime_trace_summary();
 
     ExitCode::SUCCESS
 }
@@ -4064,21 +4118,22 @@ mod tests {
     };
 
     use nanocamelid::gguf::{GgufFile, GgufMetadataValue, GgufTensorDescriptor, GgufTensorType};
+    use nanocamelid::inference;
     use nanocamelid::q8;
     use nanocamelid::tokenizer::{SpecialTokens, TokenizerModel};
 
     use super::{
         ChatTurn, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
         LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, Smoke1BArgs,
-        SmokeDefaults, SmokeKind, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
-        default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
+        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation,
+        cpu_model, default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
         is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
         looks_like_gguf_path, parse_cpu_list, parse_generate_args_with_env,
         parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults, parse_smoke_1b_args_with_env,
         parse_smoke_3b_args_with_env, parse_smoke_args_with_env, parse_tui_args_with_env,
-        parse_tui_args_with_env_and_workspace, parse_tui_command,
+        parse_tui_args_with_env_and_workspace, parse_tui_command, print_runtime_trace_summary,
         ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
@@ -4094,6 +4149,13 @@ mod tests {
         assert_eq!(parse_cpu_list(""), None);
         assert_eq!(parse_cpu_list("3-1"), None);
         assert_eq!(parse_cpu_list("core1"), None);
+    }
+
+    #[test]
+    fn runtime_trace_summary_noops_when_empty() {
+        assert_eq!(TRACE_ENV, "NANOCAMELID_TRACE");
+        inference::trace_reset();
+        print_runtime_trace_summary();
     }
 
     #[test]
@@ -4706,6 +4768,21 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn smoke_q8_model_args_reject_non_positive_token_count() {
+        let err = parse_smoke_args_with_env(
+            &[
+                "/models/model.gguf".to_owned(),
+                "Hello".to_owned(),
+                "0".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("zero-token smoke should fail");
+
+        assert_eq!(err, "smoke max_tokens must be a positive integer");
+    }
+
+    #[test]
     fn default_1b_smoke_path_prefers_q4_when_present() {
         assert_eq!(
             default_llama32_1b_model_path("/mnt/nanocamelid", true),
@@ -5145,6 +5222,19 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn ready_1b_args_reject_invalid_direct_chat_token_count() {
+        let err = parse_ready_1b_args_with_env(
+            &["chat".to_owned(), "Say hi".to_owned(), "0".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("zero-token ready chat should fail");
+
+        assert_eq!(err, "ready 1B token count must be a positive integer");
+    }
+
+    #[test]
     fn smoke_1b_args_reject_unknown_q8_kind() {
         let err =
             parse_smoke_1b_args_with_env(&["q8-broken".to_owned()], None, "/mnt/nanocamelid", true)
@@ -5154,6 +5244,19 @@ flags\t\t: sse4_2 avx2
             err,
             "unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model"
         );
+    }
+
+    #[test]
+    fn smoke_1b_args_reject_invalid_token_count() {
+        let err = parse_smoke_1b_args_with_env(
+            &["chat".to_owned(), "Hello".to_owned(), "bad".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("invalid 1B smoke token count should fail");
+
+        assert_eq!(err, "1B smoke max_tokens must be a positive integer");
     }
 
     #[test]
@@ -5222,6 +5325,18 @@ flags\t\t: sse4_2 avx2
             err,
             "unknown 3B smoke kind; expected chat, model, q8-chat, or q8-model"
         );
+    }
+
+    #[test]
+    fn smoke_3b_args_reject_invalid_token_count() {
+        let err = parse_smoke_3b_args_with_env(
+            &["chat".to_owned(), "Hello".to_owned(), "0".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+        )
+        .expect_err("zero-token 3B smoke should fail");
+
+        assert_eq!(err, "3B smoke max_tokens must be a positive integer");
     }
 
     #[test]

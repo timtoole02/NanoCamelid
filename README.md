@@ -331,6 +331,11 @@ On a prepared Pi workspace, `./scripts/pi/bench-1b-prefill.sh` sweeps the real
 Llama 3.2 1B chat path across prefill batch sizes and prints the model-backed
 prompt ingestion timing for each run.
 
+Set `NANOCAMELID_TRACE=1` on `generate`, `chat`, or `tui` runs to print an
+aggregate stage-level timing summary. It is intended for focused tuning: the
+summary groups decode and batched prefill work by layer stage so slow paths can
+be identified before changing kernels.
+
 For very long-context GGUFs, `NANOCAMELID_CONTEXT_LIMIT` can cap the runtime KV
 cache during local smoke tests:
 
@@ -495,6 +500,8 @@ Useful environment controls:
 - `NANOCAMELID_PREFILL_BATCH`: prompt-token batch size; default `16`.
 - `NANOCAMELID_CONTEXT_LIMIT`: optional runtime KV-cache context cap for short
   smoke tests of long-context models.
+- `NANOCAMELID_TRACE=1`: print stage-level inference timing summaries for
+  generation and TUI turns.
 - `NANOCAMELID_RAYON_THREADS`: global Rayon worker count.
 - `NANOCAMELID_WORKER_CORES=1,2,3`: pin Rayon workers to a CPU list. If this is
   unset and Linux reports isolated CPUs in `/sys/devices/system/cpu/isolated`,
@@ -510,6 +517,8 @@ Useful environment controls:
   memory and is not the default.
 - `NANOCAMELID_Q6K_SDOT=0`: disable the AArch64 SDOT path for Q6_K-by-Q8
   matmuls when comparing against the scalar route.
+- `NANOCAMELID_ROPE_CACHE=0`: disable the default RoPE angle cache for
+  before/after comparisons.
 - `NANOCAMELID_ATTENTION_HEAD_PARALLEL=0`: disable Rayon head-parallel
   attention for comparison. This uses per-head score scratch space and is most
   visible on longer prompts.
