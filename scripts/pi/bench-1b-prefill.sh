@@ -136,8 +136,16 @@ if [[ ${#BATCHES[@]} -eq 0 ]]; then
   exit 2
 fi
 
+if [[ -x "$BINARY" ]]; then
+  launcher_mode="binary"
+elif command -v cargo >/dev/null 2>&1; then
+  launcher_mode="cargo"
+else
+  launcher_mode="unavailable"
+fi
+
 run_nanocamelid() {
-  if [[ -x "$BINARY" ]]; then
+  if [[ "$launcher_mode" == "binary" ]]; then
     "$BINARY" "$@"
     return
   fi
@@ -149,6 +157,10 @@ run_nanocamelid() {
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid Llama 3.2 1B prefill sweep dry run"
+  echo "repo: $REPO"
+  echo "cargo_target_dir: $TARGET_DIR"
+  echo "launcher_mode: $launcher_mode"
+  echo "binary: $BINARY"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
   echo "prompt: $PROMPT"
@@ -174,7 +186,7 @@ if [[ ! -f "$MODEL" ]]; then
   echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
   exit 2
 fi
-if [[ ! -x "$BINARY" ]] && ! command -v cargo >/dev/null 2>&1; then
+if [[ "$launcher_mode" == "unavailable" ]]; then
   echo "NanoCamelid release binary not found and cargo is not on PATH." >&2
   echo "Expected binary: $BINARY" >&2
   exit 3

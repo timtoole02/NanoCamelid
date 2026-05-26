@@ -207,6 +207,15 @@ expect_failure "chat-1b invalid temperature" env NANOCAMELID_TEMP=bad ./scripts/
 echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run
 
+echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid generated token count..."
+expect_failure "bench-1b-prefill invalid generated token count" env NANOCAMELID_PREFILL_TOKENS=0 ./scripts/pi/bench-1b-prefill.sh --dry-run
+
+echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid temperature..."
+expect_failure "bench-1b-prefill invalid temperature" env NANOCAMELID_PREFILL_TEMP=bad ./scripts/pi/bench-1b-prefill.sh --dry-run
+
+echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid batch size..."
+expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BATCHES=1,bad,32 ./scripts/pi/bench-1b-prefill.sh --dry-run
+
 echo "==> Checking 1B Pi readiness launcher rejects invalid temperature..."
 expect_failure "ready-1b invalid temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/pi/ready-1b.sh --dry-run
 
