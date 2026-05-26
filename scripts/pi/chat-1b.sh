@@ -40,6 +40,20 @@ looks_like_gguf_path() {
   esac
 }
 
+is_positive_integer() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+require_positive_integer() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_positive_integer "$value"; then
+    echo "$label must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
 shell_quote() {
   printf '%q' "$1"
 }
@@ -88,6 +102,8 @@ SMOKE_ENABLED_LOWER="$(printf '%s' "$SMOKE_ENABLED" | tr '[:upper:]' '[:lower:]'
 SMOKE_KIND="${NANOCAMELID_CHAT_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_CHAT_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_CHAT_SMOKE_TOKENS:-1}"
+require_positive_integer "Max token count" "$MAX_TOKENS"
+require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
 

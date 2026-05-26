@@ -46,6 +46,20 @@ looks_like_gguf_path() {
   esac
 }
 
+is_positive_integer() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+require_positive_integer() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_positive_integer "$value"; then
+    echo "$label must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
 CHAT_ENABLED_OVERRIDE=""
 DRY_RUN=0
 POSITIONAL_ARGS=()
@@ -115,6 +129,8 @@ case "$CHAT_ENABLED_LOWER" in
     CHAT_TOKENS="${2:-${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}}"
     ;;
 esac
+require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
+require_positive_integer "Direct chat token count" "$CHAT_TOKENS"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"

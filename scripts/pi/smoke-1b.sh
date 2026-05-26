@@ -55,6 +55,20 @@ looks_like_gguf_path() {
   esac
 }
 
+is_positive_integer() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+require_positive_integer() {
+  local label="$1"
+  local value="$2"
+
+  if ! is_positive_integer "$value"; then
+    echo "$label must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
@@ -78,6 +92,7 @@ fi
 SMOKE_KIND="${1:-${NANOCAMELID_SMOKE_KIND:-chat}}"
 SMOKE_PROMPT="${2:-${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}}"
 SMOKE_TOKENS="${3:-${NANOCAMELID_SMOKE_TOKENS:-8}}"
+require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
