@@ -736,6 +736,10 @@ To keep the remote gate at inspect+smoke only:
 NANOCAMELID_REMOTE_READY_CHAT=0 ./scripts/remote_build.sh <pi-host> [ssh-key] [pi-user]
 ```
 
+When direct chat is disabled, `remote_build.sh` does not forward
+`NANOCAMELID_READY_PROMPT`, `NANOCAMELID_READY_TOKENS`, or
+`NANOCAMELID_READY_TEMP` into the Pi readiness command.
+
 Remote builds default to clean git fast-forward deployment so Pi-local edits are
 not overwritten by validation runs. For explicit snapshot deployment, pass
 `rsync` as the fourth argument or set `NANOCAMELID_DEPLOY_MODE=rsync`.

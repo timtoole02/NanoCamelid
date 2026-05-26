@@ -154,6 +154,31 @@ redacted_deploy_key_label() {
   fi
 }
 
+ready_chat_disabled() {
+  [[ "$READY_CHAT_LOWER" == "0" || "$READY_CHAT_LOWER" == "false" || "$READY_CHAT_LOWER" == "no" ]]
+}
+
+print_readiness_command() {
+  local model_arg="${1:-}"
+
+  printf 'readiness_command: NANOCAMELID_READY_CHAT=%s NANOCAMELID_READY_SMOKE_KIND=%s NANOCAMELID_READY_SMOKE_PROMPT=%s NANOCAMELID_READY_SMOKE_TOKENS=%s' \
+    "$(shell_quote "$READY_CHAT")" \
+    "$(shell_quote "$REMOTE_SMOKE_KIND")" \
+    "$(shell_quote "$SMOKE_PROMPT")" \
+    "$(shell_quote "$SMOKE_TOKENS")"
+  if ! ready_chat_disabled; then
+    printf ' NANOCAMELID_READY_PROMPT=%s NANOCAMELID_READY_TOKENS=%s NANOCAMELID_READY_TEMP=%s' \
+      "$(shell_quote "$READY_PROMPT")" \
+      "$(shell_quote "$READY_TOKENS")" \
+      "$(shell_quote "$READY_TEMP")"
+  fi
+  printf ' ./scripts/pi/ready-1b.sh'
+  if [[ -n "$model_arg" ]]; then
+    printf ' %s' "$(shell_quote "$model_arg")"
+  fi
+  printf '\n'
+}
+
 if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" ]]; then
   if [[ -n "$REMOTE_SMOKE_GGUF" ]] && ! looks_like_gguf_path "$REMOTE_SMOKE_GGUF"; then
     echo "NANOCAMELID_REMOTE_SMOKE_GGUF must be a .gguf path: $REMOTE_SMOKE_GGUF" >&2
@@ -195,24 +220,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" ]]; then
     echo "readiness_command: skipped"
   elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
-    printf 'readiness_command: NANOCAMELID_READY_CHAT=%s NANOCAMELID_READY_SMOKE_KIND=%s NANOCAMELID_READY_SMOKE_PROMPT=%s NANOCAMELID_READY_SMOKE_TOKENS=%s NANOCAMELID_READY_PROMPT=%s NANOCAMELID_READY_TOKENS=%s NANOCAMELID_READY_TEMP=%s ./scripts/pi/ready-1b.sh %s\n' \
-      "$(shell_quote "$READY_CHAT")" \
-      "$(shell_quote "$REMOTE_SMOKE_KIND")" \
-      "$(shell_quote "$SMOKE_PROMPT")" \
-      "$(shell_quote "$SMOKE_TOKENS")" \
-      "$(shell_quote "$READY_PROMPT")" \
-      "$(shell_quote "$READY_TOKENS")" \
-      "$(shell_quote "$READY_TEMP")" \
-      "$(shell_quote "$REMOTE_SMOKE_GGUF")"
+    print_readiness_command "$REMOTE_SMOKE_GGUF"
   else
-    printf 'readiness_command: NANOCAMELID_READY_CHAT=%s NANOCAMELID_READY_SMOKE_KIND=%s NANOCAMELID_READY_SMOKE_PROMPT=%s NANOCAMELID_READY_SMOKE_TOKENS=%s NANOCAMELID_READY_PROMPT=%s NANOCAMELID_READY_TOKENS=%s NANOCAMELID_READY_TEMP=%s ./scripts/pi/ready-1b.sh\n' \
-      "$(shell_quote "$READY_CHAT")" \
-      "$(shell_quote "$REMOTE_SMOKE_KIND")" \
-      "$(shell_quote "$SMOKE_PROMPT")" \
-      "$(shell_quote "$SMOKE_TOKENS")" \
-      "$(shell_quote "$READY_PROMPT")" \
-      "$(shell_quote "$READY_TOKENS")" \
-      "$(shell_quote "$READY_TEMP")"
+    print_readiness_command
   fi
   if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" || -z "$REMOTE_CONTEXT_PACKS" ]]; then
     echo "context_pack_command: skipped"
@@ -304,20 +314,39 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
   default_q4_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
   default_q8_model="$PI_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
 
+  run_ready_1b() {
+    ready_chat_lower="$(printf '%s' "$READY_CHAT" | tr '[:upper:]' '[:lower:]')"
+    env_args=(
+      "NANOCAMELID_WORKSPACE=$PI_WORKSPACE"
+      "NANOCAMELID_REPO=$PI_REPO"
+      "NANOCAMELID_READY_CHAT=$READY_CHAT"
+      "NANOCAMELID_READY_SMOKE_KIND=$REMOTE_SMOKE_KIND"
+      "NANOCAMELID_READY_SMOKE_PROMPT=$SMOKE_PROMPT"
+      "NANOCAMELID_READY_SMOKE_TOKENS=$SMOKE_TOKENS"
+    )
+    case "$ready_chat_lower" in
+      0 | false | no) ;;
+      *)
+        env_args+=(
+          "NANOCAMELID_READY_PROMPT=$READY_PROMPT"
+          "NANOCAMELID_READY_TOKENS=$READY_TOKENS"
+          "NANOCAMELID_READY_TEMP=$READY_TEMP"
+        )
+        ;;
+    esac
+
+    if [ $# -gt 0 ]; then
+      env "${env_args[@]}" ./scripts/pi/ready-1b.sh "$1"
+    else
+      env "${env_args[@]}" ./scripts/pi/ready-1b.sh
+    fi
+  }
+
   if [ "$REMOTE_SMOKE_ENABLED_LOWER" = "0" ] || [ "$REMOTE_SMOKE_ENABLED_LOWER" = "false" ] || [ "$REMOTE_SMOKE_ENABLED_LOWER" = "no" ]; then
     echo "==> Skipping model-backed 1B readiness; NANOCAMELID_REMOTE_SMOKE=$REMOTE_SMOKE_ENABLED"
   elif [ -n "$REMOTE_SMOKE_GGUF" ]; then
     echo "==> Running explicit 1B readiness gate: $REMOTE_SMOKE_KIND"
-    NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
-      NANOCAMELID_REPO="$PI_REPO" \
-      NANOCAMELID_READY_CHAT="$READY_CHAT" \
-      NANOCAMELID_READY_SMOKE_KIND="$REMOTE_SMOKE_KIND" \
-      NANOCAMELID_READY_SMOKE_PROMPT="$SMOKE_PROMPT" \
-      NANOCAMELID_READY_SMOKE_TOKENS="$SMOKE_TOKENS" \
-      NANOCAMELID_READY_PROMPT="$READY_PROMPT" \
-      NANOCAMELID_READY_TOKENS="$READY_TOKENS" \
-      NANOCAMELID_READY_TEMP="$READY_TEMP" \
-      ./scripts/pi/ready-1b.sh "$REMOTE_SMOKE_GGUF"
+    run_ready_1b "$REMOTE_SMOKE_GGUF"
     if [ -n "$REMOTE_CONTEXT_PACKS" ]; then
       echo "==> Running explicit 1B context-pack smoke gate: $REMOTE_CONTEXT_PACKS"
       NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
@@ -327,16 +356,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     fi
   elif [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; then
     echo "==> Running default Pi-local 1B readiness gate: $REMOTE_SMOKE_KIND"
-    NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
-      NANOCAMELID_REPO="$PI_REPO" \
-      NANOCAMELID_READY_CHAT="$READY_CHAT" \
-      NANOCAMELID_READY_SMOKE_KIND="$REMOTE_SMOKE_KIND" \
-      NANOCAMELID_READY_SMOKE_PROMPT="$SMOKE_PROMPT" \
-      NANOCAMELID_READY_SMOKE_TOKENS="$SMOKE_TOKENS" \
-      NANOCAMELID_READY_PROMPT="$READY_PROMPT" \
-      NANOCAMELID_READY_TOKENS="$READY_TOKENS" \
-      NANOCAMELID_READY_TEMP="$READY_TEMP" \
-      ./scripts/pi/ready-1b.sh
+    run_ready_1b
     if [ -n "$REMOTE_CONTEXT_PACKS" ]; then
       echo "==> Running default Pi-local 1B context-pack smoke gate: $REMOTE_CONTEXT_PACKS"
       NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \

@@ -203,6 +203,17 @@ expect_output() {
   fi
 }
 
+expect_no_output() {
+  local description="$1"
+  local unexpected="$2"
+  shift 2
+
+  if "$@" | grep -F "$unexpected" >/dev/null; then
+    echo "Unexpected output found for $description: $unexpected" >&2
+    exit 1
+  fi
+}
+
 mkdir -p "$CARGO_TARGET_DIR"
 
 echo "==> Cargo target dir: $CARGO_TARGET_DIR"
@@ -351,6 +362,9 @@ env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_REMOTE_SMOKE_KIND=bad ./scripts/remot
 
 echo "==> Checking remote Pi build launcher ignores direct chat env when readiness chat is disabled..."
 env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build no-chat readiness command" "readiness_command: NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_SMOKE_KIND=chat" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_no_output "remote_build no-chat omits direct chat token env" "NANOCAMELID_READY_TOKENS=0" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_no_output "remote_build no-chat omits direct chat temp env" "NANOCAMELID_READY_TEMP=bad" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher plans optional context packs..."
 expect_output "remote_build context-pack dry run" "context_pack_command: NANOCAMELID_CONTEXT_PACKS=512\\,1024 ./scripts/pi/context-pack-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8" env NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
