@@ -191,47 +191,32 @@ fn main() -> ExitCode {
             }
 
             match args.get(1).map(String::as_str) {
-                Some("q8-dot") => {
-                    let iterations = args
-                        .get(2)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(q8::DEFAULT_DOT_BENCH_ITERATIONS);
-                    let runs = args
-                        .get(3)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
-                    bench_q8_dot(iterations, runs)
-                }
-                Some("q4-layout") => {
-                    let rows = args
-                        .get(2)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(q8::DEFAULT_Q4_LAYOUT_BENCH_ROWS);
-                    let cols = args
-                        .get(3)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(q8::DEFAULT_Q4_LAYOUT_BENCH_COLS);
-                    let runs = args
-                        .get(4)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
-                    bench_q4_layout(rows, cols, runs)
-                }
-                Some("q4-prefill") => {
-                    let prompt_len = args
-                        .get(2)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(DEFAULT_Q4_PREFILL_PROMPT_LEN);
-                    let batch_size = args
-                        .get(3)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(DEFAULT_Q4_PREFILL_BATCH);
-                    let runs = args
-                        .get(4)
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(DEFAULT_Q4_PREFILL_RUNS);
-                    bench_q4_prefill(prompt_len, batch_size, runs)
-                }
+                Some("q8-dot") => match parse_bench_q8_dot_args(&args[2..]) {
+                    Ok(parsed) => bench_q8_dot(parsed.iterations, parsed.runs),
+                    Err(err) => {
+                        eprintln!("{err}");
+                        print_help(HelpTopic::Bench);
+                        ExitCode::from(2)
+                    }
+                },
+                Some("q4-layout") => match parse_bench_q4_layout_args(&args[2..]) {
+                    Ok(parsed) => bench_q4_layout(parsed.rows, parsed.cols, parsed.runs),
+                    Err(err) => {
+                        eprintln!("{err}");
+                        print_help(HelpTopic::Bench);
+                        ExitCode::from(2)
+                    }
+                },
+                Some("q4-prefill") => match parse_bench_q4_prefill_args(&args[2..]) {
+                    Ok(parsed) => {
+                        bench_q4_prefill(parsed.prompt_len, parsed.batch_size, parsed.runs)
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        print_help(HelpTopic::Bench);
+                        ExitCode::from(2)
+                    }
+                },
                 Some(other) => {
                     eprintln!("unknown benchmark: {other}");
                     print_help(HelpTopic::Bench);
@@ -1073,6 +1058,26 @@ struct Ready1BArgs {
     dry_run: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct BenchQ8DotArgs {
+    iterations: usize,
+    runs: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BenchQ4LayoutArgs {
+    rows: usize,
+    cols: usize,
+    runs: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BenchQ4PrefillArgs {
+    prompt_len: usize,
+    batch_size: usize,
+    runs: usize,
+}
+
 fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
     let (workspace, q4_exists) = llama32_1b_workspace_defaults();
     parse_generate_args_with_env_and_workspace(
@@ -1640,6 +1645,58 @@ fn reject_extra_positionals(
     } else {
         Ok(())
     }
+}
+
+fn parse_bench_q8_dot_args(args: &[String]) -> Result<BenchQ8DotArgs, &'static str> {
+    let iterations = parse_optional_positive_usize(
+        args.first(),
+        "q8-dot iterations must be a positive integer",
+    )?
+    .unwrap_or(q8::DEFAULT_DOT_BENCH_ITERATIONS);
+    let runs =
+        parse_optional_positive_usize(args.get(1), "q8-dot runs must be a positive integer")?
+            .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
+    reject_extra_positionals(args, 2, "unexpected extra q8-dot benchmark argument")?;
+
+    Ok(BenchQ8DotArgs { iterations, runs })
+}
+
+fn parse_bench_q4_layout_args(args: &[String]) -> Result<BenchQ4LayoutArgs, &'static str> {
+    let rows =
+        parse_optional_positive_usize(args.first(), "q4-layout rows must be a positive integer")?
+            .unwrap_or(q8::DEFAULT_Q4_LAYOUT_BENCH_ROWS);
+    let cols =
+        parse_optional_positive_usize(args.get(1), "q4-layout cols must be a positive integer")?
+            .unwrap_or(q8::DEFAULT_Q4_LAYOUT_BENCH_COLS);
+    let runs =
+        parse_optional_positive_usize(args.get(2), "q4-layout runs must be a positive integer")?
+            .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
+    reject_extra_positionals(args, 3, "unexpected extra q4-layout benchmark argument")?;
+
+    Ok(BenchQ4LayoutArgs { rows, cols, runs })
+}
+
+fn parse_bench_q4_prefill_args(args: &[String]) -> Result<BenchQ4PrefillArgs, &'static str> {
+    let prompt_len = parse_optional_positive_usize(
+        args.first(),
+        "q4-prefill prompt_len must be a positive integer",
+    )?
+    .unwrap_or(DEFAULT_Q4_PREFILL_PROMPT_LEN);
+    let batch_size = parse_optional_positive_usize(
+        args.get(1),
+        "q4-prefill batch_size must be a positive integer",
+    )?
+    .unwrap_or(DEFAULT_Q4_PREFILL_BATCH);
+    let runs =
+        parse_optional_positive_usize(args.get(2), "q4-prefill runs must be a positive integer")?
+            .unwrap_or(DEFAULT_Q4_PREFILL_RUNS);
+    reject_extra_positionals(args, 3, "unexpected extra q4-prefill benchmark argument")?;
+
+    Ok(BenchQ4PrefillArgs {
+        prompt_len,
+        batch_size,
+        runs,
+    })
 }
 
 fn looks_like_gguf_path(value: &str) -> bool {
@@ -4236,13 +4293,15 @@ mod tests {
     use nanocamelid::tokenizer::{SpecialTokens, TokenizerModel};
 
     use super::{
-        ChatTurn, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, HelpTopic, LLAMA32_1B_Q4_MODEL,
+        ChatTurn, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_Q4_PREFILL_BATCH,
+        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, HelpTopic, LLAMA32_1B_Q4_MODEL,
         LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, Smoke1BArgs,
         SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation,
         cpu_model, default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
         is_help_flag, llama32_1b_model_not_found_message, llama32_3b_model_not_found_message,
-        looks_like_gguf_path, parse_cpu_list, parse_generate_args_with_env,
+        looks_like_gguf_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
+        parse_bench_q8_dot_args, parse_cpu_list, parse_generate_args_with_env,
         parse_generate_args_with_env_and_workspace, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
@@ -4589,6 +4648,106 @@ flags\t\t: sse4_2 avx2
         assert!(is_help_flag("-h"));
         assert!(is_help_flag("--help"));
         assert!(!is_help_flag("help"));
+    }
+
+    #[test]
+    fn bench_q8_dot_args_default_and_reject_bad_values() {
+        let defaults = parse_bench_q8_dot_args(&[]).expect("default q8-dot args should parse");
+        assert_eq!(defaults.iterations, q8::DEFAULT_DOT_BENCH_ITERATIONS);
+        assert_eq!(defaults.runs, q8::DEFAULT_DOT_BENCH_RUNS);
+
+        let parsed = parse_bench_q8_dot_args(&["11".to_owned(), "3".to_owned()])
+            .expect("explicit q8-dot args should parse");
+        assert_eq!(parsed.iterations, 11);
+        assert_eq!(parsed.runs, 3);
+
+        assert_eq!(
+            parse_bench_q8_dot_args(&["0".to_owned()]).expect_err("zero iterations should fail"),
+            "q8-dot iterations must be a positive integer"
+        );
+        assert_eq!(
+            parse_bench_q8_dot_args(&["1".to_owned(), "bad".to_owned()])
+                .expect_err("bad runs should fail"),
+            "q8-dot runs must be a positive integer"
+        );
+        assert_eq!(
+            parse_bench_q8_dot_args(&["1".to_owned(), "1".to_owned(), "extra".to_owned()])
+                .expect_err("extra q8-dot arg should fail"),
+            "unexpected extra q8-dot benchmark argument"
+        );
+    }
+
+    #[test]
+    fn bench_q4_layout_args_default_and_reject_bad_values() {
+        let defaults =
+            parse_bench_q4_layout_args(&[]).expect("default q4-layout args should parse");
+        assert_eq!(defaults.rows, q8::DEFAULT_Q4_LAYOUT_BENCH_ROWS);
+        assert_eq!(defaults.cols, q8::DEFAULT_Q4_LAYOUT_BENCH_COLS);
+        assert_eq!(defaults.runs, q8::DEFAULT_DOT_BENCH_RUNS);
+
+        let parsed =
+            parse_bench_q4_layout_args(&["256".to_owned(), "1024".to_owned(), "2".to_owned()])
+                .expect("explicit q4-layout args should parse");
+        assert_eq!(parsed.rows, 256);
+        assert_eq!(parsed.cols, 1024);
+        assert_eq!(parsed.runs, 2);
+
+        assert_eq!(
+            parse_bench_q4_layout_args(&["bad".to_owned()]).expect_err("bad rows should fail"),
+            "q4-layout rows must be a positive integer"
+        );
+        assert_eq!(
+            parse_bench_q4_layout_args(&["1".to_owned(), "0".to_owned()])
+                .expect_err("zero cols should fail"),
+            "q4-layout cols must be a positive integer"
+        );
+        assert_eq!(
+            parse_bench_q4_layout_args(&[
+                "1".to_owned(),
+                "1".to_owned(),
+                "1".to_owned(),
+                "extra".to_owned(),
+            ])
+            .expect_err("extra q4-layout arg should fail"),
+            "unexpected extra q4-layout benchmark argument"
+        );
+    }
+
+    #[test]
+    fn bench_q4_prefill_args_default_and_reject_bad_values() {
+        let defaults =
+            parse_bench_q4_prefill_args(&[]).expect("default q4-prefill args should parse");
+        assert_eq!(defaults.prompt_len, DEFAULT_Q4_PREFILL_PROMPT_LEN);
+        assert_eq!(defaults.batch_size, DEFAULT_Q4_PREFILL_BATCH);
+        assert_eq!(defaults.runs, DEFAULT_Q4_PREFILL_RUNS);
+
+        let parsed =
+            parse_bench_q4_prefill_args(&["96".to_owned(), "8".to_owned(), "2".to_owned()])
+                .expect("explicit q4-prefill args should parse");
+        assert_eq!(parsed.prompt_len, 96);
+        assert_eq!(parsed.batch_size, 8);
+        assert_eq!(parsed.runs, 2);
+
+        assert_eq!(
+            parse_bench_q4_prefill_args(&["0".to_owned()])
+                .expect_err("zero prompt len should fail"),
+            "q4-prefill prompt_len must be a positive integer"
+        );
+        assert_eq!(
+            parse_bench_q4_prefill_args(&["1".to_owned(), "bad".to_owned()])
+                .expect_err("bad batch size should fail"),
+            "q4-prefill batch_size must be a positive integer"
+        );
+        assert_eq!(
+            parse_bench_q4_prefill_args(&[
+                "1".to_owned(),
+                "1".to_owned(),
+                "1".to_owned(),
+                "extra".to_owned(),
+            ])
+            .expect_err("extra q4-prefill arg should fail"),
+            "unexpected extra q4-prefill benchmark argument"
+        );
     }
 
     #[test]
