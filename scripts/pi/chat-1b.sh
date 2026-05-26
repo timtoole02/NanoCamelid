@@ -18,7 +18,7 @@ Model resolution:
 Useful env:
   NANOCAMELID_WORKSPACE          Pi workspace, default /mnt/nanocamelid
   CARGO_TARGET_DIR               Cargo output dir, default /mnt/nanocamelid/target
-  NANOCAMELID_CHAT_SMOKE=0       Skip the pre-chat smoke gate
+  NANOCAMELID_CHAT_SMOKE=0       Skip the pre-chat smoke gate; false/no are also accepted
   NANOCAMELID_CHAT_SMOKE_KIND    Smoke kind: chat, model, q8-chat, or q8-model; default chat
   NANOCAMELID_TEMP               Chat temperature, default 0.0
   NANOCAMELID_MAX_TOKENS         Max tokens per assistant turn, default 64
@@ -84,6 +84,7 @@ TEMP="${1:-${NANOCAMELID_TEMP:-0.0}}"
 MAX_TOKENS="${2:-${NANOCAMELID_MAX_TOKENS:-64}}"
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 SMOKE_ENABLED="${NANOCAMELID_CHAT_SMOKE:-1}"
+SMOKE_ENABLED_LOWER="$(printf '%s' "$SMOKE_ENABLED" | tr '[:upper:]' '[:lower:]')"
 SMOKE_KIND="${NANOCAMELID_CHAT_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_CHAT_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_CHAT_SMOKE_TOKENS:-1}"
@@ -109,15 +110,18 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
-  if [[ "$SMOKE_ENABLED" != "0" ]]; then
-    printf 'smoke_command: nanocamelid smoke 1b %s %s %s %s\n' \
-      "$(shell_quote "$MODEL")" \
-      "$(shell_quote "$SMOKE_KIND")" \
-      "$(shell_quote "$SMOKE_PROMPT")" \
-      "$(shell_quote "$SMOKE_TOKENS")"
-  else
-    echo "smoke_command: skipped"
-  fi
+  case "$SMOKE_ENABLED_LOWER" in
+    0 | false | no)
+      echo "smoke_command: skipped"
+      ;;
+    *)
+      printf 'smoke_command: nanocamelid smoke 1b %s %s %s %s\n' \
+        "$(shell_quote "$MODEL")" \
+        "$(shell_quote "$SMOKE_KIND")" \
+        "$(shell_quote "$SMOKE_PROMPT")" \
+        "$(shell_quote "$SMOKE_TOKENS")"
+      ;;
+  esac
   printf 'tui_command: nanocamelid tui %s %s %s\n' \
     "$(shell_quote "$MODEL")" \
     "$(shell_quote "$TEMP")" \
@@ -162,9 +166,12 @@ exec_nanocamelid() {
   exec cargo run --release -- "$@"
 }
 
-if [[ "$SMOKE_ENABLED" != "0" ]]; then
-  echo "Running $SMOKE_KIND smoke gate before launching 1B chat..."
-  run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
-fi
+case "$SMOKE_ENABLED_LOWER" in
+  0 | false | no) ;;
+  *)
+    echo "Running $SMOKE_KIND smoke gate before launching 1B chat..."
+    run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+    ;;
+esac
 
 exec_nanocamelid tui "$MODEL" "$TEMP" "$MAX_TOKENS"
