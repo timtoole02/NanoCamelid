@@ -202,6 +202,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
   echo "direct_chat: $([[ "$CHAT_ENABLED_LOWER" == "0" || "$CHAT_ENABLED_LOWER" == "false" || "$CHAT_ENABLED_LOWER" == "no" ]] && echo disabled || echo enabled)"
+  printf 'probe_command: '
+  shell_command nanocamelid probe
   printf 'inspect_command: '
   shell_command nanocamelid inspect "$MODEL"
   printf 'smoke_command: '
@@ -243,6 +245,9 @@ if [[ ! -f "$MODEL" ]]; then
   echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
   exit 2
 fi
+
+echo "==> Probing host fast-path support"
+run_nanocamelid probe
 
 echo "==> Inspecting 1B model: $MODEL"
 run_nanocamelid inspect "$MODEL"

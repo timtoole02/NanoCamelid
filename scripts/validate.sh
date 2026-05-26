@@ -208,6 +208,7 @@ expect_failure "model 1b invalid model arg" cargo run -- model 1b not-a-model --
 
 echo "==> Checking 1B readiness CLI dry run..."
 cargo run -- ready 1b --dry-run
+expect_output "ready 1b probe command" "probe_command: nanocamelid probe" cargo run -- ready 1b --dry-run
 
 echo "==> Checking 1B readiness CLI rejects invalid direct chat env..."
 expect_failure "ready 1b invalid direct chat temperature" env NANOCAMELID_READY_TEMP=bad cargo run -- ready 1b --dry-run
@@ -229,6 +230,7 @@ expect_output "smoke-1b selected source" "selected_source: " ./scripts/pi/smoke-
 echo "==> Checking 1B Pi readiness launcher dry run..."
 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b probe command" "probe_command: nanocamelid probe" ./scripts/pi/ready-1b.sh --dry-run
 
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run

@@ -2929,6 +2929,10 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
         );
         println!(
+            "probe_command: {}",
+            shell_command(&["nanocamelid", "probe"])
+        );
+        println!(
             "smoke_command: {}",
             smoke_plan_command("1b", model_path, &smoke)
         );
@@ -2961,6 +2965,8 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     }
 
     println!("NanoCamelid Llama 3.2 1B readiness");
+    println!("==> Probing host fast-path support");
+    print_probe();
     println!("==> Inspecting 1B model: {}", model_path.display());
     let inspect_code = inspect_gguf(model_path);
     if inspect_code != ExitCode::SUCCESS {
