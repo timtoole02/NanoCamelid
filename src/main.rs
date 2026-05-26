@@ -678,7 +678,9 @@ fn print_usage() {
     println!(
         "                                            Compare scalar vs selected Q8 model logits through the tokenizer chat template"
     );
-    println!("  smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]");
+    println!(
+        "  smoke 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
+    );
     println!("                                            Run the default Llama 3.2 1B smoke path");
     println!("  smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]");
     println!("                                            Run the default Llama 3.2 3B smoke path");
@@ -2996,6 +2998,17 @@ fn print_smoke_dry_run(
     }
 
     println!("{title}");
+    if target == "1b" {
+        let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+        let q4_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+        let q8_model_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q8_MODEL);
+
+        println!("workspace: {workspace}");
+        println!("q4_model: {q4_model_path}");
+        println!("q4_exists: {}", Path::new(&q4_model_path).is_file());
+        println!("q8_model: {q8_model_path}");
+        println!("q8_exists: {}", Path::new(&q8_model_path).is_file());
+    }
     println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
