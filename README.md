@@ -613,6 +613,43 @@ rows to test next and model families that are intentionally not claimable yet.
 
 Current Pi 2 evidence, measured on local release builds:
 
+### Fresh GitHub-head Throughput Sweep - 2026-05-26
+
+These rows were rerun from clean GitHub-head release worktrees at commit
+`3229a15` using Raspberry Pi-class ARM64 nodes. Single-Pi rows used
+`nanocamelid chat "<model>" "Say hello in one sentence." 0.0 8` with the
+default fast profile and `NANOCAMELID_CONTEXT_LIMIT=4096`, except Strand 14B
+single-Pi, which used a `2048` context cap. Cluster rows used three Pi nodes and
+the documented split ranges. Short deterministic prompts may stop before the
+requested token count when the model emits EOS.
+
+| Model | Mode | Fresh result |
+| --- | --- | --- |
+| Qwen2.5 0.5B Instruct Q4_0 | Single Pi | 6 tokens in `1.37s` (`4.36 tok/sec`); prompt ingest `0.12s`; generated `Hello, how are you?`. |
+| Qwen2.5-Coder 0.5B Instruct Q4_0 | Single Pi | 8 tokens in `1.45s` (`5.50 tok/sec`); prompt ingest `0.12s`. |
+| Qwen2.5-Coder 0.5B Instruct Q5_K_M | Single Pi | 8 tokens in `1.03s` (`7.80 tok/sec`); prompt ingest `1.48s`. |
+| DeepSeek-R1-Distill-Qwen 1.5B Q4_0 | Single Pi | 8 tokens in `6.05s` (`1.32 tok/sec`); prompt ingest `0.32s`. |
+| Llama 3.2 1B Instruct Q4_0 | Single Pi | 2 tokens in `0.55s` (`3.66 tok/sec`); prompt ingest `0.52s`; generated `Hello!`. |
+| Llama 3.2 1B Instruct Q8_0 | Single Pi | 2 tokens in `0.66s` (`3.04 tok/sec`); prompt ingest `1.01s`; generated `Hello!`. |
+| Llama 3.2 3B Instruct Q4_0 | Single Pi | 2 tokens in `0.95s` (`2.11 tok/sec`); prompt ingest `1.15s`; generated `Hello!`. |
+| Mistral 7B Instruct v0.1 Q4_0 | Single Pi | 8 tokens in `19.70s` (`0.41 tok/sec`); prompt ingest `2.09s`. |
+| Qwen2.5-Coder 7B Instruct Q4_0 | Single Pi | 2 tokens in `5.90s` (`0.34 tok/sec`) on one run and `0.33 tok/sec` on a second Pi; prompt ingest about `1.7s`; generated `Hello!`. |
+| Strand Rust Coder 14B v1 Q6_K | Single Pi, capped context | 2 tokens in `2.38s` (`0.84 tok/sec`); prompt ingest `8.14s`; generated `Hello!`. |
+| Qwen3 0.6B Q8_0 | Single Pi | 8 tokens in `1.26s` (`6.34 tok/sec`); prompt ingest `0.52s`. |
+| Qwen3 1.7B Q8_0 | Single Pi | 8 tokens in `2.80s` (`2.85 tok/sec`); prompt ingest `1.28s`. |
+| Qwen3 4B Q4_0 | Single Pi | 8 tokens in `3.69s` (`2.17 tok/sec`); prompt ingest `1.26s`. |
+| SmolLM2 1.7B Instruct Q4_0 | Single Pi | 2 tokens in `0.41s` (`4.88 tok/sec`); prompt ingest `0.53s`; generated `Hello!`. |
+| SmolLM3 3B Q4_0 | Single Pi | 8 tokens in `2.57s` (`3.11 tok/sec`); prompt ingest `0.98s`; generated `Hello! How can`. |
+| Gemma 3 1B IT Q4_0 | Single Pi | 8 tokens in `4.73s` (`1.69 tok/sec`); prompt ingest `1.06s`. |
+| LFM2 700M Q4_0 | Single Pi | Not runtime-ready: load failed on missing `output_norm.weight`. |
+| LFM2 1.2B Q4_0 | Single Pi | Not runtime-ready: load failed on missing `output_norm.weight`. |
+| LFM2 2.6B Q4_0 | Single Pi | Not runtime-ready: load failed on missing `output_norm.weight`. |
+| Phi 3.5 Mini Instruct Q4_0 | Single Pi | Not runtime-ready: load failed on missing `blk.0.attn_q.weight`. |
+| Strand Rust Coder 14B v1 Q6_K | Three-Pi cluster, `0..16`, `16..32`, `32..48` | 6 tokens in `5.855s` (`1.025 tok/sec`); prompt ingest `8.353s`; result `PASS_GENERATE_UNCHECKED`. |
+| Mixtral 8x7B Instruct v0.1 Q4_0 | Three-Pi cluster, `0..11`, `11..22`, `22..32` | 8 tokens in `22.913s` (`0.349 tok/sec`); prompt ingest `18.522s`; result `PASS_GENERATE_UNCHECKED`. |
+| Qwen2.5-Coder 32B Instruct Q4_0 | Three-Pi cluster, `0..21`, `21..43`, `43..64` | 6 tokens in `20.269s` (`0.296 tok/sec`); prompt ingest `37.796s`; result `PASS_GENERATE_UNCHECKED`. |
+| Llama 3 70B Instruct Q4_0 | Three-Pi cluster, `0..27`, `27..54`, `54..80` | 4 tokens in `24.146s` (`0.166 tok/sec`); prompt ingest `98.769s`; result `PASS_GENERATE_UNCHECKED`. |
+
 - Llama 3.2 1B Instruct Q4_0 short generation, default fast profile:
   `4.18 tok/sec`.
 - Llama 3.2 1B Instruct Q8_0 forced end-to-end readiness run:
