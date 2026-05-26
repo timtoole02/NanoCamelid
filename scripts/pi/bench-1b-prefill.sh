@@ -23,6 +23,7 @@ Useful env:
   NANOCAMELID_PREFILL_PROMPT     Prompt override
   NANOCAMELID_PREFILL_TOKENS     Generated token count, default 2
   NANOCAMELID_PREFILL_TEMP       Temperature, default 0.0
+  NANOCAMELID_CONTEXT_LIMIT      Optional runtime context cap
   --dry-run                      Print the resolved sweep plan without loading the model
 USAGE
 }
@@ -141,6 +142,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
+require_optional_context_limit
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
@@ -226,6 +228,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "prompt: $PROMPT"
   echo "max_tokens: $MAX_TOKENS"
   echo "temp: $TEMP"
+  echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
   echo "batches: ${BATCHES[*]}"
   for batch in "${BATCHES[@]}"; do
     printf 'batch_%s_command: NANOCAMELID_Q8_DOT_SDOT=%s NANOCAMELID_Q8_DOT_KERNEL=%s NANOCAMELID_PREFILL_BATCH=%s nanocamelid chat %s %s %s %s\n' \
@@ -260,6 +263,7 @@ echo "model: $MODEL"
 echo "prompt: $PROMPT"
 echo "max_tokens: $MAX_TOKENS"
 echo "temp: $TEMP"
+echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
 echo "batches: ${BATCHES[*]}"
 
 EXIT_STATUS=0

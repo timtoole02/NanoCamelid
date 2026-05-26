@@ -72,6 +72,9 @@ prompt.
 without requiring the GGUF to exist yet.
 `./scripts/pi/context-pack-1b.sh` reruns the 1B smoke gate across context caps
 from `NANOCAMELID_CONTEXT_PACKS`, defaulting to `512,1024,2048,4096,8192`.
+`./scripts/pi/bench-1b-prefill.sh --dry-run` prints the real 1B prefill batch
+sweep plan and validates any `NANOCAMELID_CONTEXT_LIMIT` cap before the model is
+loaded.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 
