@@ -3145,6 +3145,74 @@ fn apply_attention_heads(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(clippy::needless_range_loop, clippy::manual_is_multiple_of)]
+/// # Safety
+/// This function is unsafe because it performs raw pointer arithmetic and uses unsafe AArch64 intrinsics.
+/// The caller must ensure that:
+/// - `out_head` is valid for writes of size `head_dim`.
+/// - `v_cache` is valid for reads up to `pos * kv_width + kv_h * head_dim + head_dim`.
+/// - `scores` contains at least `pos + 1` elements.
+pub unsafe fn accumulate_weighted_v_head_aarch64(
+    out_head: &mut [f32],
+    v_cache: &[f32],
+    scores: &[f32],
+    kv_width: usize,
+    kv_h: usize,
+    head_dim: usize,
+    pos: usize,
+) {
+    use std::arch::aarch64::{vdupq_n_f32, vld1q_f32, vmlaq_f32, vst1q_f32};
+
+    if head_dim % 16 == 0 {
+        let chunks = head_dim / 16;
+        for chunk_idx in 0..chunks {
+            let offset = chunk_idx * 16;
+
+            unsafe {
+                // 1. Initialize register accumulators to 0
+                let mut acc0 = vdupq_n_f32(0.0);
+                let mut acc1 = vdupq_n_f32(0.0);
+                let mut acc2 = vdupq_n_f32(0.0);
+                let mut acc3 = vdupq_n_f32(0.0);
+
+                // 2. Loop over sequence tokens - accumulating directly in CPU registers!
+                for p in 0..=pos {
+                    let scale_vec = vdupq_n_f32(scores[p]);
+                    let v_ptr = v_cache
+                        .as_ptr()
+                        .add(p * kv_width + kv_h * head_dim + offset);
+
+                    let v0 = vld1q_f32(v_ptr);
+                    let v1 = vld1q_f32(v_ptr.add(4));
+                    let v2 = vld1q_f32(v_ptr.add(8));
+                    let v3 = vld1q_f32(v_ptr.add(12));
+
+                    acc0 = vmlaq_f32(acc0, v0, scale_vec);
+                    acc1 = vmlaq_f32(acc1, v1, scale_vec);
+                    acc2 = vmlaq_f32(acc2, v2, scale_vec);
+                    acc3 = vmlaq_f32(acc3, v3, scale_vec);
+                }
+
+                // 3. Store the accumulated values once at the end!
+                let dst_ptr = out_head.as_mut_ptr().add(offset);
+                vst1q_f32(dst_ptr, acc0);
+                vst1q_f32(dst_ptr.add(4), acc1);
+                vst1q_f32(dst_ptr.add(8), acc2);
+                vst1q_f32(dst_ptr.add(12), acc3);
+            }
+        }
+    } else {
+        // Fallback for non-16-multiple head_dims
+        for p in 0..=pos {
+            let v_head =
+                &v_cache[p * kv_width + kv_h * head_dim..p * kv_width + (kv_h + 1) * head_dim];
+            add_weighted_f32(out_head, v_head, scores[p]);
+        }
+    }
+}
+
 fn apply_attention_head(
     out_head: &mut [f32],
     scores: &mut [f32],
@@ -3164,10 +3232,27 @@ fn apply_attention_head(
             }
             softmax(&mut scores[0..=input.pos]);
 
-            for (p, &score) in scores.iter().enumerate().take(input.pos + 1) {
-                let v_head = &v_cache[p * input.cache_kv_width + kv_h * input.head_dim
-                    ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
-                add_weighted_f32(out_head, v_head, score);
+            #[cfg(target_arch = "aarch64")]
+            {
+                unsafe {
+                    accumulate_weighted_v_head_aarch64(
+                        out_head,
+                        v_cache,
+                        scores,
+                        input.cache_kv_width,
+                        kv_h,
+                        input.head_dim,
+                        input.pos,
+                    );
+                }
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                for (p, &score) in scores.iter().enumerate().take(input.pos + 1) {
+                    let v_head = &v_cache[p * input.cache_kv_width + kv_h * input.head_dim
+                        ..p * input.cache_kv_width + (kv_h + 1) * input.head_dim];
+                    add_weighted_f32(out_head, v_head, score);
+                }
             }
         }
         (KvCacheSlice::F16(k_cache), KvCacheSlice::F16(v_cache)) => {
@@ -5228,5 +5313,60 @@ mod tests {
         assert!((data[1] - 1.0_f32.sin()).abs() < 1e-6);
         assert_eq!(data[2], 10.0);
         assert_eq!(data[3], 20.0);
+    }
+
+    #[test]
+    fn accumulate_weighted_v_head_aarch64_matches_reference() {
+        let head_dim = 128;
+        let pos = 50;
+        let kv_width = head_dim;
+        let kv_h = 0;
+
+        let mut v_cache = vec![0.0_f32; (pos + 1) * kv_width];
+        for (i, val) in v_cache.iter_mut().enumerate() {
+            *val = ((i * 17 + 23) % 97) as f32 * 0.0625;
+        }
+
+        let mut scores = vec![0.0_f32; pos + 1];
+        for (i, val) in scores.iter_mut().enumerate() {
+            *val = ((i * 3 + 7) % 31) as f32 * 0.03125;
+        }
+
+        let mut expected = vec![0.0_f32; head_dim];
+        for p in 0..=pos {
+            let v_head =
+                &v_cache[p * kv_width + kv_h * head_dim..p * kv_width + (kv_h + 1) * head_dim];
+            add_weighted_f32(&mut expected, v_head, scores[p]);
+        }
+
+        let mut candidate = vec![0.0_f32; head_dim];
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe {
+                super::accumulate_weighted_v_head_aarch64(
+                    &mut candidate,
+                    &v_cache,
+                    &scores,
+                    kv_width,
+                    kv_h,
+                    head_dim,
+                    pos,
+                );
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            candidate.copy_from_slice(&expected);
+        }
+
+        for i in 0..head_dim {
+            let diff = (candidate[i] - expected[i]).abs();
+            assert!(
+                diff < 1e-5,
+                "Mismatch at index {i}: candidate={:?}, expected={:?}",
+                candidate[i],
+                expected[i]
+            );
+        }
     }
 }
