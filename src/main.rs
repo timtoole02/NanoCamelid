@@ -3222,6 +3222,28 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
     println!("selected_exists: {}", model_path.is_file());
 
     if parsed.dry_run {
+        let model_arg = model_path.display().to_string();
+        let smoke_tokens = DEFAULT_1B_SMOKE_TOKENS.to_string();
+        println!(
+            "inspect_command: {}",
+            shell_command(&["nanocamelid", "inspect", &model_arg])
+        );
+        println!(
+            "smoke_command: {}",
+            shell_command(&[
+                "nanocamelid",
+                "smoke",
+                "1b",
+                &model_arg,
+                "chat",
+                DEFAULT_1B_SMOKE_PROMPT,
+                &smoke_tokens,
+            ])
+        );
+        println!(
+            "ready_command: {}",
+            shell_command(&["nanocamelid", "ready", "1b", &model_arg])
+        );
         return ExitCode::SUCCESS;
     }
 

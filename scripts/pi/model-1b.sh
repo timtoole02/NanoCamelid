@@ -101,6 +101,15 @@ case "$MODEL_SOURCE" in
     ;;
 esac
 
+shell_command() {
+  printf '%q' "$1"
+  shift
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
+}
+
 echo "NanoCamelid Llama 3.2 1B model audit"
 echo "workspace: $WORKSPACE"
 echo "q4_model: $Q4_MODEL"
@@ -111,7 +120,17 @@ echo "selected_source: $MODEL_SOURCE"
 echo "selected_model: $MODEL"
 echo "selected_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
 
-if [[ -f "$MODEL" || "$DRY_RUN" == "1" ]]; then
+if [[ "$DRY_RUN" == "1" ]]; then
+  printf 'inspect_command: '
+  shell_command nanocamelid inspect "$MODEL"
+  printf 'smoke_command: '
+  shell_command nanocamelid smoke 1b "$MODEL" chat "Say hello in one sentence." 8
+  printf 'ready_command: '
+  shell_command nanocamelid ready 1b "$MODEL"
+  exit 0
+fi
+
+if [[ -f "$MODEL" ]]; then
   exit 0
 fi
 
