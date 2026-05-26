@@ -10,8 +10,12 @@ use rayon::prelude::*;
 use std::{
     collections::HashMap,
     env,
+    ffi::c_void,
     hash::{Hash, Hasher},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -147,11 +151,211 @@ pub fn trace_snapshot() -> Vec<(&'static str, TraceStats)> {
     rows
 }
 
+pub struct WorkerState {
+    pub task_id: AtomicU32,
+    pub completed_id: AtomicU32,
+    pub active: AtomicBool,
+}
+
+pub struct SpinThreadPool {
+    _workers: Vec<std::thread::JoinHandle<()>>,
+    states: Vec<Arc<WorkerState>>,
+    _terminated: Arc<AtomicBool>,
+    pub thread_count: usize,
+}
+
+type MatmulRowFn = unsafe fn(*const c_void, usize, *mut f32);
+
+struct MatmulWork {
+    compute_row: *const c_void,
+    compute: MatmulRowFn,
+    out: *mut f32,
+    len: usize,
+}
+
+static ACTIVE_WORK: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+fn active_work_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+unsafe fn compute_matmul_row<F>(compute_row: *const c_void, row: usize, out: *mut f32)
+where
+    F: Fn(usize, &mut f32) + Sync,
+{
+    let compute_row = unsafe { &*(compute_row as *const F) };
+    let out = unsafe { &mut *out };
+    compute_row(row, out);
+}
+
+fn get_asymmetric_slice(len: usize, thread_idx: usize, thread_count: usize) -> (usize, usize) {
+    if thread_count == 3 {
+        // Asymmetric partition: Master (thread_idx = 0) gets 10%, Workers 0, 1, 2 get 30% each.
+        let master_share = len / 10;
+        let remaining = len - master_share;
+        let worker_share = remaining / 3;
+
+        if thread_idx == 0 {
+            (0, master_share)
+        } else {
+            let w_idx = thread_idx - 1;
+            let start = master_share + w_idx * worker_share;
+            let end = if w_idx == 2 {
+                len
+            } else {
+                std::cmp::min(start + worker_share, len)
+            };
+            (start, end)
+        }
+    } else {
+        // Uniform fallback if thread count is different
+        let chunk_size = (len + thread_count) / (thread_count + 1);
+        let start = thread_idx * chunk_size;
+        let end = std::cmp::min(start + chunk_size, len);
+        (start, end)
+    }
+}
+
+impl SpinThreadPool {
+    pub fn new(thread_count: usize) -> Self {
+        let terminated = Arc::new(AtomicBool::new(false));
+        let mut workers = Vec::with_capacity(thread_count);
+        let mut states = Vec::with_capacity(thread_count);
+
+        for i in 0..thread_count {
+            let state = Arc::new(WorkerState {
+                task_id: AtomicU32::new(0),
+                completed_id: AtomicU32::new(0),
+                active: AtomicBool::new(false),
+            });
+            states.push(state.clone());
+
+            let term = terminated.clone();
+            let state_clone = state.clone();
+            let handle = std::thread::spawn(move || {
+                // Pin worker threads strictly to isolated cores using core_affinity
+                let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+                if i + 1 < core_ids.len() {
+                    core_affinity::set_for_current(core_ids[i + 1]);
+                }
+
+                // Tight, zero-latency spin loop
+                while !term.load(Ordering::Relaxed) {
+                    let task = state_clone.task_id.load(Ordering::Acquire);
+                    let completed = state_clone.completed_id.load(Ordering::Relaxed);
+
+                    if task > completed {
+                        if state_clone.active.load(Ordering::Relaxed) {
+                            let work_ptr = ACTIVE_WORK.load(Ordering::Acquire);
+                            if !work_ptr.is_null() {
+                                let work = unsafe { &*(work_ptr as *const MatmulWork) };
+                                let (start, end) =
+                                    get_asymmetric_slice(work.len, i + 1, thread_count);
+                                if start < end {
+                                    for r in start..end {
+                                        unsafe {
+                                            (work.compute)(work.compute_row, r, work.out.add(r));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        state_clone.completed_id.store(task, Ordering::Release);
+                    } else {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+            workers.push(handle);
+        }
+
+        Self {
+            _workers: workers,
+            states,
+            _terminated: terminated,
+            thread_count,
+        }
+    }
+}
+
+fn get_spin_pool() -> Option<&'static SpinThreadPool> {
+    static INITIALIZED: OnceLock<Option<SpinThreadPool>> = OnceLock::new();
+    INITIALIZED
+        .get_or_init(|| {
+            let enabled = env::var("NANOCAMELID_SPIN_POOL")
+                .ok()
+                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+                .unwrap_or_else(|| cfg!(target_arch = "aarch64"));
+
+            if enabled {
+                let cores = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
+                let thread_count = if cores > 1 { cores - 1 } else { 1 };
+                Some(SpinThreadPool::new(thread_count))
+            } else {
+                None
+            }
+        })
+        .as_ref()
+}
+
 fn for_each_matmul_row<F>(out: &mut [f32], compute_row: F)
 where
     F: Fn(usize, &mut f32) + Sync,
 {
     if should_parallelize_matmul(out.len()) {
+        if let Some(pool) = get_spin_pool() {
+            let Ok(_work_guard) = active_work_lock().lock() else {
+                out.par_iter_mut()
+                    .with_min_len(matmul_min_rows())
+                    .enumerate()
+                    .for_each(|(r, out_val)| compute_row(r, out_val));
+                return;
+            };
+            let work = MatmulWork {
+                compute_row: &compute_row as *const F as *const c_void,
+                compute: compute_matmul_row::<F>,
+                out: out.as_mut_ptr(),
+                len: out.len(),
+            };
+            ACTIVE_WORK.store(&work as *const _ as *mut c_void, Ordering::Release);
+
+            // Master thread increments TASK_ID to start workers
+            static TASK_ID: AtomicU32 = AtomicU32::new(1);
+            let current_task = TASK_ID.fetch_add(1, Ordering::Relaxed);
+
+            // Dispatch task to workers
+            for state in &pool.states {
+                state.active.store(true, Ordering::Relaxed);
+                state.task_id.store(current_task, Ordering::Release);
+            }
+
+            // Master thread handles chunk 0 directly on the calling thread!
+            let (master_start, master_end) = get_asymmetric_slice(out.len(), 0, pool.thread_count);
+            for (r, out_val) in out
+                .iter_mut()
+                .enumerate()
+                .take(master_end)
+                .skip(master_start)
+            {
+                compute_row(r, out_val);
+            }
+
+            // Master thread waits for all workers to complete in nanoseconds
+            for state in &pool.states {
+                while state.completed_id.load(Ordering::Acquire) < current_task {
+                    std::hint::spin_loop();
+                }
+                state.active.store(false, Ordering::Relaxed);
+            }
+
+            ACTIVE_WORK.store(std::ptr::null_mut(), Ordering::Release);
+            return;
+        }
+
+        // Rayon fallback
         out.par_iter_mut()
             .with_min_len(matmul_min_rows())
             .enumerate()
@@ -3953,6 +4157,23 @@ mod tests {
             *scale = ((seed + idx as i16 * 3).rem_euclid(15) - 7) as i8;
         }
         Q6KBlock::from_parts(ql, qh, scales, scale_bits)
+    }
+
+    fn covered_matmul_rows(len: usize, worker_count: usize) -> Vec<usize> {
+        let mut rows = Vec::new();
+        for thread_idx in 0..=worker_count {
+            let (start, end) = super::get_asymmetric_slice(len, thread_idx, worker_count);
+            rows.extend(start..end);
+        }
+        rows
+    }
+
+    #[test]
+    fn spin_pool_slices_cover_each_row_once_for_pi_and_fallback_counts() {
+        for &(len, worker_count) in &[(129, 3), (256, 3), (129, 1), (257, 5)] {
+            let rows = covered_matmul_rows(len, worker_count);
+            assert_eq!(rows, (0..len).collect::<Vec<_>>());
+        }
     }
 
     #[test]
