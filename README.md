@@ -236,6 +236,8 @@ Latest Mixtral cluster chat evidence:
 - prompt: `Write one short sentence about Raspberry Pi clusters.`
 - rendered prompt: `<s>[INST] Write one short sentence about Raspberry Pi clusters. [/INST]`
 - generated text: `Raspberry Pi clusters are groups of`
+- generated tokens: `8`
+- throughput: about `1.12 tok/sec`
 
 Use the Pi launcher to print the exact current run plan without hard-coding node
 addresses in the repo:
@@ -243,8 +245,6 @@ addresses in the repo:
 ```bash
 ./scripts/pi/mixtral-cluster.sh --dry-run
 ```
-- generated tokens: `8`
-- throughput: about `1.12 tok/sec`
 
 ## Runtime Design
 
