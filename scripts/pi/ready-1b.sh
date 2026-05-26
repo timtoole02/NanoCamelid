@@ -222,6 +222,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
   echo "direct_chat: $([[ "$CHAT_ENABLED_LOWER" == "0" || "$CHAT_ENABLED_LOWER" == "false" || "$CHAT_ENABLED_LOWER" == "no" ]] && echo disabled || echo enabled)"
+  echo "status_on_success: ready_1b_status: ok"
   printf 'probe_command: '
   shell_command nanocamelid probe
   printf 'model_command: '
@@ -286,9 +287,11 @@ run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 case "$CHAT_ENABLED_LOWER" in
 0 | false | no)
   echo "==> Skipping direct 1B chat turn; NANOCAMELID_READY_CHAT=$CHAT_ENABLED"
+  echo "ready_1b_status: ok"
   exit 0
   ;;
 esac
 
 echo "==> Running direct 1B chat turn"
 run_nanocamelid chat "$MODEL" "$CHAT_PROMPT" "$CHAT_TEMP" "$CHAT_TOKENS"
+echo "ready_1b_status: ok"

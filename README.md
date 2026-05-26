@@ -72,7 +72,8 @@ inspect, scalar-vs-selected smoke validation, and one direct chat turn. Set
 `NANOCAMELID_READY_CHAT=0` for probe+audit+inspect+smoke only, or set
 `NANOCAMELID_READY_PROMPT`, `NANOCAMELID_READY_TOKENS`, and
 `NANOCAMELID_READY_TEMP` when the direct chat turn should differ from the smoke
-prompt.
+prompt. Successful readiness runs end with `ready_1b_status: ok`; dry runs
+print `status_on_success: ready_1b_status: ok` for log collectors.
 `./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
 without requiring the GGUF to exist yet.
 `./scripts/pi/context-pack-1b.sh` reruns the 1B smoke gate across context caps
@@ -457,7 +458,8 @@ model audit command, and direct-chat gate without loading the GGUF. For
 non-interactive automation, the CLI and `ready-1b.sh` also honor
 `NANOCAMELID_READY_SMOKE_KIND`, `NANOCAMELID_READY_SMOKE_PROMPT`, and
 `NANOCAMELID_READY_SMOKE_TOKENS` as smoke defaults before the final direct chat
-turn.
+turn. Successful runs print `ready_1b_status: ok` as the final readiness
+marker.
 
 For the supported Llama 3.2 3B Instruct Q4_0 row, place
 `Llama-3.2-3B-Instruct-Q4_0.gguf` under the same `models/` directory and use the

@@ -3403,6 +3403,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             "direct_chat: {}",
             if chat_enabled { "enabled" } else { "disabled" }
         );
+        println!("status_on_success: ready_1b_status: ok");
         println!(
             "probe_command: {}",
             shell_command(&["nanocamelid", "probe"])
@@ -3482,16 +3483,21 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             READY_CHAT_ENV
         };
         println!("==> Skipping direct 1B chat turn; {reason}");
+        println!("ready_1b_status: ok");
         return ExitCode::SUCCESS;
     }
 
     println!("==> Running direct 1B chat turn");
-    run_chat(
+    let chat_code = run_chat(
         model_path,
         &chat_prompt,
         chat_temp.expect("chat temp should be parsed when chat is on"),
         chat_tokens.expect("chat tokens should be parsed when chat is on"),
-    )
+    );
+    if chat_code == ExitCode::SUCCESS {
+        println!("ready_1b_status: ok");
+    }
+    chat_code
 }
 
 fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
