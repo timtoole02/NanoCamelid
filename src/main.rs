@@ -159,11 +159,17 @@ fn main() -> ExitCode {
             }
 
             match parse_tui_args(&args[1..]) {
-                Ok(parsed) => run_chat_tui(
-                    Path::new(&parsed.model_path),
-                    parsed.temp,
-                    parsed.max_tokens,
-                ),
+                Ok(parsed) => {
+                    if parsed.dry_run {
+                        print_tui_dry_run(&parsed)
+                    } else {
+                        run_chat_tui(
+                            Path::new(&parsed.model_path),
+                            parsed.temp,
+                            parsed.max_tokens,
+                        )
+                    }
+                }
                 Err(err) => {
                     eprintln!("{err}");
                     print_help(HelpTopic::Tui);
@@ -822,15 +828,20 @@ fn print_tui_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid tui <model.gguf> [temp] [max_tokens]");
-    println!("  nanocamelid tui 1b [temp] [max_tokens]");
-    println!("  nanocamelid tui 3b [temp] [max_tokens]");
-    println!("  nanocamelid tui [temp] [max_tokens]   with NANOCAMELID_MODEL_GGUF set");
+    println!("  nanocamelid tui 1b [temp] [max_tokens] [--dry-run]");
+    println!("  nanocamelid tui 3b [temp] [max_tokens] [--dry-run]");
+    println!("  nanocamelid tui [temp] [max_tokens] [--dry-run]   with NANOCAMELID_MODEL_GGUF set");
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
     println!("  [temp]                                    Sampling temperature, default 0.0");
     println!(
         "  [max_tokens]                              Maximum tokens per assistant turn, default 128"
+    );
+    println!();
+    println!("Options:");
+    println!(
+        "  --dry-run                                Print the resolved TUI launch plan without loading the model"
     );
     println!();
     println!("Env:");
@@ -1049,6 +1060,7 @@ struct TuiArgs {
     model_path: String,
     temp: f32,
     max_tokens: usize,
+    dry_run: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1273,30 +1285,44 @@ fn parse_tui_args_with_env_and_workspace(
     workspace: &str,
     q4_exists: bool,
 ) -> Result<TuiArgs, &'static str> {
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => positionals.push(arg.clone()),
+        }
+    }
+
     let (model_path, option_idx) = parse_model_path_position(
-        args,
+        &positionals,
         env_model_path,
         workspace,
         q4_exists,
         "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
     )?;
 
-    let temp = args
+    let temp = positionals
         .get(option_idx)
         .map(|value| parse_non_negative_f32(value, "tui temp must be a non-negative number"))
         .transpose()?
         .unwrap_or(0.0);
     let max_tokens = parse_optional_positive_usize(
-        args.get(option_idx + 1),
+        positionals.get(option_idx + 1),
         "tui max_tokens must be a positive integer",
     )?
     .unwrap_or(128);
-    reject_extra_positionals(args, option_idx + 2, "unexpected extra tui argument")?;
+    reject_extra_positionals(
+        &positionals,
+        option_idx + 2,
+        "unexpected extra tui argument",
+    )?;
 
     Ok(TuiArgs {
         model_path,
         temp,
         max_tokens,
+        dry_run,
     })
 }
 
@@ -2682,6 +2708,32 @@ fn duration_ms_json(durations: &[std::time::Duration]) -> String {
         .map(|duration| format!("{:.6}", duration.as_secs_f64() * 1000.0))
         .collect::<Vec<_>>();
     format!("[{}]", values.join(","))
+}
+
+fn print_tui_dry_run(parsed: &TuiArgs) -> ExitCode {
+    if let Err(err) = validate_context_limit_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+
+    let model_path = Path::new(&parsed.model_path);
+    println!("NanoCamelid TUI launch dry run");
+    println!("model: {}", model_path.display());
+    println!("model_exists: {}", model_path.is_file());
+    println!("temp: {}", parsed.temp);
+    println!("max_tokens: {}", parsed.max_tokens);
+    println!("context_limit: {}", context_limit_plan_value());
+    println!(
+        "tui_command: {}",
+        shell_command(&[
+            "nanocamelid",
+            "tui",
+            &model_path.display().to_string(),
+            &parsed.temp.to_string(),
+            &parsed.max_tokens.to_string(),
+        ])
+    );
+    ExitCode::SUCCESS
 }
 
 fn run_inspect(parsed: InspectArgs) -> ExitCode {
@@ -5614,6 +5666,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
         assert_eq!(parsed.temp, 0.2);
         assert_eq!(parsed.max_tokens, 64);
+        assert!(!parsed.dry_run);
     }
 
     #[test]
@@ -5627,6 +5680,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 32);
+        assert!(!parsed.dry_run);
     }
 
     #[test]
@@ -5645,6 +5699,7 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
+        assert!(!parsed.dry_run);
     }
 
     #[test]
@@ -5663,6 +5718,31 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
+        assert!(!parsed.dry_run);
+    }
+
+    #[test]
+    fn tui_args_accept_dry_run_anywhere() {
+        let parsed = parse_tui_args_with_env_and_workspace(
+            &[
+                "--dry-run".to_owned(),
+                "llama32-1b".to_owned(),
+                "0.1".to_owned(),
+                "64".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("1B TUI dry-run alias should parse");
+
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(parsed.temp, 0.1);
+        assert_eq!(parsed.max_tokens, 64);
+        assert!(parsed.dry_run);
     }
 
     #[test]

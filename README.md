@@ -337,7 +337,7 @@ non-`/Volumes` target. Set `CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` to an
 external drive path first so the repo does not create build artifacts on the
 internal disk. On prepared Pi workspaces, the same script defaults to
 `/mnt/nanocamelid/target`. The gate also runs the `model 1b`, `inspect 1b`,
-`smoke 1b`, and `ready 1b` CLI dry runs, plus the Pi `smoke-1b.sh`,
+`smoke 1b`, `ready 1b`, and `tui 1b` CLI dry runs, plus the Pi `smoke-1b.sh`,
 `ready-1b.sh`, `chat-1b.sh`, and `bench-1b-prefill.sh` launcher dry runs, plus
 the `context-pack-1b.sh` and installer dry runs, so the default Llama 3.2 1B
 command paths and build-entry target-dir guard stay covered without requiring
@@ -472,9 +472,13 @@ Optional arguments set the model path, temperature, and maximum assistant output
 tokens:
 
 ```bash
+nanocamelid tui 1b --dry-run
 ./scripts/pi/chat-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf 0.0 64
 ./scripts/pi/chat-1b.sh 0.0 64
 ```
+
+Use `nanocamelid tui 1b --dry-run` to verify the resolved 1B TUI launch command
+and context cap from the Rust CLI before loading the GGUF.
 
 `smoke-1b.sh` uses the same kernel defaults, but runs only the smoke gate and
 exits. Its model-selection precedence is a leading `.gguf` argument,
