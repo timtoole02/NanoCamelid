@@ -215,6 +215,9 @@ echo "==> Checking 1B Pi chat launcher dry run..."
 echo "==> Checking 1B Pi chat launcher rejects invalid temperature..."
 expect_failure "chat-1b invalid temperature" env NANOCAMELID_TEMP=bad ./scripts/pi/chat-1b.sh --dry-run
 
+echo "==> Checking 1B Pi chat launcher ignores smoke env when smoke is disabled..."
+env NANOCAMELID_CHAT_SMOKE=0 NANOCAMELID_CHAT_SMOKE_KIND=bad NANOCAMELID_CHAT_SMOKE_TOKENS=bad ./scripts/pi/chat-1b.sh --dry-run
+
 echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run
 
