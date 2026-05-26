@@ -194,6 +194,9 @@ echo "==> Checking 1B readiness CLI rejects invalid direct chat env..."
 expect_failure "ready 1b invalid direct chat temperature" env NANOCAMELID_READY_TEMP=bad cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid direct chat token count" env NANOCAMELID_READY_TOKENS=0 cargo run -- ready 1b --dry-run
 
+echo "==> Checking 1B readiness CLI ignores direct chat env when chat is disabled..."
+env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 cargo run -- ready 1b --no-chat --dry-run
+
 echo "==> Checking 1B model audit dry run..."
 ./scripts/pi/model-1b.sh --dry-run
 
@@ -232,6 +235,9 @@ expect_failure "context-pack-1b invalid context cap" env NANOCAMELID_CONTEXT_PAC
 
 echo "==> Checking 1B Pi readiness launcher rejects invalid temperature..."
 expect_failure "ready-1b invalid temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/pi/ready-1b.sh --dry-run
+
+echo "==> Checking 1B Pi readiness launcher ignores direct chat env when chat is disabled..."
+env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/pi/ready-1b.sh --no-chat --dry-run
 
 echo "==> Checking remote Pi build launcher dry run..."
 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run

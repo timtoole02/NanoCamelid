@@ -149,8 +149,14 @@ case "$CHAT_ENABLED_LOWER" in
     ;;
 esac
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
-require_positive_integer "Direct chat token count" "$CHAT_TOKENS"
-require_non_negative_float "Direct chat temperature" "$CHAT_TEMP"
+case "$CHAT_ENABLED_LOWER" in
+  0 | false | no)
+    ;;
+  *)
+    require_positive_integer "Direct chat token count" "$CHAT_TOKENS"
+    require_non_negative_float "Direct chat temperature" "$CHAT_TEMP"
+    ;;
+esac
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"

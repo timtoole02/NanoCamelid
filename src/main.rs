@@ -2674,22 +2674,27 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         .chat_prompt_override
         .clone()
         .unwrap_or_else(|| ready_chat_prompt(&smoke.prompt));
-    let chat_tokens = match parsed.chat_tokens_override {
-        Some(tokens) => tokens,
-        None => match ready_chat_tokens(smoke.max_tokens) {
-            Ok(tokens) => tokens,
+    let (chat_tokens, chat_temp) = if chat_enabled {
+        let chat_tokens = match parsed.chat_tokens_override {
+            Some(tokens) => tokens,
+            None => match ready_chat_tokens(smoke.max_tokens) {
+                Ok(tokens) => tokens,
+                Err(err) => {
+                    eprintln!("{err}");
+                    return ExitCode::from(2);
+                }
+            },
+        };
+        let chat_temp = match ready_chat_temp() {
+            Ok(temp) => temp,
             Err(err) => {
                 eprintln!("{err}");
                 return ExitCode::from(2);
             }
-        },
-    };
-    let chat_temp = match ready_chat_temp() {
-        Ok(temp) => temp,
-        Err(err) => {
-            eprintln!("{err}");
-            return ExitCode::from(2);
-        }
+        };
+        (Some(chat_tokens), Some(chat_temp))
+    } else {
+        (None, None)
     };
 
     if parsed.dry_run {
@@ -2712,6 +2717,8 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             smoke_plan_command("1b", model_path, &smoke)
         );
         if chat_enabled {
+            let chat_tokens = chat_tokens.expect("chat tokens should be parsed when chat is on");
+            let chat_temp = chat_temp.expect("chat temp should be parsed when chat is on");
             println!("chat_prompt: {chat_prompt}");
             println!("chat_temp: {chat_temp}");
             println!("chat_tokens: {chat_tokens}");
@@ -2764,7 +2771,12 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     }
 
     println!("==> Running direct 1B chat turn");
-    run_chat(model_path, &chat_prompt, chat_temp, chat_tokens)
+    run_chat(
+        model_path,
+        &chat_prompt,
+        chat_temp.expect("chat temp should be parsed when chat is on"),
+        chat_tokens.expect("chat tokens should be parsed when chat is on"),
+    )
 }
 
 fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
