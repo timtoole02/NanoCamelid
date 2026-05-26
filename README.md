@@ -256,7 +256,9 @@ curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts
 ```
 
 The installer clones NanoCamelid, builds the release binary with Cargo, and
-links `nanocamelid` into `~/.local/bin`. Override paths when needed:
+links `nanocamelid` into `~/.local/bin`. On macOS it refuses to build unless
+`CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` points at an external `/Volumes`
+path, matching the local validation guard. Override paths when needed:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | \
@@ -268,6 +270,8 @@ curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts
 On Pi workspaces mounted at `/mnt/nanocamelid`, the installer uses
 `/mnt/nanocamelid/target` by default unless `CARGO_TARGET_DIR` or
 `NANOCAMELID_TARGET_DIR` is set.
+Run `./scripts/install.sh --dry-run` from a checkout to print the resolved plan
+without cloning or building.
 
 Manual checkout still works:
 
@@ -305,8 +309,9 @@ external drive path first so the repo does not create build artifacts on the
 internal disk. On prepared Pi workspaces, the same script defaults to
 `/mnt/nanocamelid/target`. The gate also runs `cargo run -- ready 1b --dry-run`
 plus the Pi `smoke-1b.sh`, `ready-1b.sh`, `chat-1b.sh`, and
-`bench-1b-prefill.sh` launcher dry runs so the default Llama 3.2 1B command
-paths stay covered without requiring the GGUF during local validation.
+`bench-1b-prefill.sh` launcher dry runs, plus the installer dry run, so the
+default Llama 3.2 1B command paths and build-entry target-dir guard stay covered
+without requiring the GGUF during local validation.
 
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
