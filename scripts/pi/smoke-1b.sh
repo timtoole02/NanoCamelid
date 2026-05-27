@@ -148,6 +148,35 @@ shell_command() {
   printf '\n'
 }
 
+json_string() {
+  local value="$1"
+  local out='"'
+  local i ch
+
+  for ((i = 0; i < ${#value}; i++)); do
+    ch="${value:i:1}"
+    case "$ch" in
+      '"') out+='\"' ;;
+      "\\") out+='\\' ;;
+      $'\n') out+='\n' ;;
+      $'\r') out+='\r' ;;
+      $'\t') out+='\t' ;;
+      *) out+="$ch" ;;
+    esac
+  done
+  out+='"'
+  printf '%s' "$out"
+}
+
+smoke_status_json() {
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s}\n' \
+    "$(json_string "$MODEL")" \
+    "$(json_string "$MODEL_SOURCE")" \
+    "$(json_string "${NANOCAMELID_CONTEXT_LIMIT:-unset}")" \
+    "$SMOKE_KIND" \
+    "$SMOKE_TOKENS"
+}
+
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid Llama 3.2 1B smoke launcher dry run"
   echo "repo: $REPO"
@@ -167,6 +196,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
+  echo "status_on_success: smoke_1b_status: ok"
+  echo "json_on_success: $(smoke_status_json)"
   printf 'smoke_command: '
   shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   exit 0

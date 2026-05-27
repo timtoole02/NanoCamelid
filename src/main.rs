@@ -3270,6 +3270,13 @@ fn print_smoke_dry_run(
     println!("smoke_kind: {}", parsed.kind.label());
     println!("smoke_prompt: {}", parsed.prompt);
     println!("smoke_tokens: {}", parsed.max_tokens);
+    if target == "1b" {
+        println!("status_on_success: smoke_1b_status: ok");
+        println!(
+            "json_on_success: {}",
+            smoke_1b_status_json(model_path, parsed, &context_limit_plan_value())
+        );
+    }
     println!(
         "smoke_command: {}",
         smoke_plan_command(target, model_path, parsed)
@@ -3546,6 +3553,17 @@ fn ready_1b_status_json(
     )
 }
 
+fn smoke_1b_status_json(model_path: &Path, smoke: &Smoke1BArgs, context_limit: &str) -> String {
+    format!(
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{}}}",
+        json_string(&model_path.display().to_string()),
+        json_string(smoke.model_source),
+        json_string(context_limit),
+        smoke.kind.label(),
+        smoke.max_tokens,
+    )
+}
+
 fn json_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -3589,10 +3607,18 @@ fn run_smoke_1b_gate(model_path: &Path, parsed: &Smoke1BArgs) -> ExitCode {
     }
 
     println!("==> Running 1B {} smoke gate", parsed.kind.label());
-    match parsed.kind {
+    let smoke_code = match parsed.kind {
         SmokeKind::Q8Model => smoke_q8_model(model_path, &parsed.prompt, parsed.max_tokens),
         SmokeKind::Q8Chat => smoke_q8_chat(model_path, &parsed.prompt, parsed.max_tokens),
+    };
+    if smoke_code == ExitCode::SUCCESS {
+        println!("smoke_1b_status: ok");
+        println!(
+            "json: {}",
+            smoke_1b_status_json(model_path, parsed, &context_limit_plan_value())
+        );
     }
+    smoke_code
 }
 
 fn context_limit_plan_value() -> String {
@@ -5183,7 +5209,7 @@ mod tests {
         ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        runtime_options_from_gguf, shared_token_prefix_len, shell_command,
+        runtime_options_from_gguf, shared_token_prefix_len, shell_command, smoke_1b_status_json,
         smoke_defaults_from_values, smoke_plan_command, trim_tui_history, tui_prompt_history,
         validate_generation_budget,
     };
@@ -6582,6 +6608,27 @@ flags\t\t: sse4_2 avx2
                 "512"
             ),
             "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"direct_chat\":true,\"chat_tokens\":4}"
+        );
+    }
+
+    #[test]
+    fn smoke_1b_status_json_records_success_plan() {
+        let smoke = Smoke1BArgs {
+            kind: SmokeKind::Q8Model,
+            model_path: "/models/ignored.gguf".to_owned(),
+            model_source: "NANOCAMELID_SMOKE_GGUF",
+            prompt: "Say hello".to_owned(),
+            max_tokens: 2,
+            dry_run: false,
+        };
+
+        assert_eq!(
+            smoke_1b_status_json(
+                Path::new("/models/Llama-3.2-1B-Instruct-Q8_0.gguf"),
+                &smoke,
+                "unset"
+            ),
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2}"
         );
     }
 

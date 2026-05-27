@@ -63,6 +63,8 @@ the exact follow-up `inspect`, `smoke`, and `ready` commands.
 `smoke 1b` now runs the strict Llama 3.2 1B shape audit before the
 scalar-vs-selected smoke validation; dry runs print `shape_audit: enabled` so
 automation can confirm the guard is in the plan without opening the GGUF.
+Successful 1B smoke runs end with `smoke_1b_status: ok` and a compact `json:`
+status row; dry runs print the same row as `json_on_success:`.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override. `generate 1b --dry-run` and `chat 1b --dry-run` print the resolved
