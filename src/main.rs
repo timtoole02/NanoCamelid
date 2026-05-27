@@ -3636,7 +3636,7 @@ struct ModelShapeAudit {
 
 fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
     let mut mismatches = Vec::new();
-    match model::LlamaModelConfig::from_gguf(gguf) {
+    let config = match model::LlamaModelConfig::from_gguf(gguf) {
         Ok(config) => {
             check_shape_value(
                 &mut mismatches,
@@ -3688,8 +3688,69 @@ fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
                     config.rope_freq_base
                 ));
             }
+            Some(config)
         }
-        Err(err) => mismatches.push(format!("config_error {err}")),
+        Err(err) => {
+            mismatches.push(format!("config_error {err}"));
+            None
+        }
+    };
+    if let Some(config) = &config {
+        let embedding = config.embedding_length as u64;
+        let vocab = config.vocab_size as u64;
+        let attention_output = config.attention_output_width as u64;
+        let kv_width = config.kv_width as u64;
+        let feed_forward = config.feed_forward_length as u64;
+
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "token_embd.weight",
+            &[embedding, vocab],
+        );
+        check_tensor_dimensions(&mut mismatches, gguf, "output_norm.weight", &[embedding]);
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "blk.0.attn_q.weight",
+            &[embedding, attention_output],
+        );
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "blk.0.attn_k.weight",
+            &[embedding, kv_width],
+        );
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "blk.0.attn_v.weight",
+            &[embedding, kv_width],
+        );
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "blk.0.attn_output.weight",
+            &[attention_output, embedding],
+        );
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "blk.0.ffn_gate.weight",
+            &[embedding, feed_forward],
+        );
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "blk.0.ffn_up.weight",
+            &[embedding, feed_forward],
+        );
+        check_tensor_dimensions(
+            &mut mismatches,
+            gguf,
+            "blk.0.ffn_down.weight",
+            &[feed_forward, embedding],
+        );
     }
     match tokenizer::Tokenizer::from_gguf(gguf) {
         Ok(tokenizer) => check_shape_value(
@@ -3705,6 +3766,22 @@ fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
         label: "llama32_1b",
         ready: mismatches.is_empty(),
         mismatches,
+    }
+}
+
+fn check_tensor_dimensions(
+    mismatches: &mut Vec<String>,
+    gguf: &gguf::GgufFile,
+    name: &str,
+    expected: &[u64],
+) {
+    match gguf.tensors.iter().find(|tensor| tensor.name == name) {
+        Some(tensor) if tensor.dimensions == expected => {}
+        Some(tensor) => mismatches.push(format!(
+            "{name} dims expected {:?} got {:?}",
+            expected, tensor.dimensions
+        )),
+        None => mismatches.push(format!("{name} missing")),
     }
 }
 
@@ -8234,6 +8311,19 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn llama32_1b_shape_audit_reports_tensor_shape_mismatches() {
+        let mut fixture = llama32_1b_shape_fixture();
+        set_tensor_dimensions(&mut fixture, "token_embd.weight", vec![2_048, 128_000]);
+
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert!(!audit.ready);
+        assert!(audit.mismatches.contains(
+            &"token_embd.weight dims expected [2048, 128256] got [2048, 128000]".to_owned()
+        ));
+    }
+
+    #[test]
     fn llama32_1b_shape_audit_requires_llama3_instruct_renderer() {
         let mut fixture = llama32_1b_shape_fixture();
         fixture.metadata.insert(
@@ -8555,14 +8645,22 @@ flags\t\t: sse4_2 avx2
                     .to_owned(),
             ),
         );
-        if let Some(token_embd) = fixture
-            .tensors
-            .iter_mut()
-            .find(|tensor| tensor.name == "token_embd.weight")
-        {
-            token_embd.dimensions = vec![2_048, 128_256];
-        }
+        set_tensor_dimensions(&mut fixture, "token_embd.weight", vec![2_048, 128_256]);
+        set_tensor_dimensions(&mut fixture, "output_norm.weight", vec![2_048]);
+        set_tensor_dimensions(&mut fixture, "blk.0.attn_q.weight", vec![2_048, 2_048]);
+        set_tensor_dimensions(&mut fixture, "blk.0.attn_k.weight", vec![2_048, 512]);
+        set_tensor_dimensions(&mut fixture, "blk.0.attn_v.weight", vec![2_048, 512]);
+        set_tensor_dimensions(&mut fixture, "blk.0.attn_output.weight", vec![2_048, 2_048]);
+        set_tensor_dimensions(&mut fixture, "blk.0.ffn_gate.weight", vec![2_048, 8_192]);
+        set_tensor_dimensions(&mut fixture, "blk.0.ffn_up.weight", vec![2_048, 8_192]);
+        set_tensor_dimensions(&mut fixture, "blk.0.ffn_down.weight", vec![8_192, 2_048]);
         fixture
+    }
+
+    fn set_tensor_dimensions(gguf: &mut GgufFile, name: &str, dimensions: Vec<u64>) {
+        if let Some(tensor) = gguf.tensors.iter_mut().find(|tensor| tensor.name == name) {
+            tensor.dimensions = dimensions;
+        }
     }
 
     fn tensor_desc(
