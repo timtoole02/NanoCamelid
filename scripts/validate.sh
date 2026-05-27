@@ -264,6 +264,8 @@ expect_failure "inspect 1b extra argument" cargo run -- inspect 1b extra --dry-r
 
 echo "==> Checking 1B generate CLI dry run..."
 cargo run -- generate 1b --dry-run
+expect_output "generate 1b selected source" "selected_source: workspace Q8_0 fallback" cargo run -- generate 1b --dry-run
+expect_output "generate 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- generate 1b --dry-run
 expect_output "generate 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- generate 1b --dry-run
 expect_output "generate 1b placeholder prompt" "prompt: <prompt>" cargo run -- generate 1b --dry-run
 expect_output "generate 1b command" "generate_command: nanocamelid generate /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- generate 1b --dry-run
@@ -278,6 +280,8 @@ expect_failure "generate 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=n
 
 echo "==> Checking 1B chat CLI dry run..."
 cargo run -- chat 1b --dry-run
+expect_output "chat 1b selected source" "selected_source: workspace Q8_0 fallback" cargo run -- chat 1b --dry-run
+expect_output "chat 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- chat 1b --dry-run
 expect_output "chat 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- chat 1b --dry-run
 expect_output "chat 1b placeholder prompt" "prompt: <prompt>" cargo run -- chat 1b --dry-run
 expect_output "chat 1b command" "chat_command: nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- chat 1b --dry-run
@@ -344,6 +348,8 @@ env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 cargo run -- ready 1b 
 
 echo "==> Checking 1B TUI CLI dry run..."
 cargo run -- tui 1b --dry-run
+expect_output "tui 1b selected source" "selected_source: workspace Q8_0 fallback" cargo run -- tui 1b --dry-run
+expect_output "tui 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- tui 1b --dry-run
 expect_output "tui 1b dry-run command" "tui_command: nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0 128" cargo run -- tui 1b --dry-run
 expect_output "tui 1b shape audit dry run" "shape_audit: enabled" cargo run -- tui 1b --dry-run
 expect_output "tui 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- tui 1b --dry-run

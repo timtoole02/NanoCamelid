@@ -77,10 +77,10 @@ marker, smoke kind, smoke token count, and prefill batch; dry runs print the
 same row as `json_on_success:`.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
-override. `generate 1b --dry-run` and `chat 1b --dry-run` print the resolved
-model path, strict shape-audit command, and launch plan without loading the
-GGUF. Non-dry-run 1B aliases run the strict Llama 3.2 1B shape audit before
-direct generation, chat, or TUI launch.
+override. Their dry runs print the selected model source, resolved model path,
+strict shape-audit command, and launch plan without loading the GGUF.
+Non-dry-run 1B aliases run the strict Llama 3.2 1B shape audit before direct
+generation, chat, or TUI launch.
 `ready 1b` runs the host fast-path probe, strict Llama 3.2 1B shape audit,
 inspect, scalar-vs-selected smoke validation, and one direct chat turn. Set
 `NANOCAMELID_READY_CHAT=0` for probe+audit+inspect+smoke only, or set

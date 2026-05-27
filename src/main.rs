@@ -1137,6 +1137,7 @@ fn print_smoke_usage() {
 #[derive(Debug, PartialEq)]
 struct GenerateArgs {
     model_path: String,
+    model_source: &'static str,
     prompt: String,
     temp: f32,
     max_tokens: usize,
@@ -1147,6 +1148,7 @@ struct GenerateArgs {
 #[derive(Debug, PartialEq)]
 struct TuiArgs {
     model_path: String,
+    model_source: &'static str,
     temp: f32,
     max_tokens: usize,
     dry_run: bool,
@@ -1400,7 +1402,7 @@ fn parse_tui_args_with_env_and_workspace(
         }
     }
 
-    let (model_path, option_idx, audit_1b_shape) = parse_model_path_position(
+    let (model_path, model_source, option_idx, audit_1b_shape) = parse_model_path_position(
         &positionals,
         env_model_path,
         workspace,
@@ -1426,6 +1428,7 @@ fn parse_tui_args_with_env_and_workspace(
 
     Ok(TuiArgs {
         model_path,
+        model_source,
         temp,
         max_tokens,
         dry_run,
@@ -1458,7 +1461,7 @@ fn parse_generate_args_with_env_and_workspace(
         }
     }
 
-    let (model_path, prompt_idx, audit_1b_shape) = parse_model_path_position(
+    let (model_path, model_source, prompt_idx, audit_1b_shape) = parse_model_path_position(
         &positionals,
         env_model_path,
         workspace,
@@ -1493,6 +1496,7 @@ fn parse_generate_args_with_env_and_workspace(
 
     Ok(GenerateArgs {
         model_path,
+        model_source,
         prompt,
         temp,
         max_tokens,
@@ -1507,7 +1511,7 @@ fn parse_model_path_position(
     workspace: &str,
     q4_exists: bool,
     missing_error: &'static str,
-) -> Result<(String, usize, bool), &'static str> {
+) -> Result<(String, &'static str, usize, bool), &'static str> {
     let first_looks_like_model = args
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
@@ -1515,19 +1519,29 @@ fn parse_model_path_position(
     let first_is_3b_alias = args.first().is_some_and(|value| is_llama32_3b_alias(value));
 
     match (args.first(), env_model_path) {
-        (Some(path), _) if first_looks_like_model => Ok((path.clone(), 1, false)),
-        (Some(_), env_model_path) if first_is_1b_alias => Ok((
-            resolve_llama32_1b_model_path_with_workspace(env_model_path, workspace, q4_exists),
+        (Some(path), _) if first_looks_like_model => {
+            Ok((path.clone(), "explicit argument", 1, false))
+        }
+        (Some(_), Some(path)) if first_is_1b_alias => Ok((path, DEFAULT_MODEL_GGUF_ENV, 1, true)),
+        (Some(_), None) if first_is_1b_alias => Ok((
+            resolve_llama32_1b_model_path_with_workspace(None, workspace, q4_exists),
+            if q4_exists {
+                "workspace Q4_0 default"
+            } else {
+                "workspace Q8_0 fallback"
+            },
             1,
             true,
         )),
-        (Some(_), env_model_path) if first_is_3b_alias => Ok((
-            resolve_llama32_3b_model_path_with_workspace(env_model_path, workspace),
+        (Some(_), Some(path)) if first_is_3b_alias => Ok((path, DEFAULT_MODEL_GGUF_ENV, 1, false)),
+        (Some(_), None) if first_is_3b_alias => Ok((
+            resolve_llama32_3b_model_path_with_workspace(None, workspace),
+            "workspace 3B Q4_0 default",
             1,
             false,
         )),
-        (Some(path), None) => Ok((path.clone(), 1, false)),
-        (_, Some(path)) => Ok((path, 0, false)),
+        (Some(path), None) => Ok((path.clone(), "explicit argument", 1, false)),
+        (_, Some(path)) => Ok((path, DEFAULT_MODEL_GGUF_ENV, 0, false)),
         (None, None) => Err(missing_error),
     }
 }
@@ -3353,6 +3367,7 @@ fn print_tui_dry_run(parsed: &TuiArgs) -> ExitCode {
 
     let model_path = Path::new(&parsed.model_path);
     println!("NanoCamelid TUI launch dry run");
+    println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
     println!("temp: {}", parsed.temp);
@@ -3388,6 +3403,7 @@ fn print_generation_dry_run(command: &str, parsed: &GenerateArgs) -> ExitCode {
 
     let model_path = Path::new(&parsed.model_path);
     println!("NanoCamelid {command} dry run");
+    println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
     println!("prompt: {}", parsed.prompt);
@@ -6161,18 +6177,19 @@ mod tests {
 
     use super::{
         ChatTurn, DEFAULT_1B_PREFILL_PROMPT, DEFAULT_1B_PREFILL_TEMP, DEFAULT_1B_PREFILL_TOKENS,
-        DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_Q4_PREFILL_BATCH,
-        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, GenerationStatusJson, HelpTopic,
-        InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
-        PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs,
-        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation,
-        cpu_model, default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
-        generation_status_json, help_topic_for_args, help_topic_named, inspect_runtime_summary,
-        is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
-        llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
-        model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
-        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_MODEL_GGUF_ENV,
+        DEFAULT_Q4_PREFILL_BATCH, DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS,
+        GenerationStatusJson, HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL,
+        LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
+        SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand,
+        cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
+        default_llama32_3b_model_path, device_model, generation_status_json, help_topic_for_args,
+        help_topic_named, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
+        json_string, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
+        llama32_3b_model_not_found_message, looks_like_gguf_path, model_1b_status_json,
+        parse_bench_1b_args_with_env, parse_bench_1b_args_with_path, parse_bench_q4_layout_args,
+        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
+        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
         parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
@@ -6812,6 +6829,7 @@ flags\t\t: sse4_2 avx2
         .expect("explicit model path should parse");
 
         assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.model_source, "explicit argument");
         assert_eq!(parsed.prompt, "Hello");
         assert_eq!(parsed.temp, 0.5);
         assert_eq!(parsed.max_tokens, 32);
@@ -6829,6 +6847,7 @@ flags\t\t: sse4_2 avx2
         .expect("env-backed generate path should parse");
 
         assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.model_source, DEFAULT_MODEL_GGUF_ENV);
         assert_eq!(parsed.prompt, "Explain grouped-query attention");
         assert_eq!(parsed.temp, 16.0);
         assert_eq!(parsed.max_tokens, 128);
@@ -6853,6 +6872,7 @@ flags\t\t: sse4_2 avx2
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
         );
+        assert_eq!(parsed.model_source, "workspace Q4_0 default");
         assert_eq!(parsed.prompt, "Say hello");
         assert_eq!(parsed.temp, 0.0);
         assert_eq!(parsed.max_tokens, 8);
@@ -6873,6 +6893,7 @@ flags\t\t: sse4_2 avx2
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
         );
+        assert_eq!(parsed.model_source, "workspace Q4_0 default");
         assert_eq!(parsed.prompt, "<prompt>");
         assert!(parsed.dry_run);
         assert!(parsed.audit_1b_shape);
@@ -6895,6 +6916,7 @@ flags\t\t: sse4_2 avx2
         .expect("dry-run flag should be removed from chat-style args");
 
         assert_eq!(parsed.prompt, "Say hello");
+        assert_eq!(parsed.model_source, "workspace Q4_0 default");
         assert_eq!(parsed.temp, 0.0);
         assert_eq!(parsed.max_tokens, 8);
         assert!(parsed.audit_1b_shape);
@@ -6920,6 +6942,7 @@ flags\t\t: sse4_2 avx2
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
         );
+        assert_eq!(parsed.model_source, "workspace 3B Q4_0 default");
         assert_eq!(parsed.prompt, "Say hello");
         assert_eq!(parsed.temp, 0.0);
         assert_eq!(parsed.max_tokens, 8);
@@ -6936,6 +6959,7 @@ flags\t\t: sse4_2 avx2
         .expect("1B alias with env override should parse");
 
         assert_eq!(parsed.model_path, "/models/custom-1b.gguf");
+        assert_eq!(parsed.model_source, DEFAULT_MODEL_GGUF_ENV);
         assert_eq!(parsed.prompt, "Say hello");
         assert!(parsed.audit_1b_shape);
     }
@@ -6964,6 +6988,7 @@ flags\t\t: sse4_2 avx2
         .expect("3B alias with env override should parse");
 
         assert_eq!(parsed.model_path, "/models/custom-3b.gguf");
+        assert_eq!(parsed.model_source, DEFAULT_MODEL_GGUF_ENV);
         assert_eq!(parsed.prompt, "Say hello");
         assert!(!parsed.audit_1b_shape);
     }
@@ -7034,6 +7059,7 @@ flags\t\t: sse4_2 avx2
         .expect("explicit model path should parse");
 
         assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.model_source, "explicit argument");
         assert_eq!(parsed.temp, 0.2);
         assert_eq!(parsed.max_tokens, 64);
         assert!(!parsed.dry_run);
@@ -7048,6 +7074,7 @@ flags\t\t: sse4_2 avx2
         .expect("env-backed tui path should parse");
 
         assert_eq!(parsed.model_path, "/models/Llama-3.2-1B-Instruct.Q8_0.gguf");
+        assert_eq!(parsed.model_source, DEFAULT_MODEL_GGUF_ENV);
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 32);
         assert!(!parsed.dry_run);
@@ -7067,6 +7094,7 @@ flags\t\t: sse4_2 avx2
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
         );
+        assert_eq!(parsed.model_source, "workspace Q8_0 fallback");
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
         assert!(!parsed.dry_run);
@@ -7087,6 +7115,7 @@ flags\t\t: sse4_2 avx2
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_3B_Q4_MODEL}")
         );
+        assert_eq!(parsed.model_source, "workspace 3B Q4_0 default");
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
         assert!(!parsed.dry_run);
@@ -7112,6 +7141,7 @@ flags\t\t: sse4_2 avx2
             parsed.model_path,
             format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
         );
+        assert_eq!(parsed.model_source, "workspace Q8_0 fallback");
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
         assert!(parsed.dry_run);
