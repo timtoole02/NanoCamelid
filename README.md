@@ -118,7 +118,8 @@ delegates to `model-1b.sh`, `ready-1b.sh --no-chat`, `context-pack-1b.sh`, and
 `NANOCAMELID_CONTEXT_LIMIT` cap in the delegated dry-run plan, and its JSON
 status records the active `NANOCAMELID_PREFILL_BATCH` used by readiness/context
 smoke separately from the prefill sweep batch list. Successful runs end with
-`evidence_1b_status: ok`; dry runs print the exact delegated command plan.
+`evidence_1b_status: ok`; dry runs print `shape_audit: enabled` and the exact
+delegated command plan.
 `cargo run -- evidence 1b` runs the same bounded 1B evidence bundle from the
 Rust CLI when the selected GGUF is present. Dry runs print the selected-model
 audit, readiness no-chat, per-context smoke, and prefill sweep commands plus a

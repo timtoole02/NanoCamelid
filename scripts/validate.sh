@@ -440,6 +440,7 @@ expect_output "evidence 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Ll
 expect_output "evidence 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b selected source" "selected_source: " cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b selected quantization" "quantization: q8_0" cargo run -- evidence 1b --dry-run
+expect_output "evidence 1b shape audit dry run" "shape_audit: enabled" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b success marker dry run" "status_on_success: evidence_1b_status: ok" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- evidence 1b --dry-run
@@ -705,6 +706,7 @@ echo "==> Checking 1B Pi evidence bundle dry run..."
 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b help documents context packs" "NANOCAMELID_CONTEXT_PACKS" ./scripts/pi/evidence-1b.sh --help
 expect_output "evidence-1b success marker dry run" "status_on_success: evidence_1b_status: ok" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/evidence-1b.sh --dry-run

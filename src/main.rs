@@ -4860,6 +4860,7 @@ fn print_evidence_1b_dry_run(parsed: &Evidence1BArgs) -> ExitCode {
         "quantization: {}",
         llama32_1b_quantization_for_path(model_path)
     );
+    println!("shape_audit: enabled");
     println!("context_limit: {}", context_limit_plan_value());
     println!("smoke_kind: {}", parsed.smoke.kind.label());
     println!("smoke_prompt: {}", parsed.smoke.prompt);
@@ -4920,6 +4921,7 @@ fn run_evidence_1b(parsed: Evidence1BArgs) -> ExitCode {
         "quantization: {}",
         llama32_1b_quantization_for_path(Path::new(&parsed.model_path))
     );
+    println!("shape_audit: enabled");
     println!("context_limit: {}", context_limit_plan_value());
     println!("smoke_kind: {}", parsed.smoke.kind.label());
     println!("smoke_prompt: {}", parsed.smoke.prompt);
