@@ -243,6 +243,7 @@ expect_output "model 1b shape audit dry run" "shape_audit: enabled" cargo run --
 expect_output "model 1b success marker dry run" "status_on_success: model_1b_status: ok" cargo run -- model 1b --dry-run
 expect_output "model 1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- model 1b --dry-run
 expect_output "model 1b shape json marker dry run" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- model 1b --dry-run
+expect_output "model 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
 expect_output "model 1b inspect follow-up command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
 expect_output "model 1b smoke follow-up command" "smoke_command: nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" cargo run -- model 1b --dry-run
 expect_output "model 1b ready follow-up command" "ready_command: nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run

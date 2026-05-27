@@ -4028,6 +4028,10 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
             model_1b_status_json(model_path, parsed.model_source)
         );
         println!(
+            "model_command: {}",
+            shell_command(&["nanocamelid", "model", "1b", &model_arg])
+        );
+        println!(
             "inspect_command: {}",
             shell_command(&["nanocamelid", "inspect", &model_arg])
         );
