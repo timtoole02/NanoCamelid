@@ -6,12 +6,12 @@ usage() {
   cat <<'USAGE'
 Usage: bench-1b-prefill.sh [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]
 
-Runs the strict Llama 3.2 1B shape audit, then runs the Pi-local 1B chat path
-repeatedly with different NANOCAMELID_PREFILL_BATCH values. Each run prints
-NanoCamelid's normal "Prompt ingested" and generation timing lines, followed by
-a per-batch JSON summary line. Successful sweeps finish with
-`prefill_bench_1b_status: ok` and a compact JSON summary that records the best
-observed prefill and decode batches.
+Probes the host, runs the strict Llama 3.2 1B shape audit, then runs the
+Pi-local 1B chat path repeatedly with different NANOCAMELID_PREFILL_BATCH
+values. Each run prints NanoCamelid's normal "Prompt ingested" and generation
+timing lines, followed by a per-batch JSON summary line. Successful sweeps
+finish with `prefill_bench_1b_status: ok` and a compact JSON summary that
+records the host probe and best observed prefill and decode batches.
 
 Model resolution:
   1. explicit model.gguf argument
@@ -219,7 +219,7 @@ prefill_summary_json() {
   local best_decode_batch="$4"
   local best_tokens_per_sec="$5"
 
-  printf '{"benchmark":"llama32-1b-prefill","target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"max_tokens":%s,"temp":%s,"batches":%s,"best_prefill_batch":%s,"best_prefill_sec":%s,"best_prefill_prompt_tokens_per_sec":%s,"best_decode_batch":%s,"best_tokens_per_sec":%s}\n' \
+  printf '{"benchmark":"llama32-1b-prefill","target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"probe":true,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"max_tokens":%s,"temp":%s,"batches":%s,"best_prefill_batch":%s,"best_prefill_sec":%s,"best_prefill_prompt_tokens_per_sec":%s,"best_decode_batch":%s,"best_tokens_per_sec":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
@@ -355,11 +355,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "max_tokens: $MAX_TOKENS"
   echo "temp: $TEMP"
   echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
+  echo "probe: enabled"
   echo "shape_audit: enabled"
   echo "smoke_gate: enabled"
   echo "batches: ${BATCHES[*]}"
   echo "status_on_success: prefill_bench_1b_status: ok"
   echo "json_on_success: $(prefill_summary_json "" "" "" "" "")"
+  printf 'probe_command: '
+  shell_command nanocamelid probe
   printf 'model_command: '
   shell_command nanocamelid model 1b "$MODEL"
   printf 'inspect_command: '
@@ -402,9 +405,13 @@ echo "prompt: $PROMPT"
 echo "max_tokens: $MAX_TOKENS"
 echo "temp: $TEMP"
 echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
+echo "probe: enabled"
 echo "shape_audit: enabled"
 echo "smoke_gate: enabled"
 echo "batches: ${BATCHES[*]}"
+
+echo "==> Probing host fast-path support"
+run_nanocamelid probe
 
 echo "==> Auditing 1B model shape: $MODEL"
 run_nanocamelid model 1b "$MODEL"
