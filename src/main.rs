@@ -4148,7 +4148,7 @@ fn audit_llama32_1b_model_shape(model_path: &Path) -> ExitCode {
 }
 
 fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
-    let prefill_batch = match prefill_batch_size_from_env() {
+    let prefill_batch = match validate_runtime_generation_env() {
         Ok(value) => value,
         Err(err) => {
             eprintln!("{err}");
@@ -4454,7 +4454,7 @@ fn smoke_plan_command_with_context(
 }
 
 fn run_smoke_1b_gate(model_path: &Path, parsed: &Smoke1BArgs) -> ExitCode {
-    let prefill_batch = match prefill_batch_size_from_env() {
+    let prefill_batch = match validate_runtime_generation_env() {
         Ok(value) => value,
         Err(err) => {
             eprintln!("{err}");
@@ -4499,6 +4499,11 @@ fn context_limit_plan_value() -> String {
 
 fn validate_context_limit_env() -> Result<(), String> {
     parse_context_limit_env().map(|_| ())
+}
+
+fn validate_runtime_generation_env() -> Result<usize, String> {
+    validate_context_limit_env()?;
+    prefill_batch_size_from_env().map_err(str::to_owned)
 }
 
 fn shell_command(args: &[&str]) -> String {
@@ -4908,6 +4913,10 @@ fn run_generation_command<F>(parsed: &GenerateArgs, run: F) -> ExitCode
 where
     F: FnOnce(&GenerateArgs) -> ExitCode,
 {
+    if let Err(err) = validate_runtime_generation_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
     if let Some(exit_code) = audit_direct_1b_launch(&parsed.model_path, parsed.audit_1b_shape) {
         return exit_code;
     }
@@ -4915,6 +4924,10 @@ where
 }
 
 fn run_tui_command(parsed: &TuiArgs) -> ExitCode {
+    if let Err(err) = validate_runtime_generation_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
     if let Some(exit_code) = audit_direct_1b_launch(&parsed.model_path, parsed.audit_1b_shape) {
         return exit_code;
     }
