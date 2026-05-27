@@ -96,7 +96,7 @@ case "$DEPLOY_MODE" in
     ;;
 esac
 
-if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" ]]; then
+if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" && "$REMOTE_SMOKE_ENABLED_LOWER" != "off" ]]; then
   case "$REMOTE_SMOKE_KIND" in
     chat | model | q8-chat | q8-model) ;;
     *)
