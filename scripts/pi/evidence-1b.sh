@@ -26,6 +26,9 @@ Useful env:
   NANOCAMELID_SMOKE_PROMPT       Smoke prompt
   NANOCAMELID_SMOKE_TOKENS       Smoke generated token count
   NANOCAMELID_CONTEXT_PACKS      Context caps for context-pack-1b.sh
+  NANOCAMELID_PREFILL_PROMPT     Prompt for bench-1b-prefill.sh
+  NANOCAMELID_PREFILL_TOKENS     Generated token count for bench-1b-prefill.sh
+  NANOCAMELID_PREFILL_TEMP       Temperature for bench-1b-prefill.sh
   NANOCAMELID_PREFILL_BATCHES    Batch list for bench-1b-prefill.sh
   --dry-run                      Print the resolved bundle plan without loading the model
 USAGE
@@ -72,6 +75,17 @@ shell_command() {
     printf ' %q' "$arg"
   done
   printf '\n'
+}
+
+env_prefix() {
+  local key value
+
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    value="$2"
+    printf '%s=%s ' "$key" "$(shell_quote "$value")"
+    shift 2
+  done
 }
 
 json_string() {
@@ -135,6 +149,9 @@ SMOKE_KIND="${NANOCAMELID_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_SMOKE_TOKENS:-8}"
 CONTEXT_PACKS_RAW="${NANOCAMELID_CONTEXT_PACKS:-512,1024,2048,4096,8192}"
+PREFILL_PROMPT="${NANOCAMELID_PREFILL_PROMPT:-Explain one practical Raspberry Pi inference bottleneck in two short sentences.}"
+PREFILL_TOKENS="${NANOCAMELID_PREFILL_TOKENS:-2}"
+PREFILL_TEMP="${NANOCAMELID_PREFILL_TEMP:-0.0}"
 PREFILL_BATCHES_RAW="${NANOCAMELID_PREFILL_BATCHES:-1,16,32,64}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
@@ -176,6 +193,11 @@ require_positive_integer() {
   fi
 }
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
+require_positive_integer "Prefill token count" "$PREFILL_TOKENS"
+if [[ ! "$PREFILL_TEMP" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]; then
+  echo "Prefill temperature must be a non-negative number: $PREFILL_TEMP" >&2
+  exit 2
+fi
 CONTEXT_PACKS=($(parse_unique_positive_integer_list "context cap" "$CONTEXT_PACKS_RAW"))
 PREFILL_BATCHES=($(parse_unique_positive_integer_list "prefill batch size" "$PREFILL_BATCHES_RAW"))
 
@@ -203,6 +225,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
   echo "context_pack_caps: ${CONTEXT_PACKS[*]}"
+  echo "prefill_prompt: $PREFILL_PROMPT"
+  echo "prefill_tokens: $PREFILL_TOKENS"
+  echo "prefill_temp: $PREFILL_TEMP"
   echo "prefill_batches: ${PREFILL_BATCHES[*]}"
   echo "status_on_success: evidence_1b_status: ok"
   echo "json_on_success: $(evidence_1b_status_json)"
@@ -219,12 +244,18 @@ if [[ "$DRY_RUN" == "1" ]]; then
     shell_command ./scripts/pi/ready-1b.sh "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
   fi
   printf 'context_pack_command: '
+  env_prefix NANOCAMELID_CONTEXT_PACKS "$CONTEXT_PACKS_RAW"
   if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
     shell_command ./scripts/pi/context-pack-1b.sh "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   else
     shell_command ./scripts/pi/context-pack-1b.sh "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   fi
   printf 'prefill_bench_command: '
+  env_prefix \
+    NANOCAMELID_PREFILL_PROMPT "$PREFILL_PROMPT" \
+    NANOCAMELID_PREFILL_TOKENS "$PREFILL_TOKENS" \
+    NANOCAMELID_PREFILL_TEMP "$PREFILL_TEMP" \
+    NANOCAMELID_PREFILL_BATCHES "$PREFILL_BATCHES_RAW"
   if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
     shell_command ./scripts/pi/bench-1b-prefill.sh "${MODEL_ARGS[@]}"
   else
@@ -242,6 +273,10 @@ echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
 echo "smoke_kind: $SMOKE_KIND"
 echo "smoke_prompt: $SMOKE_PROMPT"
 echo "smoke_tokens: $SMOKE_TOKENS"
+echo "prefill_prompt: $PREFILL_PROMPT"
+echo "prefill_tokens: $PREFILL_TOKENS"
+echo "prefill_temp: $PREFILL_TEMP"
+echo "prefill_batches: ${PREFILL_BATCHES[*]}"
 
 cd "$REPO"
 
@@ -263,17 +298,27 @@ fi
 echo
 echo "==> Running context-pack smoke gate"
 if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-  "$SCRIPT_DIR/context-pack-1b.sh" "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+  NANOCAMELID_CONTEXT_PACKS="$CONTEXT_PACKS_RAW" \
+    "$SCRIPT_DIR/context-pack-1b.sh" "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 else
-  "$SCRIPT_DIR/context-pack-1b.sh" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+  NANOCAMELID_CONTEXT_PACKS="$CONTEXT_PACKS_RAW" \
+    "$SCRIPT_DIR/context-pack-1b.sh" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 fi
 
 echo
 echo "==> Running prefill batch sweep"
 if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-  "$SCRIPT_DIR/bench-1b-prefill.sh" "${MODEL_ARGS[@]}"
+  NANOCAMELID_PREFILL_PROMPT="$PREFILL_PROMPT" \
+    NANOCAMELID_PREFILL_TOKENS="$PREFILL_TOKENS" \
+    NANOCAMELID_PREFILL_TEMP="$PREFILL_TEMP" \
+    NANOCAMELID_PREFILL_BATCHES="$PREFILL_BATCHES_RAW" \
+    "$SCRIPT_DIR/bench-1b-prefill.sh" "${MODEL_ARGS[@]}"
 else
-  "$SCRIPT_DIR/bench-1b-prefill.sh"
+  NANOCAMELID_PREFILL_PROMPT="$PREFILL_PROMPT" \
+    NANOCAMELID_PREFILL_TOKENS="$PREFILL_TOKENS" \
+    NANOCAMELID_PREFILL_TEMP="$PREFILL_TEMP" \
+    NANOCAMELID_PREFILL_BATCHES="$PREFILL_BATCHES_RAW" \
+    "$SCRIPT_DIR/bench-1b-prefill.sh"
 fi
 
 echo "evidence_1b_status: ok"
