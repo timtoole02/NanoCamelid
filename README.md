@@ -94,7 +94,9 @@ Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
 prefill batch, and validated context caps; dry runs print the same row as
 `json_on_success:`.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
-preflight plus the real prefill batch sweep plan, and validates any
+preflight plus the real prefill batch sweep plan, honors the same
+`NANOCAMELID_SMOKE_GGUF` then `NANOCAMELID_MODEL_GGUF` override order as the
+smoke gate, and validates any
 `NANOCAMELID_CONTEXT_LIMIT` cap before the model is loaded. Successful sweeps
 end with `prefill_bench_1b_status: ok` and a compact `json:` summary row for
 log collectors.

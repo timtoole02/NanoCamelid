@@ -15,13 +15,16 @@ observed prefill and decode batches.
 
 Model resolution:
   1. explicit model.gguf argument
-  2. NANOCAMELID_MODEL_GGUF
-  3. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf
-  4. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf
+  2. NANOCAMELID_SMOKE_GGUF
+  3. NANOCAMELID_MODEL_GGUF
+  4. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf
+  5. $NANOCAMELID_WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf
 
 Useful env:
   NANOCAMELID_WORKSPACE          Pi workspace, default /mnt/nanocamelid
   CARGO_TARGET_DIR               Cargo output dir, default /mnt/nanocamelid/target
+  NANOCAMELID_SMOKE_GGUF         Smoke-specific 1B GGUF override
+  NANOCAMELID_MODEL_GGUF         Shared 1B GGUF override
   NANOCAMELID_PREFILL_BATCHES    Batch list, default "1,16,32,64"
   NANOCAMELID_PREFILL_PROMPT     Prompt override
   NANOCAMELID_PREFILL_TOKENS     Generated token count, default 2
@@ -250,7 +253,10 @@ REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
-if [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
+if [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
+  MODEL="$NANOCAMELID_SMOKE_GGUF"
+  MODEL_SOURCE="NANOCAMELID_SMOKE_GGUF"
+elif [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
   MODEL="$NANOCAMELID_MODEL_GGUF"
   MODEL_SOURCE="NANOCAMELID_MODEL_GGUF"
 elif [[ -f "$Q4_MODEL" ]]; then
@@ -266,7 +272,7 @@ if looks_like_gguf_path "${1:-}"; then
   shift
 fi
 case "$MODEL_SOURCE" in
-  NANOCAMELID_MODEL_GGUF)
+  NANOCAMELID_SMOKE_GGUF | NANOCAMELID_MODEL_GGUF)
     require_gguf_model_path "$MODEL_SOURCE" "$MODEL"
     ;;
 esac
@@ -367,7 +373,7 @@ if [[ "$launcher_mode" == "cargo" || -z "${NANOCAMELID_BIN:-}" ]]; then
 fi
 if [[ ! -f "$MODEL" ]]; then
   echo "Model not found: $MODEL" >&2
-  echo "Set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
+  echo "Set NANOCAMELID_SMOKE_GGUF=/path/to/model.gguf, set NANOCAMELID_MODEL_GGUF=/path/to/model.gguf, or place the 1B Q4_0 or Q8_0 GGUF at the default path." >&2
   exit 2
 fi
 

@@ -354,6 +354,8 @@ expect_output "bench 1b nested help" "bench 1b [model.gguf]" cargo run -- bench 
 expect_output "bench 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" cargo run -- bench 1b --dry-run
 expect_output "bench 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- bench 1b --dry-run
 expect_output "bench 1b selected source" "selected_source: " cargo run -- bench 1b --dry-run
+expect_output "bench 1b smoke env override" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf cargo run -- bench 1b --dry-run
+expect_output "bench 1b smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf cargo run -- bench 1b --dry-run
 expect_output "bench 1b shape audit dry run" "shape_audit: enabled" cargo run -- bench 1b --dry-run
 expect_output "bench 1b success marker dry run" "status_on_success: prefill_bench_1b_status: ok" cargo run -- bench 1b --dry-run
 expect_output "bench 1b json success marker dry run" "\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- bench 1b --dry-run
@@ -366,6 +368,7 @@ expect_failure "bench 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=ba
 expect_failure "bench 1b invalid token count" cargo run -- bench 1b prompt 0 --dry-run
 expect_failure "bench 1b invalid temp" cargo run -- bench 1b prompt 1 bad --dry-run
 expect_failure "bench 1b invalid batch" cargo run -- bench 1b prompt 1 0.0 0 --dry-run
+expect_failure "bench 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- bench 1b --dry-run
 expect_failure "bench 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- bench 1b --dry-run
 
 echo "==> Checking 1B model audit dry run..."
@@ -453,6 +456,8 @@ echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 expect_output "bench-1b-prefill q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill selected source" "selected_source: " ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output "bench-1b-prefill smoke env override" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output "bench-1b-prefill smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill shape audit dry run" "shape_audit: enabled" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
@@ -461,6 +466,7 @@ expect_output "bench-1b-prefill success marker dry run" "status_on_success: pref
 expect_output "bench-1b-prefill json success marker dry run" "\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill json batches dry run" "\"batches\":[1,16,32,64]" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_failure "bench-1b-prefill invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/bench-1b-prefill.sh
 

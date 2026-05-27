@@ -1051,7 +1051,8 @@ fn print_bench_usage() {
     println!(
         "  {WORKER_CORES_ENV}                          Comma/range CPU list for pinned Rayon workers, e.g. 1,2,3"
     );
-    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} 1B benchmark GGUF path override");
+    println!("  {SMOKE_MODEL_GGUF_ENV:<38} Smoke-specific 1B benchmark GGUF override");
+    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Shared 1B benchmark GGUF override");
     println!(
         "  {WORKSPACE_ENV:<38} Pi workspace for the 1B default; default {DEFAULT_PI_WORKSPACE}"
     );
@@ -2163,7 +2164,7 @@ fn parse_bench_1b_args(args: &[String]) -> Result<Bench1BArgs, &'static str> {
     let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
     parse_bench_1b_args_with_env(
         args,
-        default_model_path_and_source_from_env(),
+        smoke_model_path_and_source_from_env(),
         &workspace,
         Path::new(&q4_path).is_file(),
     )
@@ -6140,9 +6141,9 @@ mod tests {
         generation_status_json, help_topic_for_args, help_topic_named, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
         llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
-        model_1b_status_json, parse_bench_1b_args_with_path, parse_bench_q4_layout_args,
-        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
-        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
+        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
+        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
         parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
@@ -6694,6 +6695,19 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.max_tokens, 3);
         assert_eq!(parsed.temp, "0.2");
         assert_eq!(parsed.batches, vec![1, 8, 16]);
+
+        let smoke_env = parse_bench_1b_args_with_env(
+            &["--dry-run".to_owned()],
+            Some((
+                "/models/smoke-override.gguf".to_owned(),
+                SMOKE_MODEL_GGUF_ENV,
+            )),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("smoke env 1B prefill benchmark path should parse");
+        assert_eq!(smoke_env.model_path, "/models/smoke-override.gguf");
+        assert_eq!(smoke_env.model_source, SMOKE_MODEL_GGUF_ENV);
 
         assert_eq!(
             parse_bench_1b_args_with_path(
