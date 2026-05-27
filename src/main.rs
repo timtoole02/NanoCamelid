@@ -1423,6 +1423,7 @@ fn parse_tui_args_with_env_and_workspace(
         workspace,
         q4_exists,
         "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
+        "model alias argument must not be a path; use `tui <model.gguf>` for explicit models",
     )?;
 
     let temp = positionals
@@ -1482,6 +1483,7 @@ fn parse_generate_args_with_env_and_workspace(
         workspace,
         q4_exists,
         "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
+        "model alias prompt must not look like a model path; omit the alias when passing an explicit model",
     )?;
 
     let prompt = match positionals.get(prompt_idx) {
@@ -1526,12 +1528,20 @@ fn parse_model_path_position(
     workspace: &str,
     q4_exists: bool,
     missing_error: &'static str,
+    alias_path_error: &'static str,
 ) -> Result<(String, &'static str, usize, bool), &'static str> {
     let first_looks_like_model = args
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
     let first_is_1b_alias = args.first().is_some_and(|value| is_llama32_1b_alias(value));
     let first_is_3b_alias = args.first().is_some_and(|value| is_llama32_3b_alias(value));
+    if (first_is_1b_alias || first_is_3b_alias)
+        && args
+            .get(1)
+            .is_some_and(|value| looks_like_model_path_argument(value))
+    {
+        return Err(alias_path_error);
+    }
 
     match (args.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => {
@@ -2381,6 +2391,10 @@ fn reject_path_like_non_gguf_first_arg(
     } else {
         Ok(())
     }
+}
+
+fn looks_like_model_path_argument(value: &str) -> bool {
+    looks_like_gguf_path(value) || looks_like_non_gguf_model_path(value)
 }
 
 fn looks_like_non_gguf_model_path(value: &str) -> bool {
@@ -7268,6 +7282,43 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn generate_args_reject_alias_prompt_that_looks_like_model_path() {
+        let non_gguf = parse_generate_args_with_env_and_workspace(
+            &[
+                "1b".to_owned(),
+                "/models/not-a-gguf".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("path-like 1B alias prompt should fail");
+
+        assert_eq!(
+            non_gguf,
+            "model alias prompt must not look like a model path; omit the alias when passing an explicit model"
+        );
+
+        let gguf = parse_generate_args_with_env_and_workspace(
+            &[
+                "llama32-3b".to_owned(),
+                "/models/custom.gguf".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("explicit model after alias should fail");
+
+        assert_eq!(
+            gguf,
+            "model alias prompt must not look like a model path; omit the alias when passing an explicit model"
+        );
+    }
+
+    #[test]
     fn generate_args_3b_alias_honors_env_model_override() {
         let parsed = parse_generate_args_with_env_and_workspace(
             &["llama-3.2-3b".to_owned(), "Say hello".to_owned()],
@@ -7449,6 +7500,26 @@ flags\t\t: sse4_2 avx2
         .expect_err("non-GGUF TUI env path should fail");
 
         assert_eq!(err, "model env path must be a .gguf path");
+    }
+
+    #[test]
+    fn tui_args_reject_alias_option_that_looks_like_model_path() {
+        let err = parse_tui_args_with_env_and_workspace(
+            &[
+                "1b".to_owned(),
+                "/models/not-a-gguf".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("path-like 1B TUI alias option should fail");
+
+        assert_eq!(
+            err,
+            "model alias argument must not be a path; use `tui <model.gguf>` for explicit models"
+        );
     }
 
     #[test]

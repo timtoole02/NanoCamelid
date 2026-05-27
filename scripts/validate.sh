@@ -336,6 +336,7 @@ expect_output "generate 1b prefill batch dry run" "prefill_batch: 32" env NANOCA
 expect_failure "generate 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- generate 1b --dry-run
+expect_failure "generate 1b invalid alias model path" cargo run -- generate 1b /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B chat CLI dry run..."
 cargo run -- chat 1b --dry-run
@@ -352,6 +353,7 @@ expect_output "chat 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELI
 expect_failure "chat 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- chat 1b --dry-run
+expect_failure "chat 1b invalid alias model path" cargo run -- chat 1b /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B smoke CLI dry run..."
 cargo run -- smoke 1b --dry-run
@@ -429,6 +431,7 @@ expect_output "tui 1b command carries prefill batch" "tui_command: NANOCAMELID_C
 expect_failure "tui 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- tui 1b --dry-run
+expect_failure "tui 1b invalid alias model path" cargo run -- tui 1b /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B prefill benchmark CLI dry run..."
 cargo run -- bench 1b --dry-run
