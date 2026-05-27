@@ -1447,6 +1447,20 @@ fn compute_q4_0_swizzled_1x4_sdot_batch_chunk_with_sums(
     let chunk_base = chunk_idx * ctx.blocks_per_row * 4;
     let row_base = chunk_idx * 4;
     for b in 0..ctx.blocks_per_row {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_b = b + 1;
+            if next_b < ctx.blocks_per_row {
+                let next_w_base = chunk_base + next_b * 4;
+                unsafe {
+                    std::arch::asm!(
+                        "prfm pldl1keep, [{ptr}]",
+                        ptr = in(reg) ctx.w.as_ptr().add(next_w_base),
+                        options(nostack, preserves_flags, readonly)
+                    );
+                }
+            }
+        }
         let w_base = chunk_base + b * 4;
         let row0 = &ctx.w[w_base];
         let row1 = &ctx.w[w_base + 1];
@@ -1619,6 +1633,20 @@ fn compute_q4_0_page_aligned_1x4_sdot_batch_chunk_with_sums(
     let chunk = ctx.matrix.chunk_ptr(chunk_idx);
     let row_base = chunk_idx * 4;
     for b in 0..ctx.blocks_per_row {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_b = b + 1;
+            if next_b < ctx.blocks_per_row {
+                let next_w_base = next_b * 4;
+                unsafe {
+                    std::arch::asm!(
+                        "prfm pldl1keep, [{ptr}]",
+                        ptr = in(reg) chunk.add(next_w_base),
+                        options(nostack, preserves_flags, readonly)
+                    );
+                }
+            }
+        }
         let w_base = b * 4;
         let row0 = unsafe { &*chunk.add(w_base) };
         let row1 = unsafe { &*chunk.add(w_base + 1) };
@@ -4254,6 +4282,20 @@ fn compute_q8_0_swizzled_1x4_sdot_batch_chunk(
     let row_base = chunk_idx * 4;
     let mut token_sums = vec![[0.0_f32; 4]; batch_size];
     for b in 0..ctx.blocks_per_row {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_b = b + 1;
+            if next_b < ctx.blocks_per_row {
+                let next_w_base = chunk_base + next_b * 4;
+                unsafe {
+                    std::arch::asm!(
+                        "prfm pldl1keep, [{ptr}]",
+                        ptr = in(reg) ctx.w.as_ptr().add(next_w_base),
+                        options(nostack, preserves_flags, readonly)
+                    );
+                }
+            }
+        }
         let w_base = chunk_base + b * 4;
         let row0 = &ctx.w[w_base];
         let row1 = &ctx.w[w_base + 1];
@@ -4403,6 +4445,20 @@ fn compute_q8_0_page_aligned_1x4_sdot_batch_chunk(
     let row_base = chunk_idx * 4;
     let mut token_sums = vec![[0.0_f32; 4]; batch_size];
     for b in 0..ctx.blocks_per_row {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_b = b + 1;
+            if next_b < ctx.blocks_per_row {
+                let next_w_base = next_b * 4;
+                unsafe {
+                    std::arch::asm!(
+                        "prfm pldl1keep, [{ptr}]",
+                        ptr = in(reg) chunk.add(next_w_base),
+                        options(nostack, preserves_flags, readonly)
+                    );
+                }
+            }
+        }
         let w_base = b * 4;
         let row0 = unsafe { &*chunk.add(w_base) };
         let row1 = unsafe { &*chunk.add(w_base + 1) };
