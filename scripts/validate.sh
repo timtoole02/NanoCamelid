@@ -716,6 +716,7 @@ expect_output "remote_build context-pack dry run" "context_pack_command: NANOCAM
 
 echo "==> Checking remote Pi build launcher rejects invalid context packs..."
 expect_failure "remote_build invalid context cap" env NANOCAMELID_REMOTE_CONTEXT_PACKS=512,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build duplicate context cap" env NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024,512 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher plans optional 1B prefill sweep..."
 expect_output "remote_build prefill dry run" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/bench-1b-prefill.sh" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run

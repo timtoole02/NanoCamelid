@@ -158,6 +158,7 @@ require_context_caps() {
   local raw_caps="$1"
   local cap
   local cap_count=0
+  local seen_caps=" "
 
   for cap in ${raw_caps//,/ }; do
     cap_count=$((cap_count + 1))
@@ -165,6 +166,13 @@ require_context_caps() {
       echo "Context cap must be a positive integer: $cap" >&2
       exit 2
     fi
+    case "$seen_caps" in
+      *" $cap "*)
+        echo "Context caps must be unique: $cap" >&2
+        exit 2
+        ;;
+    esac
+    seen_caps+="$cap "
   done
   if [[ "$cap_count" -eq 0 ]]; then
     echo "Context caps must include at least one positive integer." >&2
