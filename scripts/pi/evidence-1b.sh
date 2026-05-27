@@ -280,6 +280,8 @@ echo "prefill_batches: ${PREFILL_BATCHES[*]}"
 
 cd "$REPO"
 
+require_safe_cargo_target_dir "$TARGET_DIR" "$REPO"
+
 echo "==> Auditing selected 1B model"
 if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
   "$SCRIPT_DIR/model-1b.sh" "${MODEL_ARGS[@]}"
