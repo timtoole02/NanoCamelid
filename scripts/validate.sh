@@ -558,9 +558,11 @@ echo "==> Checking 1B Pi context-pack launcher dry run..."
 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b selected source" "selected_source: " ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b selected quantization" "quantization: q8_0" ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b success marker dry run" "status_on_success: context_pack_1b_status: ok" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json caps dry run" "\"context_caps\":[512,1024,2048,4096,8192]" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json records prefill batch" "\"prefill_batch\":32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/context-pack-1b.sh --dry-run

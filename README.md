@@ -101,9 +101,9 @@ Llama 3.2 1B shape gate remains in the launch path.
 `./scripts/pi/context-pack-1b.sh` reruns the 1B smoke gate across context caps
 from `NANOCAMELID_CONTEXT_PACKS`, defaulting to `512,1024,2048,4096,8192`.
 Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
-`json:` status row listing the selected 1B model, smoke kind, token count,
-prefill batch, and validated context caps; dry runs print the same row as
-`json_on_success:`.
+`json:` status row listing the selected 1B model, strict shape-audit marker,
+smoke kind, token count, prefill batch, and validated context caps; dry runs
+also print `shape_audit: enabled` and the same row as `json_on_success:`.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
 preflight, inspect preflight, and real prefill batch sweep plan, honors the same
 `NANOCAMELID_SMOKE_GGUF` then `NANOCAMELID_MODEL_GGUF` override order as the
