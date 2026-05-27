@@ -14,6 +14,7 @@ Options:
 Useful env:
   NANOCAMELID_REMOTE_CONTEXT_LIMIT Optional single context cap for readiness and prefill sweep
   NANOCAMELID_REMOTE_CONTEXT_PACKS  Optional comma-separated 1B context caps to run after readiness
+  NANOCAMELID_REMOTE_PREFILL_BATCH   Optional prompt prefill batch for remote readiness/smoke gates
   NANOCAMELID_REMOTE_PREFILL_BENCH  Set to 1 to run the 1B prefill batch sweep after readiness; 0/false/no/off disables it
   NANOCAMELID_REMOTE_PREFILL_BATCHES Optional comma-separated prefill batches for the remote sweep
   NANOCAMELID_REMOTE_EVIDENCE       Set to 1 to run the 1B evidence bundle after the core build; 0/false/no/off disables it
@@ -71,6 +72,7 @@ case "$READY_CHAT_LOWER" in
 esac
 REMOTE_CONTEXT_LIMIT="${NANOCAMELID_REMOTE_CONTEXT_LIMIT:-${NANOCAMELID_CONTEXT_LIMIT:-}}"
 REMOTE_CONTEXT_PACKS="${NANOCAMELID_REMOTE_CONTEXT_PACKS:-}"
+REMOTE_PREFILL_BATCH="${NANOCAMELID_REMOTE_PREFILL_BATCH:-${NANOCAMELID_PREFILL_BATCH:-}}"
 REMOTE_PREFILL_BENCH="${NANOCAMELID_REMOTE_PREFILL_BENCH:-0}"
 REMOTE_PREFILL_BENCH_LOWER="$(printf '%s' "$REMOTE_PREFILL_BENCH" | tr '[:upper:]' '[:lower:]')"
 REMOTE_EVIDENCE="${NANOCAMELID_REMOTE_EVIDENCE:-0}"
@@ -238,6 +240,9 @@ print_readiness_command() {
   if [[ -n "$REMOTE_CONTEXT_LIMIT" ]]; then
     printf ' NANOCAMELID_CONTEXT_LIMIT=%s' "$(shell_quote "$REMOTE_CONTEXT_LIMIT")"
   fi
+  if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
+    printf ' NANOCAMELID_PREFILL_BATCH=%s' "$(shell_quote "$REMOTE_PREFILL_BATCH")"
+  fi
   printf ' NANOCAMELID_READY_CHAT=%s NANOCAMELID_READY_SMOKE_KIND=%s NANOCAMELID_READY_SMOKE_PROMPT=%s NANOCAMELID_READY_SMOKE_TOKENS=%s' \
     "$(shell_quote "$READY_CHAT")" \
     "$(shell_quote "$REMOTE_SMOKE_KIND")" \
@@ -275,6 +280,9 @@ print_prefill_bench_command() {
   if [[ -n "$REMOTE_CONTEXT_LIMIT" ]]; then
     printf ' NANOCAMELID_CONTEXT_LIMIT=%s' "$(shell_quote "$REMOTE_CONTEXT_LIMIT")"
   fi
+  if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
+    printf ' NANOCAMELID_PREFILL_BATCH=%s' "$(shell_quote "$REMOTE_PREFILL_BATCH")"
+  fi
   printf ' NANOCAMELID_PREFILL_PROMPT=%s NANOCAMELID_PREFILL_TOKENS=%s NANOCAMELID_PREFILL_TEMP=%s NANOCAMELID_PREFILL_BATCHES=%s ./scripts/pi/bench-1b-prefill.sh' \
     "$(shell_quote "$PREFILL_PROMPT")" \
     "$(shell_quote "$PREFILL_TOKENS")" \
@@ -292,6 +300,9 @@ print_evidence_command() {
   printf 'evidence_command:'
   if [[ -n "$REMOTE_CONTEXT_LIMIT" ]]; then
     printf ' NANOCAMELID_CONTEXT_LIMIT=%s' "$(shell_quote "$REMOTE_CONTEXT_LIMIT")"
+  fi
+  if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
+    printf ' NANOCAMELID_PREFILL_BATCH=%s' "$(shell_quote "$REMOTE_PREFILL_BATCH")"
   fi
   printf ' NANOCAMELID_SMOKE_KIND=%s NANOCAMELID_SMOKE_PROMPT=%s NANOCAMELID_SMOKE_TOKENS=%s NANOCAMELID_CONTEXT_PACKS=%s NANOCAMELID_PREFILL_PROMPT=%s NANOCAMELID_PREFILL_TOKENS=%s NANOCAMELID_PREFILL_TEMP=%s NANOCAMELID_PREFILL_BATCHES=%s ./scripts/pi/evidence-1b.sh' \
     "$(shell_quote "$REMOTE_SMOKE_KIND")" \
@@ -326,6 +337,9 @@ if ! remote_smoke_disabled; then
   if [[ -n "$REMOTE_CONTEXT_LIMIT" ]]; then
     require_positive_integer "Remote context limit" "$REMOTE_CONTEXT_LIMIT"
   fi
+  if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
+    require_positive_integer "Remote prefill batch" "$REMOTE_PREFILL_BATCH"
+  fi
   if [[ -n "$REMOTE_CONTEXT_PACKS" ]]; then
     require_context_caps "$REMOTE_CONTEXT_PACKS"
   fi
@@ -355,6 +369,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "ready_tokens: $READY_TOKENS"
   echo "ready_temp: $READY_TEMP"
   echo "context_limit: ${REMOTE_CONTEXT_LIMIT:-unset}"
+  echo "prefill_batch: ${REMOTE_PREFILL_BATCH:-default}"
   echo "context_pack_caps: ${REMOTE_CONTEXT_PACKS:-skipped}"
   echo "prefill_bench_enabled: $REMOTE_PREFILL_BENCH"
   echo "evidence_enabled: $REMOTE_EVIDENCE"
@@ -392,14 +407,22 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if remote_smoke_disabled || evidence_enabled || [[ -z "$REMOTE_CONTEXT_PACKS" ]]; then
     echo "context_pack_command: skipped"
   elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
-    printf 'context_pack_command: NANOCAMELID_CONTEXT_PACKS=%s ./scripts/pi/context-pack-1b.sh %s %s %s %s\n' \
+    printf 'context_pack_command:'
+    if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
+      printf ' NANOCAMELID_PREFILL_BATCH=%s' "$(shell_quote "$REMOTE_PREFILL_BATCH")"
+    fi
+    printf ' NANOCAMELID_CONTEXT_PACKS=%s ./scripts/pi/context-pack-1b.sh %s %s %s %s\n' \
       "$(shell_quote "$REMOTE_CONTEXT_PACKS")" \
       "$(shell_quote "$REMOTE_SMOKE_GGUF")" \
       "$(shell_quote "$REMOTE_SMOKE_KIND")" \
       "$(shell_quote "$SMOKE_PROMPT")" \
       "$(shell_quote "$SMOKE_TOKENS")"
   else
-    printf 'context_pack_command: NANOCAMELID_CONTEXT_PACKS=%s ./scripts/pi/context-pack-1b.sh %s %s %s\n' \
+    printf 'context_pack_command:'
+    if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
+      printf ' NANOCAMELID_PREFILL_BATCH=%s' "$(shell_quote "$REMOTE_PREFILL_BATCH")"
+    fi
+    printf ' NANOCAMELID_CONTEXT_PACKS=%s ./scripts/pi/context-pack-1b.sh %s %s %s\n' \
       "$(shell_quote "$REMOTE_CONTEXT_PACKS")" \
       "$(shell_quote "$REMOTE_SMOKE_KIND")" \
       "$(shell_quote "$SMOKE_PROMPT")" \
@@ -434,6 +457,7 @@ printf -v READY_TOKENS_ARG '%q' "$READY_TOKENS"
 printf -v READY_TEMP_ARG '%q' "$READY_TEMP"
 printf -v REMOTE_CONTEXT_LIMIT_ARG '%q' "$REMOTE_CONTEXT_LIMIT"
 printf -v REMOTE_CONTEXT_PACKS_ARG '%q' "$REMOTE_CONTEXT_PACKS"
+printf -v REMOTE_PREFILL_BATCH_ARG '%q' "$REMOTE_PREFILL_BATCH"
 printf -v REMOTE_PREFILL_BENCH_ARG '%q' "$REMOTE_PREFILL_BENCH"
 printf -v REMOTE_PREFILL_BENCH_LOWER_ARG '%q' "$REMOTE_PREFILL_BENCH_LOWER"
 printf -v REMOTE_EVIDENCE_ARG '%q' "$REMOTE_EVIDENCE"
@@ -443,7 +467,7 @@ printf -v PREFILL_TOKENS_ARG '%q' "$PREFILL_TOKENS"
 printf -v PREFILL_TEMP_ARG '%q' "$PREFILL_TEMP"
 printf -v PREFILL_BATCHES_ARG '%q' "$PREFILL_BATCHES"
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
-  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG REMOTE_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT_ARG REMOTE_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS_ARG REMOTE_PREFILL_BENCH=$REMOTE_PREFILL_BENCH_ARG REMOTE_PREFILL_BENCH_LOWER=$REMOTE_PREFILL_BENCH_LOWER_ARG REMOTE_EVIDENCE=$REMOTE_EVIDENCE_ARG REMOTE_EVIDENCE_LOWER=$REMOTE_EVIDENCE_LOWER_ARG PREFILL_PROMPT=$PREFILL_PROMPT_ARG PREFILL_TOKENS=$PREFILL_TOKENS_ARG PREFILL_TEMP=$PREFILL_TEMP_ARG PREFILL_BATCHES=$PREFILL_BATCHES_ARG bash" << 'EOF'
+  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG REMOTE_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT_ARG REMOTE_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS_ARG REMOTE_PREFILL_BATCH=$REMOTE_PREFILL_BATCH_ARG REMOTE_PREFILL_BENCH=$REMOTE_PREFILL_BENCH_ARG REMOTE_PREFILL_BENCH_LOWER=$REMOTE_PREFILL_BENCH_LOWER_ARG REMOTE_EVIDENCE=$REMOTE_EVIDENCE_ARG REMOTE_EVIDENCE_LOWER=$REMOTE_EVIDENCE_LOWER_ARG PREFILL_PROMPT=$PREFILL_PROMPT_ARG PREFILL_TOKENS=$PREFILL_TOKENS_ARG PREFILL_TEMP=$PREFILL_TEMP_ARG PREFILL_BATCHES=$PREFILL_BATCHES_ARG bash" << 'EOF'
   # Export Cargo path to make sure cargo commands work in non-interactive shells
   export PATH="$HOME/.cargo/bin:$PATH"
   if [ -f "$HOME/.cargo/env" ]; then
@@ -508,6 +532,9 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     if [ -n "$REMOTE_CONTEXT_LIMIT" ]; then
       env_args+=("NANOCAMELID_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT")
     fi
+    if [ -n "$REMOTE_PREFILL_BATCH" ]; then
+      env_args+=("NANOCAMELID_PREFILL_BATCH=$REMOTE_PREFILL_BATCH")
+    fi
     case "$ready_chat_lower" in
       0 | false | no | off) ;;
       *)
@@ -538,11 +565,31 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     if [ -n "$REMOTE_CONTEXT_LIMIT" ]; then
       env_args+=("NANOCAMELID_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT")
     fi
+    if [ -n "$REMOTE_PREFILL_BATCH" ]; then
+      env_args+=("NANOCAMELID_PREFILL_BATCH=$REMOTE_PREFILL_BATCH")
+    fi
 
     if [ $# -gt 0 ]; then
       env "${env_args[@]}" ./scripts/pi/bench-1b-prefill.sh "$1"
     else
       env "${env_args[@]}" ./scripts/pi/bench-1b-prefill.sh
+    fi
+  }
+
+  run_context_pack() {
+    env_args=(
+      "NANOCAMELID_WORKSPACE=$PI_WORKSPACE"
+      "NANOCAMELID_REPO=$PI_REPO"
+      "NANOCAMELID_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS"
+    )
+    if [ -n "$REMOTE_PREFILL_BATCH" ]; then
+      env_args+=("NANOCAMELID_PREFILL_BATCH=$REMOTE_PREFILL_BATCH")
+    fi
+
+    if [ $# -gt 0 ]; then
+      env "${env_args[@]}" ./scripts/pi/context-pack-1b.sh "$1" "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+    else
+      env "${env_args[@]}" ./scripts/pi/context-pack-1b.sh "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
     fi
   }
 
@@ -561,6 +608,9 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     )
     if [ -n "$REMOTE_CONTEXT_LIMIT" ]; then
       env_args+=("NANOCAMELID_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT")
+    fi
+    if [ -n "$REMOTE_PREFILL_BATCH" ]; then
+      env_args+=("NANOCAMELID_PREFILL_BATCH=$REMOTE_PREFILL_BATCH")
     fi
 
     if [ $# -gt 0 ]; then
@@ -593,10 +643,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     run_ready_1b "$REMOTE_SMOKE_GGUF"
     if [ -n "$REMOTE_CONTEXT_PACKS" ]; then
       echo "==> Running explicit 1B context-pack smoke gate: $REMOTE_CONTEXT_PACKS"
-      NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
-        NANOCAMELID_REPO="$PI_REPO" \
-        NANOCAMELID_CONTEXT_PACKS="$REMOTE_CONTEXT_PACKS" \
-        ./scripts/pi/context-pack-1b.sh "$REMOTE_SMOKE_GGUF" "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+      run_context_pack "$REMOTE_SMOKE_GGUF"
     fi
     if is_enabled_toggle "$REMOTE_PREFILL_BENCH_LOWER"; then
       echo "==> Running explicit 1B prefill batch sweep: $PREFILL_BATCHES"
@@ -607,10 +654,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     run_ready_1b
     if [ -n "$REMOTE_CONTEXT_PACKS" ]; then
       echo "==> Running default Pi-local 1B context-pack smoke gate: $REMOTE_CONTEXT_PACKS"
-      NANOCAMELID_WORKSPACE="$PI_WORKSPACE" \
-        NANOCAMELID_REPO="$PI_REPO" \
-        NANOCAMELID_CONTEXT_PACKS="$REMOTE_CONTEXT_PACKS" \
-        ./scripts/pi/context-pack-1b.sh "$REMOTE_SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+      run_context_pack
     fi
     if is_enabled_toggle "$REMOTE_PREFILL_BENCH_LOWER"; then
       echo "==> Running default Pi-local 1B prefill batch sweep: $PREFILL_BATCHES"
