@@ -132,6 +132,10 @@ else
   MODEL="$Q8_MODEL"
   MODEL_SOURCE="workspace Q8_0 fallback"
 fi
+if looks_like_non_gguf_model_path "${1:-}"; then
+  echo "1B chat model argument must be a .gguf path: $1" >&2
+  exit 2
+fi
 if looks_like_gguf_path "${1:-}"; then
   MODEL="$1"
   MODEL_SOURCE="explicit argument"

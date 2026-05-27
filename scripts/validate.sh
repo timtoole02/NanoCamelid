@@ -564,6 +564,7 @@ expect_failure "chat-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad
 expect_failure "chat-1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
+expect_failure "chat-1b invalid explicit model path" ./scripts/pi/chat-1b.sh /models/not-a-gguf --dry-run
 expect_failure "chat-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/chat-1b.sh
 
 echo "==> Checking 1B Pi chat launcher rejects invalid temperature..."
@@ -652,8 +653,8 @@ expect_output "evidence-1b json records context caps" "\"context_pack_caps\":[51
 expect_output "evidence-1b json records prefill batches" "\"prefill_batches\":[1,16,32,64]" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b model command" "model_command: ./scripts/pi/model-1b.sh" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b ready no-chat command" "ready_command: ./scripts/pi/ready-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" ./scripts/pi/evidence-1b.sh --dry-run
-expect_output "evidence-1b context-pack command" "context_pack_command: ./scripts/pi/context-pack-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/evidence-1b.sh --dry-run
-expect_output "evidence-1b prefill command" "prefill_bench_command: ./scripts/pi/bench-1b-prefill.sh" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b context-pack command" "context_pack_command: NANOCAMELID_CONTEXT_PACKS=512\\,1024\\,2048\\,4096\\,8192 ./scripts/pi/context-pack-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b prefill command" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/bench-1b-prefill.sh" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b explicit model ready command" "ready_command: ./scripts/pi/ready-1b.sh /models/custom.gguf chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" ./scripts/pi/evidence-1b.sh /models/custom.gguf --dry-run
 expect_failure "evidence-1b invalid explicit model path" ./scripts/pi/evidence-1b.sh /models/not-a-gguf --dry-run
 expect_failure "evidence-1b invalid smoke kind" env NANOCAMELID_SMOKE_KIND=bad ./scripts/pi/evidence-1b.sh --dry-run
