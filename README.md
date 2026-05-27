@@ -43,6 +43,7 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --dry-run
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/chat-1b.sh --dry-run
 ./scripts/pi/context-pack-1b.sh --dry-run
+./scripts/pi/evidence-1b.sh --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- chat 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
@@ -104,6 +105,10 @@ Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
 `json:` status row listing the selected 1B model, strict shape-audit marker,
 smoke kind, token count, prefill batch, and validated context caps; dry runs
 also print `shape_audit: enabled` and the same row as `json_on_success:`.
+`./scripts/pi/evidence-1b.sh` is the Pi-side evidence bundle for one 1B run. It
+delegates to `model-1b.sh`, `ready-1b.sh --no-chat`, `context-pack-1b.sh`, and
+`bench-1b-prefill.sh` in that order. Successful runs end with
+`evidence_1b_status: ok`; dry runs print the exact delegated command plan.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
 preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
 prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
@@ -393,10 +398,10 @@ internal disk. On prepared Pi workspaces, the same script defaults to
 `/mnt/nanocamelid/target`. The gate also runs the `model 1b`, `inspect 1b`,
 `generate 1b`, `chat 1b`, `smoke 1b`, `ready 1b`, and `tui 1b` CLI dry runs,
 plus the Pi `smoke-1b.sh`, `ready-1b.sh`, `chat-1b.sh`, and
-`bench-1b-prefill.sh` launcher dry runs, plus the `context-pack-1b.sh` and
-installer dry runs, so the default Llama 3.2 1B command paths and build-entry
-target-dir guard stay covered without requiring the GGUF during local
-validation.
+`bench-1b-prefill.sh` launcher dry runs, plus the `context-pack-1b.sh`,
+`evidence-1b.sh`, and installer dry runs, so the default Llama 3.2 1B command
+paths and build-entry target-dir guard stay covered without requiring the GGUF
+during local validation.
 
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
@@ -487,6 +492,7 @@ shape audit, inspect, smoke, and one direct chat turn:
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/ready-1b.sh --no-chat
 ./scripts/pi/ready-1b.sh --dry-run
+./scripts/pi/evidence-1b.sh --dry-run
 ```
 
 Use `model-1b.sh --dry-run` as a cheap model-placement preflight when the GGUF
@@ -516,6 +522,19 @@ non-interactive automation, the CLI and `ready-1b.sh` also honor
 `NANOCAMELID_READY_SMOKE_TOKENS` as smoke defaults before the final direct chat
 turn. Successful runs print `ready_1b_status: ok` as the final readiness
 marker.
+
+When you want one Pi log that captures the core 1B evidence after a fresh build,
+run:
+
+```bash
+./scripts/pi/evidence-1b.sh
+./scripts/pi/evidence-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf
+```
+
+The bundle runs the strict model audit, readiness gate without the final direct
+chat turn, context-pack smoke gate, and prefill batch sweep in order. It honors
+the same model override variables as the individual 1B scripts and finishes with
+`evidence_1b_status: ok` when every delegated gate passes.
 
 For the supported Llama 3.2 3B Instruct Q4_0 row, place
 `Llama-3.2-3B-Instruct-Q4_0.gguf` under the same `models/` directory and use the

@@ -24,12 +24,13 @@ Runs NanoCamelid's standard local validation gate:
   16. ./scripts/pi/chat-1b.sh --dry-run
   17. ./scripts/pi/bench-1b-prefill.sh --dry-run
   18. ./scripts/pi/context-pack-1b.sh --dry-run
-  19. ./scripts/pi/strand-cluster.sh --dry-run
-  20. ./scripts/pi/mixtral-cluster.sh --dry-run
-  21. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  22. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  23. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  24. ./scripts/install.sh --dry-run
+  19. ./scripts/pi/evidence-1b.sh --dry-run
+  20. ./scripts/pi/strand-cluster.sh --dry-run
+  21. ./scripts/pi/mixtral-cluster.sh --dry-run
+  22. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  23. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  24. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  25. ./scripts/install.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -189,7 +190,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
   exit 0
 fi
 
@@ -639,6 +640,19 @@ expect_failure "context-pack-1b repo-local target dir" env CARGO_TARGET_DIR=targ
 
 echo "==> Checking 1B Pi context-pack launcher rejects invalid context cap..."
 expect_failure "context-pack-1b invalid context cap" env NANOCAMELID_CONTEXT_PACKS=512,bad,2048 ./scripts/pi/context-pack-1b.sh --dry-run
+
+echo "==> Checking 1B Pi evidence bundle dry run..."
+./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b help documents context packs" "NANOCAMELID_CONTEXT_PACKS" ./scripts/pi/evidence-1b.sh --help
+expect_output "evidence-1b success marker dry run" "status_on_success: evidence_1b_status: ok" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b model command" "model_command: ./scripts/pi/model-1b.sh" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b ready no-chat command" "ready_command: ./scripts/pi/ready-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b context-pack command" "context_pack_command: ./scripts/pi/context-pack-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b prefill command" "prefill_bench_command: ./scripts/pi/bench-1b-prefill.sh" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b explicit model ready command" "ready_command: ./scripts/pi/ready-1b.sh /models/custom.gguf chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" ./scripts/pi/evidence-1b.sh /models/custom.gguf --dry-run
+expect_failure "evidence-1b invalid explicit model path" ./scripts/pi/evidence-1b.sh /models/not-a-gguf --dry-run
+expect_failure "evidence-1b invalid smoke kind" env NANOCAMELID_SMOKE_KIND=bad ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure "evidence-1b invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=0 ./scripts/pi/evidence-1b.sh --dry-run
 
 echo "==> Checking Strand cluster launcher dry run..."
 ./scripts/pi/strand-cluster.sh --dry-run
