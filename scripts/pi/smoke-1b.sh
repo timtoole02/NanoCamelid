@@ -176,12 +176,13 @@ json_string() {
 }
 
 smoke_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "${NANOCAMELID_CONTEXT_LIMIT:-unset}")" \
     "$SMOKE_KIND" \
-    "$SMOKE_TOKENS"
+    "$SMOKE_TOKENS" \
+    "$(prefill_batch_plan_value)"
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then

@@ -3309,7 +3309,12 @@ fn print_smoke_dry_run(
         println!("status_on_success: smoke_1b_status: ok");
         println!(
             "json_on_success: {}",
-            smoke_1b_status_json(model_path, parsed, &context_limit_plan_value())
+            smoke_1b_status_json(
+                model_path,
+                parsed,
+                &context_limit_plan_value(),
+                prefill_batch,
+            )
         );
     }
     println!(
@@ -3474,7 +3479,8 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
                 &smoke,
                 chat_enabled,
                 chat_tokens,
-                &context_limit_plan_value()
+                &context_limit_plan_value(),
+                prefill_batch,
             )
         );
         println!(
@@ -3559,7 +3565,14 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         println!("ready_1b_status: ok");
         println!(
             "json: {}",
-            ready_1b_status_json(model_path, &smoke, false, None, &context_limit_plan_value())
+            ready_1b_status_json(
+                model_path,
+                &smoke,
+                false,
+                None,
+                &context_limit_plan_value(),
+                prefill_batch,
+            )
         );
         return ExitCode::SUCCESS;
     }
@@ -3580,7 +3593,8 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
                 &smoke,
                 true,
                 chat_tokens,
-                &context_limit_plan_value()
+                &context_limit_plan_value(),
+                prefill_batch,
             )
         );
     }
@@ -3593,17 +3607,19 @@ fn ready_1b_status_json(
     direct_chat: bool,
     chat_tokens: Option<usize>,
     context_limit: &str,
+    prefill_batch: usize,
 ) -> String {
     let chat_tokens = chat_tokens
         .map(|tokens| tokens.to_string())
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
         json_string(context_limit),
         smoke.kind.label(),
         smoke.max_tokens,
+        prefill_batch,
         direct_chat,
         chat_tokens
     )
@@ -3617,14 +3633,20 @@ fn model_1b_status_json(model_path: &Path, model_source: &str) -> String {
     )
 }
 
-fn smoke_1b_status_json(model_path: &Path, smoke: &Smoke1BArgs, context_limit: &str) -> String {
+fn smoke_1b_status_json(
+    model_path: &Path,
+    smoke: &Smoke1BArgs,
+    context_limit: &str,
+    prefill_batch: usize,
+) -> String {
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
         json_string(context_limit),
         smoke.kind.label(),
         smoke.max_tokens,
+        prefill_batch,
     )
 }
 
@@ -3672,6 +3694,14 @@ fn smoke_plan_command_with_context(
 }
 
 fn run_smoke_1b_gate(model_path: &Path, parsed: &Smoke1BArgs) -> ExitCode {
+    let prefill_batch = match prefill_batch_size_from_env() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
+
     if !model_path.is_file() {
         eprintln!("{}", llama32_1b_model_not_found_message(model_path));
         return ExitCode::from(2);
@@ -3692,7 +3722,12 @@ fn run_smoke_1b_gate(model_path: &Path, parsed: &Smoke1BArgs) -> ExitCode {
         println!("smoke_1b_status: ok");
         println!(
             "json: {}",
-            smoke_1b_status_json(model_path, parsed, &context_limit_plan_value())
+            smoke_1b_status_json(
+                model_path,
+                parsed,
+                &context_limit_plan_value(),
+                prefill_batch
+            )
         );
     }
     smoke_code
@@ -6916,9 +6951,10 @@ flags\t\t: sse4_2 avx2
                 &smoke,
                 true,
                 Some(4),
-                "512"
+                "512",
+                32,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"direct_chat\":true,\"chat_tokens\":4}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":32,\"direct_chat\":true,\"chat_tokens\":4}"
         );
     }
 
@@ -6937,9 +6973,10 @@ flags\t\t: sse4_2 avx2
             smoke_1b_status_json(
                 Path::new("/models/Llama-3.2-1B-Instruct-Q8_0.gguf"),
                 &smoke,
-                "unset"
+                "unset",
+                16,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
         );
     }
 
