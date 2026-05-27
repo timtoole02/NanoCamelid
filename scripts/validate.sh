@@ -645,6 +645,10 @@ echo "==> Checking 1B Pi evidence bundle dry run..."
 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b help documents context packs" "NANOCAMELID_CONTEXT_PACKS" ./scripts/pi/evidence-1b.sh --help
 expect_output "evidence-1b success marker dry run" "status_on_success: evidence_1b_status: ok" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b json records context caps" "\"context_pack_caps\":[512,1024,2048,4096,8192]" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b json records prefill batches" "\"prefill_batches\":[1,16,32,64]" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b model command" "model_command: ./scripts/pi/model-1b.sh" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b ready no-chat command" "ready_command: ./scripts/pi/ready-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b context-pack command" "context_pack_command: ./scripts/pi/context-pack-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/evidence-1b.sh --dry-run
@@ -653,6 +657,8 @@ expect_output "evidence-1b explicit model ready command" "ready_command: ./scrip
 expect_failure "evidence-1b invalid explicit model path" ./scripts/pi/evidence-1b.sh /models/not-a-gguf --dry-run
 expect_failure "evidence-1b invalid smoke kind" env NANOCAMELID_SMOKE_KIND=bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=0 ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure "evidence-1b invalid context caps" env NANOCAMELID_CONTEXT_PACKS=512,bad ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure "evidence-1b invalid prefill batches" env NANOCAMELID_PREFILL_BATCHES=1,bad ./scripts/pi/evidence-1b.sh --dry-run
 
 echo "==> Checking Strand cluster launcher dry run..."
 ./scripts/pi/strand-cluster.sh --dry-run

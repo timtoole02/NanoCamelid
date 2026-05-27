@@ -74,6 +74,63 @@ shell_command() {
   printf '\n'
 }
 
+json_string() {
+  local value="$1"
+  local out='"'
+  local i ch
+
+  for ((i = 0; i < ${#value}; i++)); do
+    ch="${value:i:1}"
+    case "$ch" in
+      '"') out+='\"' ;;
+      "\\") out+='\\' ;;
+      $'\n') out+='\n' ;;
+      $'\r') out+='\r' ;;
+      $'\t') out+='\t' ;;
+      *) out+="$ch" ;;
+    esac
+  done
+
+  out+='"'
+  printf '%s' "$out"
+}
+
+parse_positive_integer_list() {
+  local label="$1"
+  local value="$2"
+  local item
+  local parsed=()
+
+  for item in ${value//,/ }; do
+    if [[ ! "$item" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Invalid $label: $item" >&2
+      exit 2
+    fi
+    parsed+=("$item")
+  done
+  if [[ ${#parsed[@]} -eq 0 ]]; then
+    echo "No $label values were provided." >&2
+    exit 2
+  fi
+
+  printf '%s\n' "${parsed[@]}"
+}
+
+json_integer_array() {
+  local first=1
+  local value
+
+  printf '['
+  for value in "$@"; do
+    if [[ "$first" == "0" ]]; then
+      printf ','
+    fi
+    first=0
+    printf '%s' "$value"
+  done
+  printf ']'
+}
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -98,6 +155,29 @@ TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/targe
 SMOKE_KIND="${NANOCAMELID_SMOKE_KIND:-chat}"
 SMOKE_PROMPT="${NANOCAMELID_SMOKE_PROMPT:-Say hello in one sentence.}"
 SMOKE_TOKENS="${NANOCAMELID_SMOKE_TOKENS:-8}"
+CONTEXT_PACKS_RAW="${NANOCAMELID_CONTEXT_PACKS:-512,1024,2048,4096,8192}"
+PREFILL_BATCHES_RAW="${NANOCAMELID_PREFILL_BATCHES:-1,16,32,64}"
+Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
+Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+
+if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
+  MODEL="${MODEL_ARGS[0]}"
+  MODEL_SOURCE="explicit argument"
+elif [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
+  require_gguf_model_path "NANOCAMELID_SMOKE_GGUF" "$NANOCAMELID_SMOKE_GGUF"
+  MODEL="$NANOCAMELID_SMOKE_GGUF"
+  MODEL_SOURCE="NANOCAMELID_SMOKE_GGUF"
+elif [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
+  require_gguf_model_path "NANOCAMELID_MODEL_GGUF" "$NANOCAMELID_MODEL_GGUF"
+  MODEL="$NANOCAMELID_MODEL_GGUF"
+  MODEL_SOURCE="NANOCAMELID_MODEL_GGUF"
+elif [[ -f "$Q4_MODEL" ]]; then
+  MODEL="$Q4_MODEL"
+  MODEL_SOURCE="workspace Q4_0 default"
+else
+  MODEL="$Q8_MODEL"
+  MODEL_SOURCE="workspace Q8_0 fallback"
+fi
 
 case "$SMOKE_KIND" in
   chat | model | q8-chat | q8-model) ;;
@@ -117,18 +197,36 @@ require_positive_integer() {
   fi
 }
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
+CONTEXT_PACKS=($(parse_positive_integer_list "context cap" "$CONTEXT_PACKS_RAW"))
+PREFILL_BATCHES=($(parse_positive_integer_list "prefill batch size" "$PREFILL_BATCHES_RAW"))
+
+evidence_1b_status_json() {
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_kind":"%s","smoke_tokens":%s,"context_pack_caps":%s,"prefill_batches":%s}\n' \
+    "$(json_string "$MODEL")" \
+    "$(json_string "$MODEL_SOURCE")" \
+    "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
+    "$SMOKE_KIND" \
+    "$SMOKE_TOKENS" \
+    "$(json_integer_array "${CONTEXT_PACKS[@]}")" \
+    "$(json_integer_array "${PREFILL_BATCHES[@]}")"
+}
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid Llama 3.2 1B evidence bundle dry run"
   echo "repo: $REPO"
   echo "workspace: $WORKSPACE"
   echo "cargo_target_dir: $TARGET_DIR"
+  echo "selected_source: $MODEL_SOURCE"
+  echo "model: $MODEL"
+  echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
-  echo "context_pack_caps: ${NANOCAMELID_CONTEXT_PACKS:-512,1024,2048,4096,8192}"
-  echo "prefill_batches: ${NANOCAMELID_PREFILL_BATCHES:-1,16,32,64}"
+  echo "context_pack_caps: ${CONTEXT_PACKS[*]}"
+  echo "prefill_batches: ${PREFILL_BATCHES[*]}"
   echo "status_on_success: evidence_1b_status: ok"
+  echo "json_on_success: $(evidence_1b_status_json)"
   printf 'model_command: '
   if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
     shell_command ./scripts/pi/model-1b.sh "${MODEL_ARGS[@]}"
@@ -159,6 +257,9 @@ fi
 echo "NanoCamelid Llama 3.2 1B evidence bundle"
 echo "workspace: $WORKSPACE"
 echo "cargo_target_dir: $TARGET_DIR"
+echo "selected_source: $MODEL_SOURCE"
+echo "model: $MODEL"
+echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
 echo "smoke_kind: $SMOKE_KIND"
 echo "smoke_prompt: $SMOKE_PROMPT"
 echo "smoke_tokens: $SMOKE_TOKENS"
@@ -197,3 +298,4 @@ else
 fi
 
 echo "evidence_1b_status: ok"
+echo "json: $(evidence_1b_status_json)"
