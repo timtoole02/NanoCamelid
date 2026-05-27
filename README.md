@@ -45,6 +45,7 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --dry-run
 ./scripts/pi/context-pack-1b.sh --dry-run
 ./scripts/pi/evidence-1b.sh --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- chat 1b --dry-run
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- evidence 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
 CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
@@ -117,6 +118,10 @@ delegates to `model-1b.sh`, `ready-1b.sh --no-chat`, `context-pack-1b.sh`, and
 `NANOCAMELID_CONTEXT_LIMIT` cap in the delegated dry-run plan. Successful runs
 end with `evidence_1b_status: ok`; dry runs print the exact delegated command
 plan.
+`cargo run -- evidence 1b` runs the same bounded 1B evidence bundle from the
+Rust CLI when the selected GGUF is present. Dry runs print the readiness
+no-chat, per-context smoke, and prefill sweep commands plus a compact
+`json_on_success` row before loading the model.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
 preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
 prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
@@ -523,6 +528,7 @@ release binary or Cargo directly:
 nanocamelid ready 1b
 nanocamelid ready 1b --no-chat
 nanocamelid ready 1b --dry-run
+nanocamelid evidence 1b --dry-run
 nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ```
 
@@ -543,12 +549,14 @@ run:
 ```bash
 ./scripts/pi/evidence-1b.sh
 ./scripts/pi/evidence-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf
+nanocamelid evidence 1b
+nanocamelid evidence 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf
 ```
 
 The bundle runs the strict model audit, readiness gate without the final direct
 chat turn, context-pack smoke gate, and prefill batch sweep in order. It honors
-the same model override variables as the individual 1B scripts and finishes with
-`evidence_1b_status: ok` when every delegated gate passes.
+the same model override variables as the individual 1B scripts and CLI aliases
+and finishes with `evidence_1b_status: ok` when every delegated gate passes.
 
 For the supported Llama 3.2 3B Instruct Q4_0 row, place
 `Llama-3.2-3B-Instruct-Q4_0.gguf` under the same `models/` directory and use the

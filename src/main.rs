@@ -23,6 +23,7 @@ const READY_CHAT_ENV: &str = "NANOCAMELID_READY_CHAT";
 const SMOKE_KIND_ENV: &str = "NANOCAMELID_SMOKE_KIND";
 const SMOKE_PROMPT_ENV: &str = "NANOCAMELID_SMOKE_PROMPT";
 const SMOKE_TOKENS_ENV: &str = "NANOCAMELID_SMOKE_TOKENS";
+const CONTEXT_PACKS_ENV: &str = "NANOCAMELID_CONTEXT_PACKS";
 const READY_SMOKE_KIND_ENV: &str = "NANOCAMELID_READY_SMOKE_KIND";
 const READY_SMOKE_PROMPT_ENV: &str = "NANOCAMELID_READY_SMOKE_PROMPT";
 const READY_SMOKE_TOKENS_ENV: &str = "NANOCAMELID_READY_SMOKE_TOKENS";
@@ -44,6 +45,7 @@ const DEFAULT_1B_PREFILL_PROMPT: &str =
 const DEFAULT_1B_PREFILL_TOKENS: usize = 2;
 const DEFAULT_1B_PREFILL_TEMP: &str = "0.0";
 const DEFAULT_1B_PREFILL_BATCHES: &str = "1,16,32,64";
+const DEFAULT_1B_CONTEXT_PACKS: &str = "512,1024,2048,4096,8192";
 const PERFORMANCE_GOVERNOR_COMMAND: &str =
     "echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor";
 const DEFAULT_RAYON_THREADS: usize = 4;
@@ -223,6 +225,36 @@ fn main() -> ExitCode {
                 None => {
                     eprintln!("missing readiness target");
                     print_help(HelpTopic::Ready);
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("evidence") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Evidence);
+                return ExitCode::SUCCESS;
+            }
+
+            match args.get(1).map(String::as_str) {
+                Some(alias) if is_llama32_1b_alias(alias) => {
+                    match parse_evidence_1b_args(&args[2..]) {
+                        Ok(parsed) if parsed.dry_run => print_evidence_1b_dry_run(&parsed),
+                        Ok(parsed) => run_evidence_1b(parsed),
+                        Err(err) => {
+                            eprintln!("{err}");
+                            print_help(HelpTopic::Evidence);
+                            ExitCode::from(2)
+                        }
+                    }
+                }
+                Some(other) => {
+                    eprintln!("unknown evidence target: {other}");
+                    print_help(HelpTopic::Evidence);
+                    ExitCode::from(2)
+                }
+                None => {
+                    eprintln!("missing evidence target");
+                    print_help(HelpTopic::Evidence);
                     ExitCode::from(2)
                 }
             }
@@ -568,6 +600,7 @@ enum HelpTopic {
     Chat,
     Tui,
     Ready,
+    Evidence,
     Bench,
     Smoke,
 }
@@ -620,6 +653,12 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
         {
             Some(HelpTopic::Ready)
         }
+        Some("evidence")
+            if args.get(1).is_some_and(|value| is_llama32_1b_alias(value))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Evidence)
+        }
         Some("bench")
             if args.get(1).is_some_and(|value| {
                 is_llama32_1b_alias(value)
@@ -650,6 +689,7 @@ fn help_topic_named(name: &str) -> Option<HelpTopic> {
         "chat" => Some(HelpTopic::Chat),
         "tui" => Some(HelpTopic::Tui),
         "ready" => Some(HelpTopic::Ready),
+        "evidence" => Some(HelpTopic::Evidence),
         "bench" => Some(HelpTopic::Bench),
         "smoke" => Some(HelpTopic::Smoke),
         _ => None,
@@ -670,6 +710,7 @@ fn print_help(topic: HelpTopic) {
         HelpTopic::Chat => print_chat_usage(),
         HelpTopic::Tui => print_tui_usage(),
         HelpTopic::Ready => print_ready_usage(),
+        HelpTopic::Evidence => print_evidence_usage(),
         HelpTopic::Bench => print_bench_usage(),
         HelpTopic::Smoke => print_smoke_usage(),
     }
@@ -716,6 +757,8 @@ fn print_usage() {
     println!(
         "                                            Run inspect, smoke, and direct chat gates for 1B"
     );
+    println!("  evidence 1b [model.gguf] [--dry-run]");
+    println!("                                            Run the bounded 1B evidence bundle");
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
     println!("  bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]");
     println!("                                            Run the Pi 1B prefill sweep");
@@ -991,6 +1034,39 @@ fn print_ready_usage() {
     println!("  {READY_PROMPT_ENV:<38} Direct chat prompt after smoke");
     println!("  {READY_TOKENS_ENV:<38} Direct chat generated token count");
     println!("  {READY_TEMP_ENV:<38} Direct chat temperature, default 0.0");
+}
+
+fn print_evidence_usage() {
+    println!("NanoCamelid evidence");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid evidence 1b [model.gguf] [--dry-run]");
+    println!("  nanocamelid evidence llama32-1b [model.gguf] [--dry-run]");
+    println!();
+    println!(
+        "Run the bounded Llama 3.2 1B evidence bundle: readiness without final chat, context-pack smoke, and prefill batch sweep."
+    );
+    println!();
+    println!("Options:");
+    println!(
+        "  --dry-run                                Print the resolved evidence plan without loading the model"
+    );
+    println!();
+    println!("Env:");
+    println!("  {SMOKE_MODEL_GGUF_ENV:<38} Override the 1B evidence GGUF path");
+    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Shared 1B evidence GGUF override");
+    println!(
+        "  {WORKSPACE_ENV:<38} Pi workspace for the 1B default; default {DEFAULT_PI_WORKSPACE}"
+    );
+    println!("  {SMOKE_KIND_ENV:<38} Smoke kind, default chat");
+    println!("  {SMOKE_PROMPT_ENV:<38} Smoke prompt");
+    println!("  {SMOKE_TOKENS_ENV:<38} Smoke generated token count");
+    println!("  {CONTEXT_LIMIT_ENV:<38} Optional runtime context cap for readiness and sweeps");
+    println!("  {CONTEXT_PACKS_ENV:<38} Context caps, default {DEFAULT_1B_CONTEXT_PACKS}");
+    println!("  {PREFILL_PROMPT_ENV:<38} 1B prefill sweep prompt");
+    println!("  {PREFILL_TOKENS_ENV:<38} 1B generated token count");
+    println!("  {PREFILL_TEMP_ENV:<38} 1B sweep temperature");
+    println!("  {PREFILL_BATCHES_ENV:<38} 1B prefill batch list");
 }
 
 fn print_bench_usage() {
@@ -1305,6 +1381,19 @@ struct Bench1BArgs {
     max_tokens: usize,
     temp: String,
     batches: Vec<usize>,
+    dry_run: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct Evidence1BArgs {
+    workspace: String,
+    q4_model_path: String,
+    q8_model_path: String,
+    model_path: String,
+    model_source: &'static str,
+    smoke: SmokeDefaults,
+    context_packs: Vec<usize>,
+    prefill: Bench1BArgs,
     dry_run: bool,
 }
 
@@ -2244,6 +2333,130 @@ fn parse_bench_1b_args(args: &[String]) -> Result<Bench1BArgs, &'static str> {
     )
 }
 
+fn parse_evidence_1b_args(args: &[String]) -> Result<Evidence1BArgs, &'static str> {
+    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+    let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+    parse_evidence_1b_args_with_env(
+        args,
+        smoke_model_path_and_source_from_env(),
+        &workspace,
+        Path::new(&q4_path).is_file(),
+    )
+}
+
+#[cfg(test)]
+fn parse_evidence_1b_args_with_path(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<Evidence1BArgs, &'static str> {
+    parse_evidence_1b_args_with_env(
+        args,
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
+        workspace,
+        q4_exists,
+    )
+}
+
+fn parse_evidence_1b_args_with_env(
+    args: &[String],
+    env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<Evidence1BArgs, &'static str> {
+    let env_model_path = require_env_gguf_path(
+        env_model_path,
+        "1B evidence env model path must be a .gguf path",
+    )?;
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            arg if arg.starts_with('-') => return Err("unknown 1B evidence option"),
+            _ => positionals.push(arg.clone()),
+        }
+    }
+    reject_extra_positionals(&positionals, 1, "unexpected extra 1B evidence argument")?;
+    reject_path_like_non_gguf_first_arg(
+        &positionals,
+        "1B evidence model argument must be a .gguf path",
+    )?;
+
+    let q4_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q4_MODEL);
+    let q8_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q8_MODEL);
+    let (model_path, model_source) = if let Some(model_path) = positionals.first() {
+        (model_path.clone(), "explicit argument")
+    } else if let Some((model_path, source)) = env_model_path {
+        (model_path, source)
+    } else if q4_exists {
+        (q4_model_path.clone(), "workspace Q4_0 default")
+    } else {
+        (q8_model_path.clone(), "workspace Q8_0 fallback")
+    };
+
+    let smoke = smoke_defaults_from_env()?;
+    let context_packs_raw = env::var(CONTEXT_PACKS_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_1B_CONTEXT_PACKS.to_owned());
+    let context_packs = parse_context_packs(&context_packs_raw)?;
+    let prefill_prompt = env::var(PREFILL_PROMPT_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_1B_PREFILL_PROMPT.to_owned());
+    let prefill_tokens = match env::var(PREFILL_TOKENS_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => parse_optional_positive_usize(
+            Some(&value),
+            "1B prefill benchmark max_tokens must be a positive integer",
+        )?
+        .expect("env value is present"),
+        None => DEFAULT_1B_PREFILL_TOKENS,
+    };
+    let prefill_temp = env::var(PREFILL_TEMP_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_1B_PREFILL_TEMP.to_owned());
+    parse_non_negative_f32(
+        &prefill_temp,
+        "1B prefill benchmark temp must be a non-negative number",
+    )?;
+    let prefill_batches_raw = env::var(PREFILL_BATCHES_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_1B_PREFILL_BATCHES.to_owned());
+    let prefill_batches = parse_prefill_batches(&prefill_batches_raw)?;
+
+    let prefill = Bench1BArgs {
+        workspace: workspace.to_owned(),
+        q4_model_path: q4_model_path.clone(),
+        q8_model_path: q8_model_path.clone(),
+        model_path: model_path.clone(),
+        model_source,
+        prompt: prefill_prompt,
+        max_tokens: prefill_tokens,
+        temp: prefill_temp,
+        batches: prefill_batches,
+        dry_run,
+    };
+
+    Ok(Evidence1BArgs {
+        workspace: workspace.to_owned(),
+        q4_model_path,
+        q8_model_path,
+        model_path,
+        model_source,
+        smoke,
+        context_packs,
+        prefill,
+        dry_run,
+    })
+}
+
 #[cfg(test)]
 fn parse_bench_1b_args_with_path(
     args: &[String],
@@ -2383,6 +2596,28 @@ fn parse_prefill_batches(value: &str) -> Result<Vec<usize>, &'static str> {
         Err("1B prefill benchmark batches must be unique")
     } else {
         Ok(batches)
+    }
+}
+
+fn parse_context_packs(value: &str) -> Result<Vec<usize>, &'static str> {
+    let packs = value
+        .split(',')
+        .flat_map(|part| part.split_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<usize>()
+                .ok()
+                .filter(|&pack| pack > 0)
+                .ok_or("1B evidence context packs must be positive integers")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if packs.is_empty() {
+        Err("1B evidence context packs must include at least one positive integer")
+    } else if has_duplicate_usize(&packs) {
+        Err("1B evidence context packs must be unique")
+    } else {
+        Ok(packs)
     }
 }
 
@@ -4602,6 +4837,241 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     chat_code
 }
 
+fn print_evidence_1b_dry_run(parsed: &Evidence1BArgs) -> ExitCode {
+    if let Err(err) = validate_runtime_generation_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+
+    let model_path = Path::new(&parsed.model_path);
+    println!("NanoCamelid Llama 3.2 1B evidence dry run");
+    println!("workspace: {}", parsed.workspace);
+    println!("q4_model: {}", parsed.q4_model_path);
+    println!("q4_exists: {}", Path::new(&parsed.q4_model_path).is_file());
+    println!("q8_model: {}", parsed.q8_model_path);
+    println!("q8_exists: {}", Path::new(&parsed.q8_model_path).is_file());
+    println!("selected_source: {}", parsed.model_source);
+    println!("model: {}", model_path.display());
+    println!("model_exists: {}", model_path.is_file());
+    println!(
+        "quantization: {}",
+        llama32_1b_quantization_for_path(model_path)
+    );
+    println!("context_limit: {}", context_limit_plan_value());
+    println!("smoke_kind: {}", parsed.smoke.kind.label());
+    println!("smoke_prompt: {}", parsed.smoke.prompt);
+    println!("smoke_tokens: {}", parsed.smoke.max_tokens);
+    println!(
+        "context_pack_caps: {}",
+        join_usize_values(&parsed.context_packs, " ")
+    );
+    println!("prefill_prompt: {}", parsed.prefill.prompt);
+    println!("prefill_tokens: {}", parsed.prefill.max_tokens);
+    println!("prefill_temp: {}", parsed.prefill.temp);
+    println!(
+        "prefill_batches: {}",
+        join_usize_values(&parsed.prefill.batches, " ")
+    );
+    println!("status_on_success: evidence_1b_status: ok");
+    println!("json_on_success: {}", evidence_1b_status_json(parsed));
+    println!(
+        "ready_command: {}",
+        evidence_ready_no_chat_command(parsed, context_limit_env_value().as_deref())
+    );
+    for cap in &parsed.context_packs {
+        println!(
+            "context_{cap}_command: {}",
+            evidence_context_pack_command(parsed, *cap)
+        );
+    }
+    println!(
+        "prefill_bench_command: {}",
+        evidence_prefill_bench_command(parsed, context_limit_env_value().as_deref())
+    );
+    ExitCode::SUCCESS
+}
+
+fn run_evidence_1b(parsed: Evidence1BArgs) -> ExitCode {
+    if let Err(err) = validate_runtime_generation_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+    if !Path::new(&parsed.model_path).is_file() {
+        eprintln!(
+            "{}",
+            llama32_1b_model_not_found_message(Path::new(&parsed.model_path))
+        );
+        eprintln!(
+            "Run `nanocamelid evidence 1b --dry-run` to print the resolved evidence commands without loading a model."
+        );
+        return ExitCode::from(2);
+    }
+
+    println!("NanoCamelid Llama 3.2 1B evidence bundle");
+    println!("workspace: {}", parsed.workspace);
+    println!("selected_source: {}", parsed.model_source);
+    println!("model: {}", parsed.model_path);
+    println!(
+        "quantization: {}",
+        llama32_1b_quantization_for_path(Path::new(&parsed.model_path))
+    );
+    println!("context_limit: {}", context_limit_plan_value());
+    println!("smoke_kind: {}", parsed.smoke.kind.label());
+    println!("smoke_prompt: {}", parsed.smoke.prompt);
+    println!("smoke_tokens: {}", parsed.smoke.max_tokens);
+    println!(
+        "context_pack_caps: {}",
+        join_usize_values(&parsed.context_packs, " ")
+    );
+    println!("prefill_prompt: {}", parsed.prefill.prompt);
+    println!("prefill_tokens: {}", parsed.prefill.max_tokens);
+    println!("prefill_temp: {}", parsed.prefill.temp);
+    println!(
+        "prefill_batches: {}",
+        join_usize_values(&parsed.prefill.batches, " ")
+    );
+
+    println!("==> Running readiness gate without final direct chat");
+    let ready_code = run_ready_1b(Ready1BArgs {
+        smoke: Smoke1BArgs {
+            kind: parsed.smoke.kind,
+            model_path: parsed.model_path.clone(),
+            model_source: parsed.model_source,
+            prompt: parsed.smoke.prompt.clone(),
+            max_tokens: parsed.smoke.max_tokens,
+            dry_run: false,
+        },
+        chat_enabled_override: Some(false),
+        chat_prompt_override: None,
+        chat_tokens_override: None,
+        dry_run: false,
+    });
+    if ready_code != ExitCode::SUCCESS {
+        return ready_code;
+    }
+
+    println!("==> Running context-pack smoke gate");
+    for cap in &parsed.context_packs {
+        println!();
+        println!("==> Running with {CONTEXT_LIMIT_ENV}={cap}");
+        match run_evidence_context_pack_smoke(&parsed, *cap) {
+            Ok(0) => {}
+            Ok(status) => return ExitCode::from(status as u8),
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    println!("==> Running prefill batch sweep");
+    let final_json = evidence_1b_status_json(&parsed);
+    let prefill_code = run_bench_1b_prefill(parsed.prefill);
+    if prefill_code == ExitCode::SUCCESS {
+        println!("evidence_1b_status: ok");
+        println!("json: {final_json}");
+    }
+    prefill_code
+}
+
+fn run_evidence_context_pack_smoke(parsed: &Evidence1BArgs, cap: usize) -> Result<i32, String> {
+    let current_exe =
+        env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let mut command = Command::new(current_exe);
+    command
+        .arg("smoke")
+        .arg("1b")
+        .arg(&parsed.model_path)
+        .arg(parsed.smoke.kind.label())
+        .arg(&parsed.smoke.prompt)
+        .arg(parsed.smoke.max_tokens.to_string())
+        .env(CONTEXT_LIMIT_ENV, cap.to_string());
+    let output = command
+        .output()
+        .map_err(|err| format!("failed to run 1B context-pack smoke for cap {cap}: {err}"))?;
+    io::stderr().write_all(&output.stderr).ok();
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(output.status.code().unwrap_or(1))
+}
+
+fn evidence_ready_no_chat_command(parsed: &Evidence1BArgs, context_limit: Option<&str>) -> String {
+    let max_tokens = parsed.smoke.max_tokens.to_string();
+    let args = [
+        "nanocamelid",
+        "ready",
+        "1b",
+        &parsed.model_path,
+        parsed.smoke.kind.label(),
+        &parsed.smoke.prompt,
+        &max_tokens,
+        "--no-chat",
+    ];
+    shell_command_with_optional_runtime_env(
+        &args,
+        context_limit,
+        prefill_batch_env_value().as_deref(),
+    )
+}
+
+fn evidence_context_pack_command(parsed: &Evidence1BArgs, cap: usize) -> String {
+    let cap = cap.to_string();
+    let max_tokens = parsed.smoke.max_tokens.to_string();
+    let args = [
+        "nanocamelid",
+        "smoke",
+        "1b",
+        &parsed.model_path,
+        parsed.smoke.kind.label(),
+        &parsed.smoke.prompt,
+        &max_tokens,
+    ];
+    shell_command_with_optional_runtime_env(&args, Some(&cap), prefill_batch_env_value().as_deref())
+}
+
+fn evidence_prefill_bench_command(parsed: &Evidence1BArgs, context_limit: Option<&str>) -> String {
+    let max_tokens = parsed.prefill.max_tokens.to_string();
+    let batches = join_usize_values(&parsed.prefill.batches, ",");
+    let args = [
+        "nanocamelid",
+        "bench",
+        "1b",
+        &parsed.model_path,
+        &parsed.prefill.prompt,
+        &max_tokens,
+        &parsed.prefill.temp,
+        &batches,
+    ];
+    shell_command_with_optional_runtime_env(&args, context_limit, None)
+}
+
+fn evidence_1b_status_json(parsed: &Evidence1BArgs) -> String {
+    format!(
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"ready_no_chat\":true,\"context_pack\":true,\"prefill_bench\":true,\"smoke_prompt\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"context_pack_caps\":[{}],\"prefill_prompt\":{},\"prefill_tokens\":{},\"prefill_temp\":{},\"prefill_batches\":[{}]}}",
+        json_string(&parsed.model_path),
+        json_string(parsed.model_source),
+        json_string(llama32_1b_quantization_for_path(Path::new(
+            &parsed.model_path
+        ))),
+        json_string(&context_limit_plan_value()),
+        json_string(&parsed.smoke.prompt),
+        parsed.smoke.kind.label(),
+        parsed.smoke.max_tokens,
+        join_usize_values(&parsed.context_packs, ","),
+        json_string(&parsed.prefill.prompt),
+        parsed.prefill.max_tokens,
+        parsed.prefill.temp,
+        join_usize_values(&parsed.prefill.batches, ","),
+    )
+}
+
+fn join_usize_values(values: &[usize], separator: &str) -> String {
+    values
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
 fn ready_1b_status_json(
     model_path: &Path,
     smoke: &Smoke1BArgs,
@@ -6546,17 +7016,20 @@ mod tests {
         LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
         SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand,
         cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
-        default_llama32_3b_model_path, device_model, generation_status_json, help_topic_for_args,
+        default_llama32_3b_model_path, device_model, evidence_1b_status_json,
+        evidence_context_pack_command, evidence_prefill_bench_command,
+        evidence_ready_no_chat_command, generation_status_json, help_topic_for_args,
         help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
         llama32_1b_quantization_for_path, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
         model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
         parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
-        parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
-        parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
-        parse_ready_1b_args_with_env_and_smoke_defaults,
+        parse_context_packs, parse_cpu_list, parse_evidence_1b_args_with_env,
+        parse_evidence_1b_args_with_path, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
+        parse_model_1b_args_with_path, parse_prefill_batches, parse_prefill_bench_1b_batch_metrics,
+        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
@@ -6859,6 +7332,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(help_topic_named("chat"), Some(HelpTopic::Chat));
         assert_eq!(help_topic_named("tui"), Some(HelpTopic::Tui));
         assert_eq!(help_topic_named("ready"), Some(HelpTopic::Ready));
+        assert_eq!(help_topic_named("evidence"), Some(HelpTopic::Evidence));
         assert_eq!(help_topic_named("bench"), Some(HelpTopic::Bench));
         assert_eq!(help_topic_named("smoke"), Some(HelpTopic::Smoke));
         assert_eq!(help_topic_named("unknown"), None);
@@ -6933,6 +7407,14 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["ready".to_owned(), "1b".to_owned(), "--help".to_owned()]),
             Some(HelpTopic::Ready)
+        );
+        assert_eq!(
+            help_topic_for_args(&[
+                "evidence".to_owned(),
+                "llama32-1b".to_owned(),
+                "--help".to_owned()
+            ]),
+            Some(HelpTopic::Evidence)
         );
         assert_eq!(
             help_topic_for_args(&["model".to_owned(), "1b".to_owned(), "--help".to_owned()]),
@@ -7198,6 +7680,124 @@ flags\t\t: sse4_2 avx2
             )
             .expect_err("extra 1B benchmark arg should fail"),
             "unexpected extra 1B prefill benchmark argument"
+        );
+    }
+
+    #[test]
+    fn evidence_1b_args_default_and_reject_bad_values() {
+        let defaults = parse_evidence_1b_args_with_path(
+            &["--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("default 1B evidence args should parse");
+
+        assert_eq!(defaults.workspace, "/mnt/nanocamelid");
+        assert_eq!(
+            defaults.q4_model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(
+            defaults.q8_model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(defaults.model_path, defaults.q8_model_path);
+        assert_eq!(defaults.model_source, "workspace Q8_0 fallback");
+        assert_eq!(defaults.smoke.kind, SmokeKind::Q8Chat);
+        assert_eq!(defaults.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
+        assert_eq!(defaults.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
+        assert_eq!(defaults.context_packs, vec![512, 1024, 2048, 4096, 8192]);
+        assert_eq!(defaults.prefill.prompt, DEFAULT_1B_PREFILL_PROMPT);
+        assert_eq!(defaults.prefill.max_tokens, DEFAULT_1B_PREFILL_TOKENS);
+        assert_eq!(defaults.prefill.temp, DEFAULT_1B_PREFILL_TEMP);
+        assert_eq!(defaults.prefill.batches, vec![1, 16, 32, 64]);
+        assert!(defaults.dry_run);
+
+        let parsed = parse_evidence_1b_args_with_env(
+            &["/models/custom.GGUF".to_owned(), "--dry-run".to_owned()],
+            Some((
+                "/models/smoke-override.gguf".to_owned(),
+                SMOKE_MODEL_GGUF_ENV,
+            )),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit 1B evidence model should parse");
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.model_source, "explicit argument");
+
+        let smoke_env = parse_evidence_1b_args_with_env(
+            &["--dry-run".to_owned()],
+            Some((
+                "/models/smoke-override.gguf".to_owned(),
+                SMOKE_MODEL_GGUF_ENV,
+            )),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("smoke env 1B evidence path should parse");
+        assert_eq!(smoke_env.model_path, "/models/smoke-override.gguf");
+        assert_eq!(smoke_env.model_source, SMOKE_MODEL_GGUF_ENV);
+
+        assert_eq!(
+            parse_evidence_1b_args_with_path(
+                &["/models/not-a-gguf".to_owned(), "--dry-run".to_owned()],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("path-like non-GGUF evidence arg should fail"),
+            "1B evidence model argument must be a .gguf path"
+        );
+        assert_eq!(
+            parse_evidence_1b_args_with_path(
+                &["/models/custom.gguf".to_owned(), "extra".to_owned()],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("extra evidence arg should fail"),
+            "unexpected extra 1B evidence argument"
+        );
+        assert_eq!(
+            parse_context_packs("512,0").expect_err("zero context pack should fail"),
+            "1B evidence context packs must be positive integers"
+        );
+        assert_eq!(
+            parse_context_packs("512, 1024 512").expect_err("duplicate context pack should fail"),
+            "1B evidence context packs must be unique"
+        );
+    }
+
+    #[test]
+    fn evidence_1b_plan_records_bundle_commands_and_json() {
+        let parsed = parse_evidence_1b_args_with_path(
+            &[
+                "/models/Llama-3.2-1B-Instruct-Q4_0.gguf".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit 1B evidence args should parse");
+
+        assert_eq!(
+            evidence_ready_no_chat_command(&parsed, Some("512")),
+            "NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid ready 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf chat 'Say hello in one sentence.' 8 --no-chat"
+        );
+        assert_eq!(
+            evidence_context_pack_command(&parsed, 1024),
+            "NANOCAMELID_CONTEXT_LIMIT=1024 nanocamelid smoke 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf chat 'Say hello in one sentence.' 8"
+        );
+        assert_eq!(
+            evidence_prefill_bench_command(&parsed, Some("512")),
+            "NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid bench 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2 0.0 '1,16,32,64'"
+        );
+        assert_eq!(
+            evidence_1b_status_json(&parsed),
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"ready_no_chat\":true,\"context_pack\":true,\"prefill_bench\":true,\"smoke_prompt\":\"Say hello in one sentence.\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"context_pack_caps\":[512,1024,2048,4096,8192],\"prefill_prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\",\"prefill_tokens\":2,\"prefill_temp\":0.0,\"prefill_batches\":[1,16,32,64]}"
         );
     }
 
