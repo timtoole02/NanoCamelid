@@ -294,6 +294,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     shell_command ./scripts/pi/context-pack-1b.sh "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   fi
+  for cap in "${CONTEXT_PACKS[@]}"; do
+    printf 'context_%s_command: ' "$cap"
+    env_prefix NANOCAMELID_CONTEXT_LIMIT "$cap"
+    if [[ -n "${NANOCAMELID_PREFILL_BATCH:-}" ]]; then
+      env_prefix NANOCAMELID_PREFILL_BATCH "$NANOCAMELID_PREFILL_BATCH"
+    fi
+    shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+  done
   printf 'prefill_bench_command: '
   context_env_prefix
   env_prefix \
