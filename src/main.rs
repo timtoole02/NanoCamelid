@@ -35,6 +35,15 @@ const LLAMA32_1B_Q8_MODEL: &str = "Llama-3.2-1B-Instruct-Q8_0.gguf";
 const LLAMA32_3B_Q4_MODEL: &str = "Llama-3.2-3B-Instruct-Q4_0.gguf";
 const DEFAULT_1B_SMOKE_PROMPT: &str = "Say hello in one sentence.";
 const DEFAULT_1B_SMOKE_TOKENS: usize = 8;
+const PREFILL_PROMPT_ENV: &str = "NANOCAMELID_PREFILL_PROMPT";
+const PREFILL_TOKENS_ENV: &str = "NANOCAMELID_PREFILL_TOKENS";
+const PREFILL_TEMP_ENV: &str = "NANOCAMELID_PREFILL_TEMP";
+const PREFILL_BATCHES_ENV: &str = "NANOCAMELID_PREFILL_BATCHES";
+const DEFAULT_1B_PREFILL_PROMPT: &str =
+    "Explain one practical Raspberry Pi inference bottleneck in two short sentences.";
+const DEFAULT_1B_PREFILL_TOKENS: usize = 2;
+const DEFAULT_1B_PREFILL_TEMP: &str = "0.0";
+const DEFAULT_1B_PREFILL_BATCHES: &str = "1,16,32,64";
 const PERFORMANCE_GOVERNOR_COMMAND: &str =
     "echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor";
 const DEFAULT_RAYON_THREADS: usize = 4;
@@ -251,6 +260,23 @@ fn main() -> ExitCode {
                         ExitCode::from(2)
                     }
                 },
+                Some(alias) if is_llama32_1b_alias(alias) => {
+                    match parse_bench_1b_args(&args[2..]) {
+                        Ok(parsed) if parsed.dry_run => print_bench_1b_dry_run(&parsed),
+                        Ok(_) => {
+                            eprintln!(
+                                "bench 1b currently supports --dry-run; run scripts/pi/bench-1b-prefill.sh on the Pi for the model-backed sweep"
+                            );
+                            print_help(HelpTopic::Bench);
+                            ExitCode::from(2)
+                        }
+                        Err(err) => {
+                            eprintln!("{err}");
+                            print_help(HelpTopic::Bench);
+                            ExitCode::from(2)
+                        }
+                    }
+                }
                 Some(other) => {
                     eprintln!("unknown benchmark: {other}");
                     print_help(HelpTopic::Bench);
@@ -675,6 +701,8 @@ fn print_usage() {
         "                                            Run inspect, smoke, and direct chat gates for 1B"
     );
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
+    println!("  bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]");
+    println!("                                            Print the Pi 1B prefill sweep plan");
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!(
         "                                            Compare scalar vs selected Q8 model logits and greedy generation"
@@ -949,6 +977,9 @@ fn print_bench_usage() {
     println!("  nanocamelid bench q8-dot [iterations] [runs]");
     println!("  nanocamelid bench q4-layout [rows] [cols] [runs]");
     println!("  nanocamelid bench q4-prefill [prompt_len] [batch_size] [runs]");
+    println!(
+        "  nanocamelid bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]"
+    );
     println!();
     println!("Args:");
     println!(
@@ -979,6 +1010,24 @@ fn print_bench_usage() {
         "  q4-prefill [runs]                        Repeated timing samples, default {}",
         DEFAULT_Q4_PREFILL_RUNS
     );
+    println!("  1b [model.gguf]                          Llama 3.2 1B GGUF path");
+    println!(
+        "  1b [prompt]                              Prompt for the Pi prefill sweep, default {DEFAULT_1B_PREFILL_PROMPT:?}"
+    );
+    println!(
+        "  1b [max_tokens]                          Generated token count, default {DEFAULT_1B_PREFILL_TOKENS}"
+    );
+    println!(
+        "  1b [temp]                                Temperature, default {DEFAULT_1B_PREFILL_TEMP}"
+    );
+    println!(
+        "  1b [batches]                             Comma-separated prefill batches, default {DEFAULT_1B_PREFILL_BATCHES}"
+    );
+    println!();
+    println!("Options:");
+    println!(
+        "  --dry-run                                Print the 1B prefill sweep plan without loading the model"
+    );
     println!();
     println!("Env:");
     println!("  NANOCAMELID_Q8_DOT_KERNEL                 Force scalar, neon, or sdot selection");
@@ -1000,6 +1049,15 @@ fn print_bench_usage() {
     println!(
         "  {WORKER_CORES_ENV}                          Comma/range CPU list for pinned Rayon workers, e.g. 1,2,3"
     );
+    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} 1B benchmark GGUF path override");
+    println!(
+        "  {WORKSPACE_ENV:<38} Pi workspace for the 1B default; default {DEFAULT_PI_WORKSPACE}"
+    );
+    println!("  {PREFILL_PROMPT_ENV:<38} 1B prefill sweep prompt");
+    println!("  {PREFILL_TOKENS_ENV:<38} 1B generated token count");
+    println!("  {PREFILL_TEMP_ENV:<38} 1B sweep temperature");
+    println!("  {PREFILL_BATCHES_ENV:<38} 1B prefill batch list");
+    println!("  {CONTEXT_LIMIT_ENV:<38} Optional runtime context cap for the 1B sweep");
 }
 
 fn print_smoke_usage() {
@@ -1200,6 +1258,20 @@ struct BenchQ4PrefillArgs {
     prompt_len: usize,
     batch_size: usize,
     runs: usize,
+}
+
+#[derive(Debug, PartialEq)]
+struct Bench1BArgs {
+    workspace: String,
+    q4_model_path: String,
+    q8_model_path: String,
+    model_path: String,
+    model_source: &'static str,
+    prompt: String,
+    max_tokens: usize,
+    temp: String,
+    batches: Vec<usize>,
+    dry_run: bool,
 }
 
 fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
@@ -2062,6 +2134,153 @@ fn parse_bench_q4_prefill_args(args: &[String]) -> Result<BenchQ4PrefillArgs, &'
     })
 }
 
+fn parse_bench_1b_args(args: &[String]) -> Result<Bench1BArgs, &'static str> {
+    let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+    let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+    parse_bench_1b_args_with_env(
+        args,
+        default_model_path_and_source_from_env(),
+        &workspace,
+        Path::new(&q4_path).is_file(),
+    )
+}
+
+#[cfg(test)]
+fn parse_bench_1b_args_with_path(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<Bench1BArgs, &'static str> {
+    parse_bench_1b_args_with_env(
+        args,
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
+        workspace,
+        q4_exists,
+    )
+}
+
+fn parse_bench_1b_args_with_env(
+    args: &[String],
+    env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<Bench1BArgs, &'static str> {
+    let env_model_path = require_env_gguf_path(
+        env_model_path,
+        "1B benchmark env model path must be a .gguf path",
+    )?;
+    let mut dry_run = false;
+    let mut positionals = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => positionals.push(arg.clone()),
+        }
+    }
+
+    let first_looks_like_model = positionals
+        .first()
+        .is_some_and(|value| looks_like_gguf_path(value));
+    let q4_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q4_MODEL);
+    let q8_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q8_MODEL);
+    let (model_path, model_source, option_idx) = match (positionals.first(), env_model_path) {
+        (Some(path), _) if first_looks_like_model => (path.clone(), "explicit argument", 1),
+        (_, Some((path, source))) => (path, source, 0),
+        _ if q4_exists => (q4_model_path.clone(), "workspace Q4_0 default", 0),
+        _ => (q8_model_path.clone(), "workspace Q8_0 fallback", 0),
+    };
+
+    let prompt = positionals
+        .get(option_idx)
+        .cloned()
+        .or_else(|| {
+            env::var(PREFILL_PROMPT_ENV)
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_1B_PREFILL_PROMPT.to_owned());
+    let max_tokens = match positionals.get(option_idx + 1) {
+        Some(value) => parse_optional_positive_usize(
+            Some(value),
+            "1B prefill benchmark max_tokens must be a positive integer",
+        )?
+        .expect("positional value is present"),
+        None => match env::var(PREFILL_TOKENS_ENV)
+            .ok()
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) => parse_optional_positive_usize(
+                Some(&value),
+                "1B prefill benchmark max_tokens must be a positive integer",
+            )?
+            .expect("env value is present"),
+            None => DEFAULT_1B_PREFILL_TOKENS,
+        },
+    };
+    let temp = positionals
+        .get(option_idx + 2)
+        .cloned()
+        .or_else(|| {
+            env::var(PREFILL_TEMP_ENV)
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_1B_PREFILL_TEMP.to_owned());
+    parse_non_negative_f32(
+        &temp,
+        "1B prefill benchmark temp must be a non-negative number",
+    )?;
+    let batches_raw = positionals
+        .get(option_idx + 3)
+        .cloned()
+        .or_else(|| {
+            env::var(PREFILL_BATCHES_ENV)
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_1B_PREFILL_BATCHES.to_owned());
+    let batches = parse_prefill_batches(&batches_raw)?;
+    reject_extra_positionals(
+        &positionals,
+        option_idx + 4,
+        "unexpected extra 1B prefill benchmark argument",
+    )?;
+
+    Ok(Bench1BArgs {
+        workspace: workspace.to_owned(),
+        q4_model_path,
+        q8_model_path,
+        model_path,
+        model_source,
+        prompt,
+        max_tokens,
+        temp,
+        batches,
+        dry_run,
+    })
+}
+
+fn parse_prefill_batches(value: &str) -> Result<Vec<usize>, &'static str> {
+    let batches = value
+        .split(',')
+        .flat_map(|part| part.split_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<usize>()
+                .ok()
+                .filter(|&batch| batch > 0)
+                .ok_or("1B prefill benchmark batches must be positive integers")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if batches.is_empty() {
+        Err("1B prefill benchmark batches must include at least one positive integer")
+    } else {
+        Ok(batches)
+    }
+}
+
 fn looks_like_gguf_path(value: &str) -> bool {
     value
         .trim_end_matches('/')
@@ -2598,6 +2817,113 @@ fn bench_q4_prefill(prompt_len: usize, batch_size: usize, runs: usize) -> ExitCo
     );
 
     ExitCode::SUCCESS
+}
+
+fn print_bench_1b_dry_run(parsed: &Bench1BArgs) -> ExitCode {
+    if let Err(err) = validate_context_limit_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+
+    let model_path = Path::new(&parsed.model_path);
+    let batches = parsed
+        .batches
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("NanoCamelid Llama 3.2 1B prefill sweep dry run");
+    println!("workspace: {}", parsed.workspace);
+    println!("q4_model: {}", parsed.q4_model_path);
+    println!("q4_exists: {}", Path::new(&parsed.q4_model_path).is_file());
+    println!("q8_model: {}", parsed.q8_model_path);
+    println!("q8_exists: {}", Path::new(&parsed.q8_model_path).is_file());
+    println!("selected_source: {}", parsed.model_source);
+    println!("model: {}", model_path.display());
+    println!("model_exists: {}", model_path.is_file());
+    println!("prompt: {}", parsed.prompt);
+    println!("max_tokens: {}", parsed.max_tokens);
+    println!("temp: {}", parsed.temp);
+    println!("context_limit: {}", context_limit_plan_value());
+    println!("shape_audit: enabled");
+    println!("batches: {batches}");
+    println!("status_on_success: prefill_bench_1b_status: ok");
+    println!(
+        "json_on_success: {}",
+        prefill_bench_1b_status_json(parsed, &context_limit_plan_value())
+    );
+    println!(
+        "model_command: {}",
+        shell_command(&[
+            "nanocamelid",
+            "model",
+            "1b",
+            &model_path.display().to_string()
+        ])
+    );
+    for batch in &parsed.batches {
+        println!(
+            "batch_{batch}_command: {}",
+            prefill_bench_1b_batch_command(parsed, *batch, context_limit_env_value().as_deref())
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn prefill_bench_1b_batch_command(
+    parsed: &Bench1BArgs,
+    batch: usize,
+    context_limit: Option<&str>,
+) -> String {
+    let model = Path::new(&parsed.model_path).display().to_string();
+    let max_tokens = parsed.max_tokens.to_string();
+    let batch = batch.to_string();
+    let args = [
+        "nanocamelid",
+        "chat",
+        &model,
+        &parsed.prompt,
+        &parsed.temp,
+        &max_tokens,
+    ];
+
+    match context_limit {
+        Some(context_limit) => shell_command_with_env(
+            &args,
+            &[
+                (CONTEXT_LIMIT_ENV, context_limit),
+                ("NANOCAMELID_Q8_DOT_SDOT", "1"),
+                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot"),
+                (PREFILL_BATCH_ENV, &batch),
+            ],
+        ),
+        None => shell_command_with_env(
+            &args,
+            &[
+                ("NANOCAMELID_Q8_DOT_SDOT", "1"),
+                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot"),
+                (PREFILL_BATCH_ENV, &batch),
+            ],
+        ),
+    }
+}
+
+fn prefill_bench_1b_status_json(parsed: &Bench1BArgs, context_limit: &str) -> String {
+    let batches = parsed
+        .batches
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}}",
+        json_string(&parsed.model_path),
+        json_string(parsed.model_source),
+        json_string(context_limit),
+        parsed.max_tokens,
+        parsed.temp,
+        batches,
+    )
 }
 
 fn synthetic_q4_blocks(rows: usize, blocks_per_row: usize) -> Vec<q8::Q4_0Block> {
@@ -5402,7 +5728,8 @@ mod tests {
     use nanocamelid::tokenizer::{SpecialTokens, TokenizerModel};
 
     use super::{
-        ChatTurn, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_Q4_PREFILL_BATCH,
+        ChatTurn, DEFAULT_1B_PREFILL_PROMPT, DEFAULT_1B_PREFILL_TEMP, DEFAULT_1B_PREFILL_TOKENS,
+        DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_Q4_PREFILL_BATCH,
         DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, GenerationStatusJson, HelpTopic,
         InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
         PERFORMANCE_GOVERNOR_COMMAND, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind,
@@ -5411,17 +5738,18 @@ mod tests {
         generation_status_json, help_topic_for_args, help_topic_named, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
         llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
-        model_1b_status_json, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
-        parse_bench_q8_dot_args, parse_cpu_list, parse_generate_args_with_env,
-        parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
-        parse_model_1b_args_with_path, parse_ready_1b_args_with_env,
-        parse_ready_1b_args_with_env_and_smoke_defaults,
+        model_1b_status_json, parse_bench_1b_args_with_path, parse_bench_q4_layout_args,
+        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
+        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
+        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
         parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
-        parse_tui_command, prefill_batch_size_from_env_value, print_runtime_trace_summary,
-        ready_1b_status_json, ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
+        parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
+        prefill_bench_1b_status_json, print_runtime_trace_summary, ready_1b_status_json,
+        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
         runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
@@ -5904,6 +6232,101 @@ flags\t\t: sse4_2 avx2
             ])
             .expect_err("extra q4-prefill arg should fail"),
             "unexpected extra q4-prefill benchmark argument"
+        );
+    }
+
+    #[test]
+    fn bench_1b_args_default_and_reject_bad_values() {
+        let defaults = parse_bench_1b_args_with_path(
+            &["--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("default 1B prefill benchmark args should parse");
+
+        assert_eq!(defaults.workspace, "/mnt/nanocamelid");
+        assert_eq!(
+            defaults.q4_model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(
+            defaults.q8_model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(defaults.model_path, defaults.q8_model_path);
+        assert_eq!(defaults.model_source, "workspace Q8_0 fallback");
+        assert_eq!(defaults.prompt, DEFAULT_1B_PREFILL_PROMPT);
+        assert_eq!(defaults.max_tokens, DEFAULT_1B_PREFILL_TOKENS);
+        assert_eq!(defaults.temp, DEFAULT_1B_PREFILL_TEMP);
+        assert_eq!(defaults.batches, vec![1, 16, 32, 64]);
+        assert!(defaults.dry_run);
+
+        let parsed = parse_bench_1b_args_with_path(
+            &[
+                "/models/custom.GGUF".to_owned(),
+                "Hello".to_owned(),
+                "3".to_owned(),
+                "0.2".to_owned(),
+                "1,8,16".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit 1B prefill benchmark args should parse");
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.model_source, "explicit argument");
+        assert_eq!(parsed.prompt, "Hello");
+        assert_eq!(parsed.max_tokens, 3);
+        assert_eq!(parsed.temp, "0.2");
+        assert_eq!(parsed.batches, vec![1, 8, 16]);
+
+        assert_eq!(
+            parse_bench_1b_args_with_path(
+                &["not-a-model".to_owned(), "0".to_owned()],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("zero token count should fail"),
+            "1B prefill benchmark max_tokens must be a positive integer"
+        );
+        assert_eq!(
+            parse_bench_1b_args_with_path(
+                &[
+                    "prompt".to_owned(),
+                    "1".to_owned(),
+                    "bad".to_owned(),
+                    "1".to_owned(),
+                ],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("bad temp should fail"),
+            "1B prefill benchmark temp must be a non-negative number"
+        );
+        assert_eq!(
+            parse_prefill_batches("1,0").expect_err("zero batch should fail"),
+            "1B prefill benchmark batches must be positive integers"
+        );
+        assert_eq!(
+            parse_bench_1b_args_with_path(
+                &[
+                    "prompt".to_owned(),
+                    "1".to_owned(),
+                    "0".to_owned(),
+                    "1".to_owned(),
+                    "extra".to_owned(),
+                ],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("extra 1B benchmark arg should fail"),
+            "unexpected extra 1B prefill benchmark argument"
         );
     }
 
@@ -6840,6 +7263,31 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn prefill_bench_1b_batch_command_records_kernel_and_batch_env() {
+        let parsed = parse_bench_1b_args_with_path(
+            &[
+                "/models/Llama-3.2-1B-Instruct-Q8_0.gguf".to_owned(),
+                "Say hello".to_owned(),
+                "2".to_owned(),
+                "0.0".to_owned(),
+                "16".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("1B prefill benchmark plan should parse");
+
+        let command = prefill_bench_1b_batch_command(&parsed, 16, Some("512"));
+
+        assert_eq!(
+            command,
+            "NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Say hello' 0.0 2"
+        );
+    }
+
+    #[test]
     fn smoke_plan_command_uses_resolved_model_and_normalized_kind() {
         let parsed = Smoke1BArgs {
             kind: SmokeKind::Q8Model,
@@ -6977,6 +7425,29 @@ flags\t\t: sse4_2 avx2
                 16,
             ),
             "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
+        );
+    }
+
+    #[test]
+    fn prefill_bench_1b_status_json_records_sweep_plan() {
+        let parsed = parse_bench_1b_args_with_path(
+            &[
+                "/models/Llama-3.2-1B-Instruct-Q8_0.gguf".to_owned(),
+                "Say hello".to_owned(),
+                "2".to_owned(),
+                "0.0".to_owned(),
+                "1,16".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("1B prefill benchmark plan should parse");
+
+        assert_eq!(
+            prefill_bench_1b_status_json(&parsed, "unset"),
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"unset\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
         );
     }
 

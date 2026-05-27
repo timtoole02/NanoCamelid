@@ -95,6 +95,10 @@ preflight plus the real prefill batch sweep plan, and validates any
 `NANOCAMELID_CONTEXT_LIMIT` cap before the model is loaded. Successful sweeps
 end with `prefill_bench_1b_status: ok` and a compact `json:` summary row for
 log collectors.
+`cargo run -- bench 1b --dry-run` exposes the same prefill sweep plan from the
+Rust CLI, including the selected 1B GGUF, strict shape-audit preflight, batch
+commands, context cap, and `json_on_success` row before the Pi-local GGUF is
+present.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 
