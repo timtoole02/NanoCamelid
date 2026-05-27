@@ -710,6 +710,7 @@ echo "==> Checking remote Pi build launcher ignores smoke env when remote smoke 
 env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_SMOKE_TOKENS=bad NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_REMOTE_SMOKE_KIND=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build disabled smoke skips shape audit" "readiness_shape_audit: skipped" env NANOCAMELID_REMOTE_SMOKE=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build smoke off skips shape audit" "readiness_shape_audit: skipped" env NANOCAMELID_REMOTE_SMOKE=off ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher ignores direct chat env when readiness chat is disabled..."
 env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
@@ -732,6 +733,7 @@ echo "==> Checking remote Pi build launcher plans optional 1B prefill sweep..."
 expect_output "remote_build prefill dry run" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/bench-1b-prefill.sh" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build prefill command carries context limit" "prefill_bench_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck" env NANOCAMELID_REMOTE_CONTEXT_LIMIT=512 NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build prefill prompt override" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Custom\\ prefill" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_PROMPT="Custom prefill" ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build prefill off skips sweep" "prefill_bench_command: skipped" env NANOCAMELID_REMOTE_PREFILL_BENCH=off ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher plans optional 1B evidence bundle..."
 expect_output "remote_build evidence dry run" "evidence_command: NANOCAMELID_SMOKE_KIND=chat NANOCAMELID_SMOKE_PROMPT=Say\\ hello\\ in\\ one\\ sentence. NANOCAMELID_SMOKE_TOKENS=8 NANOCAMELID_CONTEXT_PACKS=512\\,1024\\,2048\\,4096\\,8192 NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/evidence-1b.sh" env NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
@@ -740,6 +742,7 @@ expect_output "remote_build evidence skips composed readiness" "readiness_comman
 expect_output "remote_build evidence command carries context limit" "evidence_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_SMOKE_KIND=chat" env NANOCAMELID_REMOTE_EVIDENCE=1 NANOCAMELID_REMOTE_CONTEXT_LIMIT=512 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build evidence explicit model" "evidence_command: NANOCAMELID_SMOKE_KIND=chat NANOCAMELID_SMOKE_PROMPT=Say\\ hello\\ in\\ one\\ sentence. NANOCAMELID_SMOKE_TOKENS=8 NANOCAMELID_CONTEXT_PACKS=512\\,1024\\,2048\\,4096\\,8192 NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/evidence-1b.sh /models/custom.gguf" env NANOCAMELID_REMOTE_EVIDENCE=1 NANOCAMELID_REMOTE_SMOKE_GGUF=/models/custom.gguf ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build evidence requires smoke" env NANOCAMELID_REMOTE_EVIDENCE=1 NANOCAMELID_REMOTE_SMOKE=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build evidence off uses readiness" "evidence_command: skipped" env NANOCAMELID_REMOTE_EVIDENCE=off ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher rejects invalid prefill sweep settings..."
 expect_failure "remote_build invalid prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=1,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
