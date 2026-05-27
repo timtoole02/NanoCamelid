@@ -2993,13 +2993,14 @@ fn prefill_bench_1b_batch_env(
 }
 
 fn prefill_bench_1b_status_json(parsed: &Bench1BArgs, context_limit: &str) -> String {
-    prefill_bench_1b_status_json_with_results(parsed, context_limit, None, None)
+    prefill_bench_1b_status_json_with_results(parsed, context_limit, None, None, None)
 }
 
 fn prefill_bench_1b_status_json_with_results(
     parsed: &Bench1BArgs,
     context_limit: &str,
     best_prefill: Option<(usize, f64)>,
+    best_prefill_prompt_tokens_per_sec: Option<f64>,
     best_decode: Option<(usize, f64)>,
 ) -> String {
     let batches = parsed
@@ -3013,7 +3014,7 @@ fn prefill_bench_1b_status_json_with_results(
     let best_decode_batch = best_decode.map(|(batch, _)| batch);
     let best_tokens_per_sec = best_decode.map(|(_, tokens_per_sec)| tokens_per_sec);
     format!(
-        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":{},\"best_prefill_sec\":{},\"best_decode_batch\":{},\"best_tokens_per_sec\":{}}}",
+        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":{},\"best_prefill_sec\":{},\"best_prefill_prompt_tokens_per_sec\":{},\"best_decode_batch\":{},\"best_tokens_per_sec\":{}}}",
         json_string(&parsed.model_path),
         json_string(parsed.model_source),
         json_string(llama32_1b_quantization_for_path(Path::new(
@@ -3025,6 +3026,7 @@ fn prefill_bench_1b_status_json_with_results(
         batches,
         json_optional_usize(best_prefill_batch),
         json_optional_f64(best_prefill_sec),
+        json_optional_f64(best_prefill_prompt_tokens_per_sec),
         json_optional_usize(best_decode_batch),
         json_optional_f64(best_tokens_per_sec),
     )
@@ -3095,6 +3097,7 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
     }
 
     let mut best_prefill: Option<(usize, f64)> = None;
+    let mut best_prefill_prompt_tokens_per_sec: Option<f64> = None;
     let mut best_decode: Option<(usize, f64)> = None;
 
     for batch in &parsed.batches {
@@ -3111,6 +3114,7 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
                     && best_prefill.is_none_or(|(_, best_sec)| prefill_sec < best_sec)
                 {
                     best_prefill = Some((*batch, prefill_sec));
+                    best_prefill_prompt_tokens_per_sec = prefill_prompt_tokens_per_sec(metrics);
                 }
                 if let Some(tokens_per_sec) = metrics.tokens_per_sec
                     && best_decode
@@ -3133,6 +3137,7 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
             &parsed,
             &context_limit_plan_value(),
             best_prefill,
+            best_prefill_prompt_tokens_per_sec,
             best_decode
         )
     );
@@ -3243,9 +3248,16 @@ fn prefill_bench_1b_result_json(
     parsed: &Bench1BArgs,
     context_limit: &str,
     best_prefill: Option<(usize, f64)>,
+    best_prefill_prompt_tokens_per_sec: Option<f64>,
     best_decode: Option<(usize, f64)>,
 ) -> String {
-    prefill_bench_1b_status_json_with_results(parsed, context_limit, best_prefill, best_decode)
+    prefill_bench_1b_status_json_with_results(
+        parsed,
+        context_limit,
+        best_prefill,
+        best_prefill_prompt_tokens_per_sec,
+        best_decode,
+    )
 }
 
 fn json_optional_f64(value: Option<f64>) -> String {
@@ -8219,7 +8231,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(
             prefill_bench_1b_status_json(&parsed, "unset"),
-            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q8_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q8_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_prefill_prompt_tokens_per_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
         );
     }
 
@@ -8262,8 +8274,14 @@ flags\t\t: sse4_2 avx2
         .expect("1B prefill benchmark plan should parse");
 
         assert_eq!(
-            prefill_bench_1b_result_json(&parsed, "512", Some((16, 0.38)), Some((1, 4.18))),
-            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":16,\"best_prefill_sec\":0.380000,\"best_decode_batch\":1,\"best_tokens_per_sec\":4.180000}"
+            prefill_bench_1b_result_json(
+                &parsed,
+                "512",
+                Some((16, 0.38)),
+                Some(373.6842105263158),
+                Some((1, 4.18)),
+            ),
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":16,\"best_prefill_sec\":0.380000,\"best_prefill_prompt_tokens_per_sec\":373.684211,\"best_decode_batch\":1,\"best_tokens_per_sec\":4.180000}"
         );
     }
 

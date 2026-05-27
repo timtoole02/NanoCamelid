@@ -115,9 +115,10 @@ log collectors that includes the strict `llama32_1b` shape marker.
 CLI when the selected 1B GGUF is present. It audits the strict 1B shape first,
 runs an inspect preflight, runs each `NANOCAMELID_PREFILL_BATCH`, emits
 per-batch `json:` rows, and ends with `prefill_bench_1b_status: ok` plus the
-best observed prefill/decode batches. `cargo run -- bench 1b --dry-run` prints
-the selected 1B GGUF, strict shape-audit preflight, inspect command, batch
-commands, context cap, and `json_on_success` row before the Pi-local GGUF is
+best observed prefill/decode batches and the best prefill prompt tokens/sec.
+`cargo run -- bench 1b --dry-run` prints the selected 1B GGUF, strict
+shape-audit preflight, inspect command, batch commands, context cap, and
+`json_on_success` row before the Pi-local GGUF is
 present.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
@@ -615,7 +616,8 @@ selected batch size and emits a
 `json: {"benchmark":"llama32-1b-prefill",...}` line for each batch. Successful
 sweeps also end with `prefill_bench_1b_status: ok` and a final JSON summary
 including the selected model, strict 1B shape marker, context cap, planned
-batches, best prefill batch, and best decode throughput batch.
+batches, best prefill batch, best prefill prompt tokens/sec, and best decode
+throughput batch.
 
 Useful environment controls:
 
