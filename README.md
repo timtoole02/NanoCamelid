@@ -79,7 +79,8 @@ inspect, scalar-vs-selected smoke validation, and one direct chat turn. Set
 prompt. Successful readiness runs end with `ready_1b_status: ok`; dry runs
 print `status_on_success: ready_1b_status: ok` for log collectors. Successful
 runs also emit a compact `json:` status row with the selected 1B model, context
-cap, smoke kind, smoke token count, and direct-chat token count.
+cap, probe marker, strict shape-audit marker, smoke kind, smoke token count, and
+direct-chat token count.
 `./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
 without requiring the GGUF to exist yet.
 `./scripts/pi/context-pack-1b.sh` reruns the 1B smoke gate across context caps

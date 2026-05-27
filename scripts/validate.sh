@@ -297,6 +297,8 @@ expect_output "ready 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama
 expect_output "ready 1b shape audit dry run" "shape_audit: enabled" cargo run -- ready 1b --dry-run
 expect_output "ready 1b success marker dry run" "status_on_success: ready_1b_status: ok" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- ready 1b --dry-run
+expect_output "ready 1b json records probe" "\"probe\":true" cargo run -- ready 1b --dry-run
+expect_output "ready 1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- ready 1b --dry-run
 expect_output "ready 1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_tokens\":null" cargo run -- ready 1b --no-chat --dry-run
 expect_output "ready 1b probe command" "probe_command: nanocamelid probe" cargo run -- ready 1b --dry-run
 expect_output "ready 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- ready 1b --dry-run
@@ -356,6 +358,8 @@ expect_output "ready-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama
 expect_output "ready-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b success marker dry run" "status_on_success: ready_1b_status: ok" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b json records probe" "\"probe\":true" ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_tokens\":null" ./scripts/pi/ready-1b.sh --no-chat --dry-run
 expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b probe command" "probe_command: nanocamelid probe" ./scripts/pi/ready-1b.sh --dry-run

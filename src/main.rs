@@ -3555,7 +3555,7 @@ fn ready_1b_status_json(
         .map(|tokens| tokens.to_string())
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
         json_string(context_limit),
@@ -6738,7 +6738,7 @@ flags\t\t: sse4_2 avx2
                 Some(4),
                 "512"
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"direct_chat\":true,\"chat_tokens\":4}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"direct_chat\":true,\"chat_tokens\":4}"
         );
     }
 

@@ -246,7 +246,7 @@ ready_1b_status_json() {
     chat_tokens_json="$chat_tokens"
   fi
 
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"direct_chat":%s,"chat_tokens":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"probe":true,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"direct_chat":%s,"chat_tokens":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "$(context_limit_plan_value)")" \
