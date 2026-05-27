@@ -454,11 +454,22 @@ fn parse_cpu_list(value: &str) -> Option<Vec<usize>> {
 }
 
 fn prefill_batch_size() -> usize {
-    env::var(PREFILL_BATCH_ENV)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&value| value > 0)
-        .unwrap_or(DEFAULT_Q4_PREFILL_BATCH)
+    prefill_batch_size_from_env().unwrap_or(DEFAULT_Q4_PREFILL_BATCH)
+}
+
+fn prefill_batch_size_from_env() -> Result<usize, &'static str> {
+    prefill_batch_size_from_env_value(env::var(PREFILL_BATCH_ENV).ok())
+}
+
+fn prefill_batch_size_from_env_value(value: Option<String>) -> Result<usize, &'static str> {
+    match value {
+        Some(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|&value| value > 0)
+            .ok_or("NANOCAMELID_PREFILL_BATCH must be a positive integer"),
+        None => Ok(DEFAULT_Q4_PREFILL_BATCH),
+    }
 }
 
 fn ready_chat_enabled() -> bool {
@@ -2744,6 +2755,13 @@ fn print_tui_dry_run(parsed: &TuiArgs) -> ExitCode {
         eprintln!("{err}");
         return ExitCode::from(2);
     }
+    let prefill_batch = match prefill_batch_size_from_env() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
 
     let model_path = Path::new(&parsed.model_path);
     println!("NanoCamelid TUI launch dry run");
@@ -2752,6 +2770,7 @@ fn print_tui_dry_run(parsed: &TuiArgs) -> ExitCode {
     println!("temp: {}", parsed.temp);
     println!("max_tokens: {}", parsed.max_tokens);
     println!("context_limit: {}", context_limit_plan_value());
+    println!("prefill_batch: {prefill_batch}");
     println!(
         "tui_command: {}",
         context_limited_shell_command(&[
@@ -2770,6 +2789,13 @@ fn print_generation_dry_run(command: &str, parsed: &GenerateArgs) -> ExitCode {
         eprintln!("{err}");
         return ExitCode::from(2);
     }
+    let prefill_batch = match prefill_batch_size_from_env() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
 
     let model_path = Path::new(&parsed.model_path);
     println!("NanoCamelid {command} dry run");
@@ -2779,6 +2805,7 @@ fn print_generation_dry_run(command: &str, parsed: &GenerateArgs) -> ExitCode {
     println!("temp: {}", parsed.temp);
     println!("max_tokens: {}", parsed.max_tokens);
     println!("context_limit: {}", context_limit_plan_value());
+    println!("prefill_batch: {prefill_batch}");
     println!(
         "{command}_command: {}",
         context_limited_shell_command(&[
@@ -3247,6 +3274,13 @@ fn print_smoke_dry_run(
         eprintln!("{err}");
         return ExitCode::from(2);
     }
+    let prefill_batch = match prefill_batch_size_from_env() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
 
     println!("{title}");
     if target == "1b" {
@@ -3270,6 +3304,7 @@ fn print_smoke_dry_run(
     println!("smoke_kind: {}", parsed.kind.label());
     println!("smoke_prompt: {}", parsed.prompt);
     println!("smoke_tokens: {}", parsed.max_tokens);
+    println!("prefill_batch: {prefill_batch}");
     if target == "1b" {
         println!("status_on_success: smoke_1b_status: ok");
         println!(
@@ -3363,6 +3398,13 @@ fn audit_llama32_1b_model_shape(model_path: &Path) -> ExitCode {
 }
 
 fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
+    let prefill_batch = match prefill_batch_size_from_env() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
     let smoke = parsed.smoke;
     let model_path = Path::new(&smoke.model_path);
     let chat_enabled = parsed
@@ -3419,6 +3461,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         println!("smoke_kind: {}", smoke.kind.label());
         println!("smoke_prompt: {}", smoke.prompt);
         println!("smoke_tokens: {}", smoke.max_tokens);
+        println!("prefill_batch: {prefill_batch}");
         println!(
             "direct_chat: {}",
             if chat_enabled { "enabled" } else { "disabled" }
@@ -3777,6 +3820,7 @@ where
     let mut config = model::LlamaModelConfig::from_gguf(&gguf)
         .map_err(|err| format!("failed to parse config: {err}"))?;
     apply_context_limit(&mut config)?;
+    let prefill_batch = prefill_batch_size_from_env().map_err(str::to_owned)?;
     let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
         .map_err(|err| format!("failed to load tokenizer: {err}"))?;
     let weights = model::LlamaWeights::load(model_path, &config, &gguf)
@@ -3812,7 +3856,7 @@ where
         inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
     let mut scalar_ws = inference::LlamaWorkspace::new(&config);
     let mut selected_ws = inference::LlamaWorkspace::new(&config);
-    let mut selected_batch_ws = inference::LlamaBatchWorkspace::new(&config, prefill_batch_size());
+    let mut selected_batch_ws = inference::LlamaBatchWorkspace::new(&config, prefill_batch);
     let mut max_logit_delta = 0.0_f32;
     let mut pos = 0;
 
@@ -4215,6 +4259,11 @@ fn load_tui_model(
 }
 
 fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
+    if let Err(err) = prefill_batch_size_from_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+
     let selector = q8::Q8DotKernelSelector::from_env();
     let governor_recommendation = cpu_governor_recommendation(
         read_trimmed("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").as_deref(),
@@ -4716,6 +4765,11 @@ fn run_generation_with_prompt_builder<F>(
 where
     F: FnOnce(&tokenizer::Tokenizer) -> Result<GenerationPromptPlan, String>,
 {
+    if let Err(err) = prefill_batch_size_from_env() {
+        eprintln!("{err}");
+        return ExitCode::from(2);
+    }
+
     println!("Loading GGUF file: {}...", model_path.display());
     let gguf = match gguf::read_file(model_path) {
         Ok(g) => g,
@@ -5331,8 +5385,8 @@ mod tests {
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
         parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
-        parse_tui_command, print_runtime_trace_summary, ready_1b_status_json,
-        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
+        parse_tui_command, prefill_batch_size_from_env_value, print_runtime_trace_summary,
+        ready_1b_status_json, ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
         runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
@@ -5425,6 +5479,26 @@ mod tests {
             Err("ready direct chat env temperature must be a non-negative number")
         );
         assert_eq!(ready_chat_temp_from_env_value(None), Ok(0.0));
+    }
+
+    #[test]
+    fn prefill_batch_env_rejects_invalid_values() {
+        assert_eq!(
+            prefill_batch_size_from_env_value(None),
+            Ok(DEFAULT_Q4_PREFILL_BATCH)
+        );
+        assert_eq!(
+            prefill_batch_size_from_env_value(Some("32".to_owned())),
+            Ok(32)
+        );
+        assert_eq!(
+            prefill_batch_size_from_env_value(Some("0".to_owned())),
+            Err("NANOCAMELID_PREFILL_BATCH must be a positive integer")
+        );
+        assert_eq!(
+            prefill_batch_size_from_env_value(Some("bad".to_owned())),
+            Err("NANOCAMELID_PREFILL_BATCH must be a positive integer")
+        );
     }
 
     #[test]

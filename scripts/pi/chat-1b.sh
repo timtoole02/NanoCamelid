@@ -105,6 +105,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
 require_optional_context_limit
+require_optional_prefill_batch
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
@@ -180,6 +181,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "temp: $TEMP"
   echo "max_tokens: $MAX_TOKENS"
   echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
+  echo "prefill_batch: $(prefill_batch_plan_value)"
   echo "smoke_enabled: $SMOKE_ENABLED"
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
