@@ -640,6 +640,7 @@ expect_failure "context-pack-1b repo-local target dir" env CARGO_TARGET_DIR=targ
 
 echo "==> Checking 1B Pi context-pack launcher rejects invalid context cap..."
 expect_failure "context-pack-1b invalid context cap" env NANOCAMELID_CONTEXT_PACKS=512,bad,2048 ./scripts/pi/context-pack-1b.sh --dry-run
+expect_failure_output "context-pack-1b duplicate context cap" "Duplicate context cap: 512" env NANOCAMELID_CONTEXT_PACKS=512,512 ./scripts/pi/context-pack-1b.sh --dry-run
 
 echo "==> Checking 1B Pi evidence bundle dry run..."
 ./scripts/pi/evidence-1b.sh --dry-run
@@ -659,6 +660,8 @@ expect_failure "evidence-1b invalid smoke kind" env NANOCAMELID_SMOKE_KIND=bad .
 expect_failure "evidence-1b invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=0 ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid context caps" env NANOCAMELID_CONTEXT_PACKS=512,bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid prefill batches" env NANOCAMELID_PREFILL_BATCHES=1,bad ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure_output "evidence-1b duplicate context cap" "Duplicate context cap: 512" env NANOCAMELID_CONTEXT_PACKS=512,1024,512 ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure_output "evidence-1b duplicate prefill batch" "Duplicate prefill batch size: 16" env NANOCAMELID_PREFILL_BATCHES=1,16,16 ./scripts/pi/evidence-1b.sh --dry-run
 
 echo "==> Checking Strand cluster launcher dry run..."
 ./scripts/pi/strand-cluster.sh --dry-run

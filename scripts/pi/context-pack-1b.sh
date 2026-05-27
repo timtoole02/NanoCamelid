@@ -184,18 +184,7 @@ if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q
   exit 2
 fi
 
-CONTEXT_PACKS=()
-for cap in ${CONTEXT_PACKS_RAW//,/ }; do
-  if [[ ! "$cap" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Invalid context cap: $cap" >&2
-    exit 2
-  fi
-  CONTEXT_PACKS+=("$cap")
-done
-if [[ ${#CONTEXT_PACKS[@]} -eq 0 ]]; then
-  echo "No context caps were provided." >&2
-  exit 2
-fi
+CONTEXT_PACKS=($(parse_unique_positive_integer_list "context cap" "$CONTEXT_PACKS_RAW"))
 
 if [[ -x "$BINARY" ]]; then
   launcher_mode="binary"

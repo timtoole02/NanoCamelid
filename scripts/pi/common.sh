@@ -143,6 +143,35 @@ prefill_batch_plan_value() {
   fi
 }
 
+parse_unique_positive_integer_list() {
+  local label="$1"
+  local value="$2"
+  local item
+  local parsed=()
+  local seen=" "
+
+  for item in ${value//,/ }; do
+    if [[ ! "$item" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Invalid $label: $item" >&2
+      exit 2
+    fi
+    case "$seen" in
+      *" $item "*)
+        echo "Duplicate $label: $item" >&2
+        exit 2
+        ;;
+    esac
+    parsed+=("$item")
+    seen+="$item "
+  done
+  if [[ ${#parsed[@]} -eq 0 ]]; then
+    echo "No $label values were provided." >&2
+    exit 2
+  fi
+
+  printf '%s\n' "${parsed[@]}"
+}
+
 llama32_1b_quantization_for_path() {
   case "$(basename "${1:-}")" in
     Llama-3.2-1B-Instruct-Q4_0.gguf) printf 'q4_0' ;;

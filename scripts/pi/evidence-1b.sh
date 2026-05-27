@@ -95,27 +95,6 @@ json_string() {
   printf '%s' "$out"
 }
 
-parse_positive_integer_list() {
-  local label="$1"
-  local value="$2"
-  local item
-  local parsed=()
-
-  for item in ${value//,/ }; do
-    if [[ ! "$item" =~ ^[1-9][0-9]*$ ]]; then
-      echo "Invalid $label: $item" >&2
-      exit 2
-    fi
-    parsed+=("$item")
-  done
-  if [[ ${#parsed[@]} -eq 0 ]]; then
-    echo "No $label values were provided." >&2
-    exit 2
-  fi
-
-  printf '%s\n' "${parsed[@]}"
-}
-
 json_integer_array() {
   local first=1
   local value
@@ -197,8 +176,8 @@ require_positive_integer() {
   fi
 }
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
-CONTEXT_PACKS=($(parse_positive_integer_list "context cap" "$CONTEXT_PACKS_RAW"))
-PREFILL_BATCHES=($(parse_positive_integer_list "prefill batch size" "$PREFILL_BATCHES_RAW"))
+CONTEXT_PACKS=($(parse_unique_positive_integer_list "context cap" "$CONTEXT_PACKS_RAW"))
+PREFILL_BATCHES=($(parse_unique_positive_integer_list "prefill batch size" "$PREFILL_BATCHES_RAW"))
 
 evidence_1b_status_json() {
   printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_kind":"%s","smoke_tokens":%s,"context_pack_caps":%s,"prefill_batches":%s}\n' \
