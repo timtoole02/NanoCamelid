@@ -417,13 +417,13 @@ On macOS, `validate.sh` refuses to guess a default target directory or use a
 non-`/Volumes` target. Set `CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` to an
 external drive path first so the repo does not create build artifacts on the
 internal disk. On prepared Pi workspaces, the same script defaults to
-`/mnt/nanocamelid/target`. The gate also runs the `model 1b`, `inspect 1b`,
-`generate 1b`, `chat 1b`, `smoke 1b`, `ready 1b`, and `tui 1b` CLI dry runs,
-plus the Pi `smoke-1b.sh`, `ready-1b.sh`, `chat-1b.sh`, and
-`bench-1b-prefill.sh` launcher dry runs, plus the `context-pack-1b.sh`,
-`evidence-1b.sh`, and installer dry runs, so the default Llama 3.2 1B command
-paths and build-entry target-dir guard stay covered without requiring the GGUF
-during local validation.
+`/mnt/nanocamelid/target`. The gate also runs the core Cargo checks, the
+`model 1b`, `inspect 1b`, `generate 1b`, `chat 1b`, `smoke 1b`, `ready 1b`,
+`evidence 1b`, `tui 1b`, and `bench 1b` CLI dry runs, the Pi 1B launcher dry
+runs, the Strand/Mixtral cluster launcher dry runs, redacted remote-build dry
+runs, and the installer dry run. That keeps the default Llama 3.2 1B command
+paths, evidence bundle plan, and build-entry target-dir guard covered without
+requiring the GGUF during local validation.
 
 Single-turn generation is available through either raw prompt text or a rendered
 chat prompt:
