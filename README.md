@@ -54,7 +54,7 @@ first, then the Pi-local `Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback
 under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
 Non-dry-run `inspect 1b` is also a strict Llama 3.2 1B shape gate: it exits
 nonzero if the selected GGUF does not match the expected 1B architecture,
-metadata, first-layer tensor shapes, and `llama3_instruct` chat renderer.
+metadata, all 16 block tensor shapes, and `llama3_instruct` chat renderer.
 `model 1b --dry-run` prints the same selected source, Q4_0/Q8_0 default paths,
 existence checks, selected quantization row, and the exact follow-up `inspect`,
 `smoke`, and `ready` commands from the Rust CLI before the heavier gates.
