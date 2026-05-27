@@ -1107,9 +1107,15 @@ fn print_smoke_usage() {
     println!();
     println!("Args:");
     println!("  <model.gguf>                              Path to the GGUF model file");
-    println!("  [prompt]                                  Prompt text, default \"Hello\"");
+    println!("  q8-* [prompt]                             Prompt text, default \"Hello\"");
     println!(
-        "  [max_tokens]                              Greedy tokens to generate after parity, default 1"
+        "  q8-* [max_tokens]                         Greedy tokens to generate after parity, default 1"
+    );
+    println!(
+        "  1b/3b [prompt]                            Prompt text, default {DEFAULT_1B_SMOKE_PROMPT:?}"
+    );
+    println!(
+        "  1b/3b [max_tokens]                        Greedy tokens to generate after parity, default {DEFAULT_1B_SMOKE_TOKENS}"
     );
     println!();
     println!("Env:");
