@@ -325,6 +325,9 @@ expect_output "inspect 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Lla
 expect_output "inspect 1b selected source" "selected_source: " cargo run -- inspect 1b --dry-run
 expect_output "inspect 1b shape audit dry run" "shape_audit: enabled" cargo run -- inspect 1b --dry-run
 expect_output "inspect 1b success marker dry run" "status_on_success: inspect_1b_status: ok" cargo run -- inspect 1b --dry-run
+expect_output "inspect 1b json success marker dry run" "\"target\":\"llama32-1b\",\"command\":\"inspect\",\"status\":\"ok\"" cargo run -- inspect 1b --dry-run
+expect_output "inspect 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- inspect 1b --dry-run
+expect_output "inspect 1b shape json marker dry run" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- inspect 1b --dry-run
 expect_failure "inspect 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- inspect 1b --dry-run
 expect_failure "inspect 1b extra argument" cargo run -- inspect 1b extra --dry-run
 

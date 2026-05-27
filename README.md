@@ -56,13 +56,16 @@ under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
 Non-dry-run `inspect 1b` is also a strict Llama 3.2 1B shape gate: it exits
 nonzero if the selected GGUF does not match the expected 1B architecture,
 metadata, all 16 block tensor shapes, and `llama3_instruct` chat renderer.
+Successful `inspect 1b` runs end with `inspect_1b_status: ok` and a compact
+`json:` status row; dry runs print the same row as `json_on_success:`.
 `model 1b --dry-run` prints the same selected source, Q4_0/Q8_0 default paths,
 existence checks, selected quantization row, and the exact follow-up `inspect`,
 `smoke`, and `ready` commands from the Rust CLI before the heavier gates.
 Successful `model 1b` shape-audit runs end with `model_1b_status: ok` and a
 compact `json:` status row; dry runs print the same row as `json_on_success:`.
 `inspect 1b --dry-run` prints the resolved inspect command and model existence
-checks without opening the GGUF, so it is safe before the model has been copied.
+checks plus the expected JSON evidence row without opening the GGUF, so it is
+safe before the model has been copied.
 `./scripts/pi/model-1b.sh --dry-run` prints the same 1B model resolution plan
 and shows whether the Q4_0, Q8_0, and selected GGUF files exist before printing
 the exact follow-up `model`, `inspect`, `smoke`, and `ready` commands plus the

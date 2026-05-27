@@ -3193,7 +3193,11 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
     }
 
     println!("==> Inspecting 1B model: {}", parsed.model_path);
-    let inspect_code = inspect_gguf(Path::new(&parsed.model_path), true);
+    let inspect_code = inspect_gguf(
+        Path::new(&parsed.model_path),
+        true,
+        Some(parsed.model_source),
+    );
     if inspect_code != ExitCode::SUCCESS {
         return inspect_code;
     }
@@ -3678,6 +3682,10 @@ fn run_inspect(parsed: InspectArgs) -> ExitCode {
         if parsed.target == Some(InspectTarget::Llama32_1B) {
             println!("shape_audit: enabled");
             println!("status_on_success: inspect_1b_status: ok");
+            println!(
+                "json_on_success: {}",
+                inspect_1b_status_json(model_path, parsed.model_source)
+            );
         }
         println!(
             "inspect_command: {}",
@@ -3695,11 +3703,19 @@ fn run_inspect(parsed: InspectArgs) -> ExitCode {
             eprintln!("{}", llama32_3b_model_not_found_message(model_path));
             ExitCode::from(2)
         }
-        _ => inspect_gguf(model_path, parsed.target == Some(InspectTarget::Llama32_1B)),
+        _ => inspect_gguf(
+            model_path,
+            parsed.target == Some(InspectTarget::Llama32_1B),
+            (parsed.target == Some(InspectTarget::Llama32_1B)).then_some(parsed.model_source),
+        ),
     }
 }
 
-fn inspect_gguf(path: &Path, strict_llama32_1b_shape: bool) -> ExitCode {
+fn inspect_gguf(
+    path: &Path,
+    strict_llama32_1b_shape: bool,
+    llama32_1b_model_source: Option<&str>,
+) -> ExitCode {
     match gguf::read_file(path) {
         Ok(file) => {
             let summary = gguf::summarize(&file);
@@ -3873,6 +3889,13 @@ fn inspect_gguf(path: &Path, strict_llama32_1b_shape: bool) -> ExitCode {
             }
             if strict_llama32_1b_shape {
                 println!("inspect_1b_status: ok");
+                println!(
+                    "json: {}",
+                    inspect_1b_status_json(
+                        path,
+                        llama32_1b_model_source.unwrap_or("explicit argument")
+                    )
+                );
             }
             ExitCode::SUCCESS
         }
@@ -4517,7 +4540,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         return model_audit_code;
     }
     println!("==> Inspecting 1B model: {}", model_path.display());
-    let inspect_code = inspect_gguf(model_path, false);
+    let inspect_code = inspect_gguf(model_path, false, None);
     if inspect_code != ExitCode::SUCCESS {
         return inspect_code;
     }
@@ -4615,6 +4638,15 @@ fn ready_1b_status_json(
 fn model_1b_status_json(model_path: &Path, model_source: &str) -> String {
     format!(
         "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true}}",
+        json_string(&model_path.display().to_string()),
+        json_string(model_source),
+        json_string(llama32_1b_quantization_for_path(model_path)),
+    )
+}
+
+fn inspect_1b_status_json(model_path: &Path, model_source: &str) -> String {
+    format!(
+        "{{\"target\":\"llama32-1b\",\"command\":\"inspect\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true}}",
         json_string(&model_path.display().to_string()),
         json_string(model_source),
         json_string(llama32_1b_quantization_for_path(model_path)),
@@ -6515,15 +6547,16 @@ mod tests {
         SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand,
         cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
         default_llama32_3b_model_path, device_model, generation_status_json, help_topic_for_args,
-        help_topic_named, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
-        json_string, llama32_1b_model_not_found_message, llama32_1b_quantization_for_path,
-        llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
-        looks_like_non_gguf_model_path, model_1b_status_json, parse_bench_1b_args_with_env,
-        parse_bench_1b_args_with_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
-        parse_bench_q8_dot_args, parse_cpu_list, parse_generate_args_with_env,
-        parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
-        parse_model_1b_args_with_path, parse_prefill_batches, parse_prefill_bench_1b_batch_metrics,
-        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
+        help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
+        is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
+        llama32_1b_quantization_for_path, llama32_1b_shape_audit,
+        llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
+        model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
+        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
+        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
+        parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
+        parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
@@ -8425,6 +8458,17 @@ flags\t\t: sse4_2 avx2
                 "workspace Q4_0 default"
             ),
             "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"workspace Q4_0 default\",\"quantization\":\"q4_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true}"
+        );
+    }
+
+    #[test]
+    fn inspect_1b_status_json_records_shape_audit_success() {
+        assert_eq!(
+            inspect_1b_status_json(
+                Path::new("/models/Llama-3.2-1B-Instruct-Q8_0.gguf"),
+                "workspace Q8_0 fallback"
+            ),
+            "{\"target\":\"llama32-1b\",\"command\":\"inspect\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"workspace Q8_0 fallback\",\"quantization\":\"q8_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true}"
         );
     }
 
