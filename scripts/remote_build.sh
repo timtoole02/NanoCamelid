@@ -65,7 +65,7 @@ READY_CHAT_LOWER="$(printf '%s' "$READY_CHAT" | tr '[:upper:]' '[:lower:]')"
 case "$READY_CHAT_LOWER" in
   "" | 0 | 1 | false | true | no | yes | off | on) ;;
   *)
-    echo "NANOCAMELID_READY_CHAT must be 0, 1, false, true, no, yes, off, or on: $READY_CHAT" >&2
+    echo "NANOCAMELID_REMOTE_READY_CHAT/NANOCAMELID_READY_CHAT must be 0, 1, false, true, no, yes, off, or on: $READY_CHAT" >&2
     exit 2
     ;;
 esac
