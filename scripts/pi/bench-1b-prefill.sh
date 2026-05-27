@@ -6,12 +6,12 @@ usage() {
   cat <<'USAGE'
 Usage: bench-1b-prefill.sh [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]
 
-Runs the Pi-local Llama 3.2 1B chat path repeatedly with different
-NANOCAMELID_PREFILL_BATCH values. Each run prints NanoCamelid's normal
-"Prompt ingested" and generation timing lines, followed by a per-batch JSON
-summary line. Successful sweeps finish with `prefill_bench_1b_status: ok` and
-a compact JSON summary that records the best observed prefill and decode
-batches.
+Runs the strict Llama 3.2 1B shape audit, then runs the Pi-local 1B chat path
+repeatedly with different NANOCAMELID_PREFILL_BATCH values. Each run prints
+NanoCamelid's normal "Prompt ingested" and generation timing lines, followed by
+a per-batch JSON summary line. Successful sweeps finish with
+`prefill_bench_1b_status: ok` and a compact JSON summary that records the best
+observed prefill and decode batches.
 
 Model resolution:
   1. explicit model.gguf argument
@@ -73,6 +73,15 @@ require_non_negative_float() {
 
 shell_quote() {
   printf '%q' "$1"
+}
+
+shell_command() {
+  printf '%q' "$1"
+  shift
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
 }
 
 context_env_prefix() {
@@ -305,9 +314,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "max_tokens: $MAX_TOKENS"
   echo "temp: $TEMP"
   echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
+  echo "shape_audit: enabled"
   echo "batches: ${BATCHES[*]}"
   echo "status_on_success: prefill_bench_1b_status: ok"
   echo "json_on_success: $(prefill_summary_json "" "" "" "")"
+  printf 'model_command: '
+  shell_command nanocamelid model 1b "$MODEL"
   for batch in "${BATCHES[@]}"; do
     printf 'batch_%s_command: ' "$batch"
     context_env_prefix
@@ -343,7 +355,11 @@ echo "prompt: $PROMPT"
 echo "max_tokens: $MAX_TOKENS"
 echo "temp: $TEMP"
 echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
+echo "shape_audit: enabled"
 echo "batches: ${BATCHES[*]}"
+
+echo "==> Auditing 1B model shape: $MODEL"
+run_nanocamelid model 1b "$MODEL"
 
 EXIT_STATUS=0
 RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-prefill.XXXXXX")"

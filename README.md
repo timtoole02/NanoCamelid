@@ -90,10 +90,11 @@ from `NANOCAMELID_CONTEXT_PACKS`, defaulting to `512,1024,2048,4096,8192`.
 Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
 `json:` status row listing the selected 1B model, smoke kind, token count, and
 validated context caps; dry runs print the same row as `json_on_success:`.
-`./scripts/pi/bench-1b-prefill.sh --dry-run` prints the real 1B prefill batch
-sweep plan and validates any `NANOCAMELID_CONTEXT_LIMIT` cap before the model is
-loaded. Successful sweeps end with `prefill_bench_1b_status: ok` and a compact
-`json:` summary row for log collectors.
+`./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
+preflight plus the real prefill batch sweep plan, and validates any
+`NANOCAMELID_CONTEXT_LIMIT` cap before the model is loaded. Successful sweeps
+end with `prefill_bench_1b_status: ok` and a compact `json:` summary row for
+log collectors.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 
@@ -394,11 +395,12 @@ session history without restarting the process.
 before decode begins. The default is `16`. Set it to `1` for the old
 single-token reference behavior, or use `bench q4-prefill` to compare candidate
 batch sizes on the current host without loading a GGUF model.
-On a prepared Pi workspace, `./scripts/pi/bench-1b-prefill.sh` sweeps the real
-Llama 3.2 1B chat path across prefill batch sizes and prints the model-backed
-prompt ingestion timing plus one `json:` summary line for each batch. When the
-sweep finishes, it also reports the best observed prefill batch and decode
-throughput batch in a final JSON status row.
+On a prepared Pi workspace, `./scripts/pi/bench-1b-prefill.sh` first runs the
+strict Llama 3.2 1B shape audit, then sweeps the real 1B chat path across
+prefill batch sizes and prints the model-backed prompt ingestion timing plus
+one `json:` summary line for each batch. When the sweep finishes, it also
+reports the best observed prefill batch and decode throughput batch in a final
+JSON status row.
 
 Set `NANOCAMELID_TRACE=1` on `generate`, `chat`, or `tui` runs to print an
 aggregate stage-level timing summary. It is intended for focused tuning: the
@@ -578,12 +580,12 @@ Each cargo benchmark prints human-readable timing plus a JSON summary line.
 `bench q4-prefill` reports both milliseconds per prompt token and prompt
 tokens/sec so Pi prefill sweeps can be compared without manual conversion.
 Treat results as specific to the exact Pi, model, build, and environment used.
-The 1B prefill sweep is model-backed and reports NanoCamelid's normal prompt
-ingestion and generation timing for each selected batch size, then emits a
-`json: {"benchmark":"llama32-1b-prefill",...}` line for each batch. Successful
-sweeps also end with `prefill_bench_1b_status: ok` and a final JSON summary
-including the selected model, context cap, planned batches, best prefill batch,
-and best decode throughput batch.
+The 1B prefill sweep runs the strict 1B shape audit, then reports
+NanoCamelid's normal prompt ingestion and generation timing for each selected
+batch size and emits a `json: {"benchmark":"llama32-1b-prefill",...}` line for
+each batch. Successful sweeps also end with `prefill_bench_1b_status: ok` and a
+final JSON summary including the selected model, context cap, planned batches,
+best prefill batch, and best decode throughput batch.
 
 Useful environment controls:
 
