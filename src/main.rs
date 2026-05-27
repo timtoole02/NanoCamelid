@@ -1386,6 +1386,8 @@ fn parse_tui_args_with_env_and_workspace(
     workspace: &str,
     q4_exists: bool,
 ) -> Result<TuiArgs, &'static str> {
+    let env_model_path =
+        require_env_gguf_path_value(env_model_path, "model env path must be a .gguf path")?;
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
@@ -1442,6 +1444,8 @@ fn parse_generate_args_with_env_and_workspace(
     workspace: &str,
     q4_exists: bool,
 ) -> Result<GenerateArgs, &'static str> {
+    let env_model_path =
+        require_env_gguf_path_value(env_model_path, "model env path must be a .gguf path")?;
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
@@ -2083,6 +2087,18 @@ fn require_env_gguf_path(
     error: &'static str,
 ) -> Result<Option<(String, &'static str)>, &'static str> {
     if let Some((path, _source)) = &env_model_path
+        && !looks_like_gguf_path(path)
+    {
+        return Err(error);
+    }
+    Ok(env_model_path)
+}
+
+fn require_env_gguf_path_value(
+    env_model_path: Option<String>,
+    error: &'static str,
+) -> Result<Option<String>, &'static str> {
+    if let Some(path) = &env_model_path
         && !looks_like_gguf_path(path)
     {
         return Err(error);
@@ -6882,6 +6898,19 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn generate_args_reject_non_gguf_env_model_path() {
+        let err = parse_generate_args_with_env_and_workspace(
+            &["1b".to_owned(), "--dry-run".to_owned()],
+            Some("/models/not-a-gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("non-GGUF generate env path should fail");
+
+        assert_eq!(err, "model env path must be a .gguf path");
+    }
+
+    #[test]
     fn generate_args_3b_alias_honors_env_model_override() {
         let parsed = parse_generate_args_with_env_and_workspace(
             &["llama-3.2-3b".to_owned(), "Say hello".to_owned()],
@@ -7044,6 +7073,19 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.max_tokens, 64);
         assert!(parsed.dry_run);
         assert!(parsed.audit_1b_shape);
+    }
+
+    #[test]
+    fn tui_args_reject_non_gguf_env_model_path() {
+        let err = parse_tui_args_with_env_and_workspace(
+            &["1b".to_owned(), "--dry-run".to_owned()],
+            Some("/models/not-a-gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("non-GGUF TUI env path should fail");
+
+        assert_eq!(err, "model env path must be a .gguf path");
     }
 
     #[test]

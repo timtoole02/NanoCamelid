@@ -271,6 +271,7 @@ expect_output "generate 1b context-limited command" "generate_command: NANOCAMEL
 expect_output "generate 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- generate 1b --dry-run
+expect_failure "generate 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- generate 1b --dry-run
 
 echo "==> Checking 1B chat CLI dry run..."
 cargo run -- chat 1b --dry-run
@@ -284,6 +285,7 @@ expect_output "chat 1b context-limited command" "chat_command: NANOCAMELID_CONTE
 expect_output "chat 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- chat 1b --dry-run
+expect_failure "chat 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- chat 1b --dry-run
 
 echo "==> Checking 1B smoke CLI dry run..."
 cargo run -- smoke 1b --dry-run
@@ -344,6 +346,7 @@ expect_output "tui 1b context-limited command" "tui_command: NANOCAMELID_CONTEXT
 expect_output "tui 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- tui 1b --dry-run
+expect_failure "tui 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- tui 1b --dry-run
 
 echo "==> Checking 1B prefill benchmark CLI dry run..."
 cargo run -- bench 1b --dry-run
