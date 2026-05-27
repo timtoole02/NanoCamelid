@@ -74,8 +74,8 @@ automation can confirm the guard is in the plan without opening the GGUF, plus
 the exact `model_command` that will run before the smoke gate.
 Successful 1B smoke runs end with `smoke_1b_status: ok` and a compact `json:`
 status row that records the selected model, quantization row, context cap,
-strict shape-audit marker, smoke kind, smoke token count, and prefill batch;
-dry runs print the same row as `json_on_success:`.
+strict shape-audit marker, smoke prompt, smoke kind, smoke token count, and
+prefill batch; dry runs print the same row as `json_on_success:`.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override. Their dry runs print the selected model source, resolved model path,
@@ -92,7 +92,8 @@ prompt. Successful readiness runs end with `ready_1b_status: ok`; dry runs
 print `status_on_success: ready_1b_status: ok` for log collectors. Successful
 runs also emit a compact `json:` status row with the selected 1B model, context
 cap, quantization row, probe marker, strict shape-audit marker, smoke kind,
-smoke token count, and direct-chat token count.
+smoke prompt, smoke token count, direct-chat prompt, and direct-chat token
+count.
 `./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
 without requiring the GGUF to exist yet. It honors the same
 `NANOCAMELID_SMOKE_GGUF` then `NANOCAMELID_MODEL_GGUF` override order as the
@@ -104,8 +105,9 @@ Llama 3.2 1B shape gate remains in the launch path.
 from `NANOCAMELID_CONTEXT_PACKS`, defaulting to `512,1024,2048,4096,8192`.
 Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
 `json:` status row listing the selected 1B model, strict shape-audit marker,
-smoke kind, token count, prefill batch, and validated context caps; dry runs
-also print `shape_audit: enabled` and the same row as `json_on_success:`.
+smoke prompt, smoke kind, token count, prefill batch, and validated context
+caps; dry runs also print `shape_audit: enabled` and the same row as
+`json_on_success:`.
 `./scripts/pi/evidence-1b.sh` is the Pi-side evidence bundle for one 1B run. It
 delegates to `model-1b.sh`, `ready-1b.sh --no-chat`, `context-pack-1b.sh`, and
 `bench-1b-prefill.sh` in that order. Successful runs end with
@@ -118,12 +120,13 @@ prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
 positive and unique, so Pi sweeps cannot spend time rerunning the same batch.
 Successful sweeps end with `prefill_bench_1b_status: ok` and a compact `json:`
 summary row for log collectors that includes the strict `llama32_1b` shape
-marker.
+marker and prefill prompt.
 `cargo run -- bench 1b` runs the same model-backed prefill sweep from the Rust
 CLI when the selected 1B GGUF is present. It audits the strict 1B shape first,
 runs inspect and smoke preflights, runs each `NANOCAMELID_PREFILL_BATCH`, emits
 per-batch `json:` rows, and ends with `prefill_bench_1b_status: ok` plus the
-best observed prefill/decode batches and the best prefill prompt tokens/sec.
+prefill prompt, best observed prefill/decode batches, and the best prefill
+prompt tokens/sec.
 `cargo run -- bench 1b --dry-run` prints the selected 1B GGUF, strict
 shape-audit preflight, inspect command, smoke command, batch commands, context
 cap, and `json_on_success` row before the Pi-local GGUF is present.

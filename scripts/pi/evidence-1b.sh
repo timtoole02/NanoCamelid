@@ -124,6 +124,16 @@ json_integer_array() {
   printf ']'
 }
 
+json_number_or_null() {
+  if [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    printf '%s' "$1"
+  elif [[ "${1:-}" =~ ^[.][0-9]+$ ]]; then
+    printf '0%s' "$1"
+  else
+    printf 'null'
+  fi
+}
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -202,13 +212,17 @@ CONTEXT_PACKS=($(parse_unique_positive_integer_list "context cap" "$CONTEXT_PACK
 PREFILL_BATCHES=($(parse_unique_positive_integer_list "prefill batch size" "$PREFILL_BATCHES_RAW"))
 
 evidence_1b_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_kind":"%s","smoke_tokens":%s,"context_pack_caps":%s,"prefill_batches":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_prompt":%s,"smoke_kind":"%s","smoke_tokens":%s,"context_pack_caps":%s,"prefill_prompt":%s,"prefill_tokens":%s,"prefill_temp":%s,"prefill_batches":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
+    "$(json_string "$SMOKE_PROMPT")" \
     "$SMOKE_KIND" \
     "$SMOKE_TOKENS" \
     "$(json_integer_array "${CONTEXT_PACKS[@]}")" \
+    "$(json_string "$PREFILL_PROMPT")" \
+    "$PREFILL_TOKENS" \
+    "$(json_number_or_null "$PREFILL_TEMP")" \
     "$(json_integer_array "${PREFILL_BATCHES[@]}")"
 }
 

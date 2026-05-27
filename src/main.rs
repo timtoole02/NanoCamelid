@@ -3107,13 +3107,14 @@ fn prefill_bench_1b_status_json_with_results(
     let best_decode_batch = best_decode.map(|(batch, _)| batch);
     let best_tokens_per_sec = best_decode.map(|(_, tokens_per_sec)| tokens_per_sec);
     format!(
-        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":{},\"best_prefill_sec\":{},\"best_prefill_prompt_tokens_per_sec\":{},\"best_decode_batch\":{},\"best_tokens_per_sec\":{}}}",
+        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"prompt\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":{},\"best_prefill_sec\":{},\"best_prefill_prompt_tokens_per_sec\":{},\"best_decode_batch\":{},\"best_tokens_per_sec\":{}}}",
         json_string(&parsed.model_path),
         json_string(parsed.model_source),
         json_string(llama32_1b_quantization_for_path(Path::new(
             &parsed.model_path
         ))),
         json_string(context_limit),
+        json_string(&parsed.prompt),
         parsed.max_tokens,
         parsed.temp,
         batches,
@@ -4452,6 +4453,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
                 model_path,
                 &smoke,
                 chat_enabled,
+                chat_enabled.then_some(chat_prompt.as_str()),
                 chat_tokens,
                 &context_limit_plan_value(),
                 prefill_batch,
@@ -4544,6 +4546,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
                 &smoke,
                 false,
                 None,
+                None,
                 &context_limit_plan_value(),
                 prefill_batch,
             )
@@ -4566,6 +4569,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
                 model_path,
                 &smoke,
                 true,
+                Some(chat_prompt.as_str()),
                 chat_tokens,
                 &context_limit_plan_value(),
                 prefill_batch,
@@ -4579,23 +4583,31 @@ fn ready_1b_status_json(
     model_path: &Path,
     smoke: &Smoke1BArgs,
     direct_chat: bool,
+    chat_prompt: Option<&str>,
     chat_tokens: Option<usize>,
     context_limit: &str,
     prefill_batch: usize,
 ) -> String {
+    let chat_prompt = if direct_chat {
+        json_optional_string(chat_prompt)
+    } else {
+        "null".to_owned()
+    };
     let chat_tokens = chat_tokens
         .map(|tokens| tokens.to_string())
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_prompt\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"direct_chat\":{},\"chat_prompt\":{},\"chat_tokens\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
         json_string(llama32_1b_quantization_for_path(model_path)),
         json_string(context_limit),
+        json_string(&smoke.prompt),
         smoke.kind.label(),
         smoke.max_tokens,
         prefill_batch,
         direct_chat,
+        chat_prompt,
         chat_tokens
     )
 }
@@ -4616,11 +4628,12 @@ fn smoke_1b_status_json(
     prefill_batch: usize,
 ) -> String {
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_prompt\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
         json_string(llama32_1b_quantization_for_path(model_path)),
         json_string(context_limit),
+        json_string(&smoke.prompt),
         smoke.kind.label(),
         smoke.max_tokens,
         prefill_batch,
@@ -4651,6 +4664,10 @@ fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn json_optional_string(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".to_owned())
 }
 
 fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
@@ -8447,11 +8464,12 @@ flags\t\t: sse4_2 avx2
                 Path::new("/models/Llama-3.2-1B-Instruct-Q4_0.gguf"),
                 &smoke,
                 true,
+                Some("Direct hello"),
                 Some(4),
                 "512",
                 32,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":32,\"direct_chat\":true,\"chat_tokens\":4}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_prompt\":\"Say hello\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":32,\"direct_chat\":true,\"chat_prompt\":\"Direct hello\",\"chat_tokens\":4}"
         );
     }
 
@@ -8473,7 +8491,7 @@ flags\t\t: sse4_2 avx2
                 "unset",
                 16,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"quantization\":\"q8_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"quantization\":\"q8_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"smoke_prompt\":\"Say hello\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
         );
     }
 
@@ -8496,7 +8514,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(
             prefill_bench_1b_status_json(&parsed, "unset"),
-            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q8_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_prefill_prompt_tokens_per_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q8_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"prompt\":\"Say hello\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_prefill_prompt_tokens_per_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
         );
     }
 
@@ -8546,7 +8564,7 @@ flags\t\t: sse4_2 avx2
                 Some(373.6842105263158),
                 Some((1, 4.18)),
             ),
-            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":16,\"best_prefill_sec\":0.380000,\"best_prefill_prompt_tokens_per_sec\":373.684211,\"best_decode_batch\":1,\"best_tokens_per_sec\":4.180000}"
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"prompt\":\"Say hello\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":16,\"best_prefill_sec\":0.380000,\"best_prefill_prompt_tokens_per_sec\":373.684211,\"best_decode_batch\":1,\"best_tokens_per_sec\":4.180000}"
         );
     }
 

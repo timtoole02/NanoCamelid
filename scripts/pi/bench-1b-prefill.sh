@@ -219,11 +219,12 @@ prefill_summary_json() {
   local best_decode_batch="$4"
   local best_tokens_per_sec="$5"
 
-  printf '{"benchmark":"llama32-1b-prefill","target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"probe":true,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"max_tokens":%s,"temp":%s,"batches":%s,"best_prefill_batch":%s,"best_prefill_sec":%s,"best_prefill_prompt_tokens_per_sec":%s,"best_decode_batch":%s,"best_tokens_per_sec":%s}\n' \
+  printf '{"benchmark":"llama32-1b-prefill","target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"probe":true,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"prompt":%s,"max_tokens":%s,"temp":%s,"batches":%s,"best_prefill_batch":%s,"best_prefill_sec":%s,"best_prefill_prompt_tokens_per_sec":%s,"best_decode_batch":%s,"best_tokens_per_sec":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
     "$(json_string "$(context_limit_plan_value)")" \
+    "$(json_string "$PROMPT")" \
     "$MAX_TOKENS" \
     "$(json_number_or_null "$TEMP")" \
     "$(json_array_from_batches "${BATCHES[@]}")" \

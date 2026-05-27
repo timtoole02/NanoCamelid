@@ -375,6 +375,7 @@ expect_output "smoke 1b success marker dry run" "status_on_success: smoke_1b_sta
 expect_output "smoke 1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- smoke 1b --dry-run
+expect_output "smoke 1b json records prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- smoke 1b --dry-run
 expect_output_order "smoke 1b model audit before smoke" "model_command: nanocamelid model 1b" "smoke_command: nanocamelid smoke 1b" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- smoke 1b --dry-run
@@ -400,7 +401,9 @@ expect_output "ready 1b selected quantization" "quantization: q8_0" cargo run --
 expect_output "ready 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records probe" "\"probe\":true" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- ready 1b --dry-run
-expect_output "ready 1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_tokens\":null" cargo run -- ready 1b --no-chat --dry-run
+expect_output "ready 1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" cargo run -- ready 1b --dry-run
+expect_output "ready 1b json records chat prompt" "\"chat_prompt\":\"Say hello in one sentence.\"" cargo run -- ready 1b --dry-run
+expect_output "ready 1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_prompt\":null,\"chat_tokens\":null" cargo run -- ready 1b --no-chat --dry-run
 expect_output "ready 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records prefill batch" "\"prefill_batch\":32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- ready 1b --dry-run
 expect_output "ready 1b smoke command carries prefill batch" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" env NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 cargo run -- ready 1b --dry-run
@@ -458,6 +461,7 @@ expect_output "bench 1b json success marker dry run" "\"benchmark\":\"llama32-1b
 expect_output "bench 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- bench 1b --dry-run
 expect_output "bench 1b json records probe" "\"probe\":true" cargo run -- bench 1b --dry-run
 expect_output "bench 1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- bench 1b --dry-run
+expect_output "bench 1b json records prompt" "\"prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\"" cargo run -- bench 1b --dry-run
 expect_output "bench 1b default batches dry run" "batches: 1 16 32 64" cargo run -- bench 1b --dry-run
 expect_output "bench 1b probe command" "probe_command: nanocamelid probe" cargo run -- bench 1b --dry-run
 expect_output "bench 1b smoke command" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2" cargo run -- bench 1b --dry-run
@@ -511,6 +515,7 @@ expect_output "smoke-1b success marker dry run" "status_on_success: smoke_1b_sta
 expect_output "smoke-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/smoke-1b.sh --dry-run
+expect_output "smoke-1b json records prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output_order "smoke-1b model audit before smoke" "model_command: nanocamelid model 1b" "smoke_command: nanocamelid smoke 1b" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/smoke-1b.sh --dry-run
@@ -538,7 +543,9 @@ expect_output "ready-1b selected quantization" "quantization: q8_0" ./scripts/pi
 expect_output "ready-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records probe" "\"probe\":true" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/ready-1b.sh --dry-run
-expect_output "ready-1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_tokens\":null" ./scripts/pi/ready-1b.sh --no-chat --dry-run
+expect_output "ready-1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b json records chat prompt" "\"chat_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_prompt\":null,\"chat_tokens\":null" ./scripts/pi/ready-1b.sh --no-chat --dry-run
 expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records prefill batch" "\"prefill_batch\":32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/ready-1b.sh --dry-run
@@ -612,6 +619,7 @@ expect_output "bench-1b-prefill json success marker dry run" "\"benchmark\":\"ll
 expect_output "bench-1b-prefill json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill json records probe" "\"probe\":true" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output "bench-1b-prefill json records prompt" "\"prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\"" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill json batches dry run" "\"batches\":[1,16,32,64]" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
@@ -639,6 +647,7 @@ expect_output "context-pack-1b success marker dry run" "status_on_success: conte
 expect_output "context-pack-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b json records prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json caps dry run" "\"context_caps\":[512,1024,2048,4096,8192]" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json records prefill batch" "\"prefill_batch\":32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/context-pack-1b.sh --dry-run
@@ -661,6 +670,8 @@ expect_output "evidence-1b help documents context packs" "NANOCAMELID_CONTEXT_PA
 expect_output "evidence-1b success marker dry run" "status_on_success: evidence_1b_status: ok" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b json records prefill prompt" "\"prefill_prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records context caps" "\"context_pack_caps\":[512,1024,2048,4096,8192]" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records prefill batches" "\"prefill_batches\":[1,16,32,64]" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b model command" "model_command: ./scripts/pi/model-1b.sh" ./scripts/pi/evidence-1b.sh --dry-run
