@@ -336,6 +336,11 @@ expect_failure "tui 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad 
 
 echo "==> Checking 1B model audit dry run..."
 ./scripts/pi/model-1b.sh --dry-run
+expect_output "model-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/model-1b.sh --dry-run
+expect_output "model-1b success marker dry run" "status_on_success: model_1b_status: ok" ./scripts/pi/model-1b.sh --dry-run
+expect_output "model-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/model-1b.sh --dry-run
+expect_output "model-1b json shape marker dry run" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/model-1b.sh --dry-run
+expect_output "model-1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b inspect follow-up command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b smoke follow-up command" "smoke_command: nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b ready follow-up command" "ready_command: nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
@@ -343,6 +348,7 @@ expect_output "model-1b ready follow-up command" "ready_command: nanocamelid rea
 echo "==> Checking 1B model audit rejects non-GGUF model args..."
 expect_failure "model-1b invalid model arg" ./scripts/pi/model-1b.sh not-a-model --dry-run
 expect_failure "model-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/model-1b.sh --dry-run
+expect_failure "model-1b repo-local target dir" bash -c 'tmp="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-model-1b.XXXXXX").gguf"; : >"$tmp"; trap "rm -f \"$tmp\"" EXIT; CARGO_TARGET_DIR=target ./scripts/pi/model-1b.sh "$tmp"'
 
 echo "==> Checking 1B Pi smoke launcher dry run..."
 ./scripts/pi/smoke-1b.sh --dry-run

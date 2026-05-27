@@ -7,7 +7,8 @@ usage() {
 Usage: model-1b.sh [model.gguf] [--dry-run]
 
 Prints the Pi-local Llama 3.2 1B model selection plan and verifies that the
-selected GGUF exists unless --dry-run is used.
+selected GGUF exists, then runs the strict Llama 3.2 1B shape audit unless
+--dry-run is used.
 
 Model resolution:
   1. explicit model.gguf argument
@@ -18,6 +19,7 @@ Model resolution:
 
 Useful env:
   NANOCAMELID_WORKSPACE     Pi workspace, default /mnt/nanocamelid
+  CARGO_TARGET_DIR          Cargo output dir, default /mnt/nanocamelid/target
   --dry-run                 Print the model audit without failing when missing
 USAGE
 }
@@ -62,6 +64,10 @@ else
   set --
 fi
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
 if [[ $# -gt 1 ]]; then
   echo "Unexpected extra model audit argument: ${2}" >&2
   usage >&2
@@ -74,6 +80,8 @@ if [[ $# -eq 1 ]] && ! looks_like_gguf_path "$1"; then
 fi
 
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
+REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
+TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
 MODEL_SOURCE=""
@@ -110,7 +118,46 @@ shell_command() {
   printf '\n'
 }
 
+json_string() {
+  local value="$1"
+  local out='"'
+  local i ch
+
+  for ((i = 0; i < ${#value}; i++)); do
+    ch="${value:i:1}"
+    case "$ch" in
+      '"') out+='\"' ;;
+      "\\") out+='\\' ;;
+      $'\n') out+='\n' ;;
+      $'\r') out+='\r' ;;
+      $'\t') out+='\t' ;;
+      *) out+="$ch" ;;
+    esac
+  done
+  out+='"'
+  printf '%s' "$out"
+}
+
+model_status_json() {
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"shape":"llama32_1b","shape_ready":true}\n' \
+    "$(json_string "$MODEL")" \
+    "$(json_string "$MODEL_SOURCE")"
+}
+
+BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
+if [[ -x "$BINARY" ]]; then
+  launcher_mode="binary"
+elif command -v cargo >/dev/null 2>&1; then
+  launcher_mode="cargo"
+else
+  launcher_mode="unavailable"
+fi
+
 echo "NanoCamelid Llama 3.2 1B model audit"
+echo "repo: $REPO"
+echo "cargo_target_dir: $TARGET_DIR"
+echo "launcher_mode: $launcher_mode"
+echo "binary: $BINARY"
 echo "workspace: $WORKSPACE"
 echo "q4_model: $Q4_MODEL"
 echo "q4_exists: $([[ -f "$Q4_MODEL" ]] && echo true || echo false)"
@@ -121,6 +168,11 @@ echo "selected_model: $MODEL"
 echo "selected_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  echo "shape_audit: enabled"
+  echo "status_on_success: model_1b_status: ok"
+  echo "json_on_success: $(model_status_json)"
+  printf 'model_command: '
+  shell_command nanocamelid model 1b "$MODEL"
   printf 'inspect_command: '
   shell_command nanocamelid inspect "$MODEL"
   printf 'smoke_command: '
@@ -131,7 +183,23 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 if [[ -f "$MODEL" ]]; then
-  exit 0
+  if [[ "$launcher_mode" == "unavailable" ]]; then
+    echo "NanoCamelid release binary not found and cargo is not on PATH." >&2
+    echo "Expected binary: $BINARY" >&2
+    exit 3
+  fi
+  if [[ "$launcher_mode" == "cargo" || -z "${NANOCAMELID_BIN:-}" ]]; then
+    require_safe_cargo_target_dir "$TARGET_DIR" "$REPO"
+  fi
+
+  if [[ "$launcher_mode" == "binary" ]]; then
+    "$BINARY" model 1b "$MODEL"
+  else
+    cd "$REPO"
+    export CARGO_TARGET_DIR="$TARGET_DIR"
+    cargo run --release -- model 1b "$MODEL"
+  fi
+  exit $?
 fi
 
 echo "Selected 1B model is missing: $MODEL" >&2
