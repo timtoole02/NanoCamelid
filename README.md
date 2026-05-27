@@ -110,8 +110,10 @@ caps; dry runs also print `shape_audit: enabled` and the same row as
 `json_on_success:`.
 `./scripts/pi/evidence-1b.sh` is the Pi-side evidence bundle for one 1B run. It
 delegates to `model-1b.sh`, `ready-1b.sh --no-chat`, `context-pack-1b.sh`, and
-`bench-1b-prefill.sh` in that order. Successful runs end with
-`evidence_1b_status: ok`; dry runs print the exact delegated command plan.
+`bench-1b-prefill.sh` in that order. It records and forwards any
+`NANOCAMELID_CONTEXT_LIMIT` cap in the delegated dry-run plan. Successful runs
+end with `evidence_1b_status: ok`; dry runs print the exact delegated command
+plan.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
 preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
 prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then

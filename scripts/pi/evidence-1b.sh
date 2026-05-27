@@ -25,6 +25,7 @@ Useful env:
   NANOCAMELID_SMOKE_KIND         Smoke kind for readiness/context pack, default chat
   NANOCAMELID_SMOKE_PROMPT       Smoke prompt
   NANOCAMELID_SMOKE_TOKENS       Smoke generated token count
+  NANOCAMELID_CONTEXT_LIMIT      Optional runtime context cap for readiness and sweeps
   NANOCAMELID_CONTEXT_PACKS      Context caps for context-pack-1b.sh
   NANOCAMELID_PREFILL_PROMPT     Prompt for bench-1b-prefill.sh
   NANOCAMELID_PREFILL_TOKENS     Generated token count for bench-1b-prefill.sh
@@ -134,9 +135,24 @@ json_number_or_null() {
   fi
 }
 
+context_limit_plan_value() {
+  if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
+    printf '%s' "$NANOCAMELID_CONTEXT_LIMIT"
+  else
+    printf 'unset'
+  fi
+}
+
+context_env_prefix() {
+  if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
+    env_prefix NANOCAMELID_CONTEXT_LIMIT "$NANOCAMELID_CONTEXT_LIMIT"
+  fi
+}
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
+require_optional_context_limit
 
 MODEL_ARGS=()
 if [[ $# -gt 1 ]]; then
@@ -212,10 +228,11 @@ CONTEXT_PACKS=($(parse_unique_positive_integer_list "context cap" "$CONTEXT_PACK
 PREFILL_BATCHES=($(parse_unique_positive_integer_list "prefill batch size" "$PREFILL_BATCHES_RAW"))
 
 evidence_1b_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_prompt":%s,"smoke_kind":"%s","smoke_tokens":%s,"context_pack_caps":%s,"prefill_prompt":%s,"prefill_tokens":%s,"prefill_temp":%s,"prefill_batches":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_prompt":%s,"smoke_kind":"%s","smoke_tokens":%s,"context_pack_caps":%s,"prefill_prompt":%s,"prefill_tokens":%s,"prefill_temp":%s,"prefill_batches":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
+    "$(json_string "$(context_limit_plan_value)")" \
     "$(json_string "$SMOKE_PROMPT")" \
     "$SMOKE_KIND" \
     "$SMOKE_TOKENS" \
@@ -235,6 +252,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
   echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
+  echo "context_limit: $(context_limit_plan_value)"
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
@@ -252,12 +270,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
     shell_command ./scripts/pi/model-1b.sh
   fi
   printf 'ready_command: '
+  context_env_prefix
   if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
     shell_command ./scripts/pi/ready-1b.sh "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
   else
     shell_command ./scripts/pi/ready-1b.sh "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
   fi
   printf 'context_pack_command: '
+  context_env_prefix
   env_prefix NANOCAMELID_CONTEXT_PACKS "$CONTEXT_PACKS_RAW"
   if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
     shell_command ./scripts/pi/context-pack-1b.sh "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
@@ -265,6 +285,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     shell_command ./scripts/pi/context-pack-1b.sh "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   fi
   printf 'prefill_bench_command: '
+  context_env_prefix
   env_prefix \
     NANOCAMELID_PREFILL_PROMPT "$PREFILL_PROMPT" \
     NANOCAMELID_PREFILL_TOKENS "$PREFILL_TOKENS" \
@@ -284,6 +305,7 @@ echo "cargo_target_dir: $TARGET_DIR"
 echo "selected_source: $MODEL_SOURCE"
 echo "model: $MODEL"
 echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
+echo "context_limit: $(context_limit_plan_value)"
 echo "smoke_kind: $SMOKE_KIND"
 echo "smoke_prompt: $SMOKE_PROMPT"
 echo "smoke_tokens: $SMOKE_TOKENS"
