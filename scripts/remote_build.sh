@@ -233,6 +233,21 @@ is_disabled_toggle() {
   [[ "$1" == "0" || "$1" == "false" || "$1" == "no" || "$1" == "off" ]]
 }
 
+require_toggle() {
+  local label="$1"
+  local value="$2"
+  local lower_value
+
+  lower_value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  case "$lower_value" in
+    "" | 0 | 1 | false | true | no | yes | off | on) ;;
+    *)
+      echo "$label must be 0, 1, false, true, no, yes, off, or on: $value" >&2
+      exit 2
+      ;;
+  esac
+}
+
 print_readiness_command() {
   local model_arg="${1:-}"
 
@@ -318,6 +333,10 @@ print_evidence_command() {
   fi
   printf '\n'
 }
+
+require_toggle "NANOCAMELID_REMOTE_SMOKE" "$REMOTE_SMOKE_ENABLED"
+require_toggle "NANOCAMELID_REMOTE_PREFILL_BENCH" "$REMOTE_PREFILL_BENCH"
+require_toggle "NANOCAMELID_REMOTE_EVIDENCE" "$REMOTE_EVIDENCE"
 
 if evidence_enabled && remote_smoke_disabled; then
   echo "NANOCAMELID_REMOTE_EVIDENCE requires NANOCAMELID_REMOTE_SMOKE to be enabled." >&2
