@@ -176,9 +176,10 @@ json_string() {
 }
 
 smoke_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
+    "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
     "$(json_string "${NANOCAMELID_CONTEXT_LIMIT:-unset}")" \
     "$SMOKE_KIND" \
     "$SMOKE_TOKENS" \
@@ -199,6 +200,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "selected_source: $MODEL_SOURCE"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
   echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
   echo "shape_audit: enabled"
   echo "smoke_kind: $SMOKE_KIND"

@@ -128,3 +128,11 @@ prefill_batch_plan_value() {
     printf '16'
   fi
 }
+
+llama32_1b_quantization_for_path() {
+  case "$(basename "${1:-}")" in
+    Llama-3.2-1B-Instruct-Q4_0.gguf) printf 'q4_0' ;;
+    Llama-3.2-1B-Instruct-Q8_0.gguf) printf 'q8_0' ;;
+    *) printf 'unknown' ;;
+  esac
+}

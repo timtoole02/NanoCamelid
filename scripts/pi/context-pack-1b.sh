@@ -201,9 +201,10 @@ else
 fi
 
 context_pack_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s,"context_caps":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s,"context_caps":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
+    "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
     "$SMOKE_KIND" \
     "$SMOKE_TOKENS" \
     "$(prefill_batch_plan_value)" \
@@ -219,6 +220,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "selected_source: $MODEL_SOURCE"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"

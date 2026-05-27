@@ -2882,6 +2882,10 @@ fn print_bench_1b_dry_run(parsed: &Bench1BArgs) -> ExitCode {
     println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
+    println!(
+        "quantization: {}",
+        llama32_1b_quantization_for_path(model_path)
+    );
     println!("prompt: {}", parsed.prompt);
     println!("max_tokens: {}", parsed.max_tokens);
     println!("temp: {}", parsed.temp);
@@ -2966,9 +2970,12 @@ fn prefill_bench_1b_status_json_with_results(
     let best_decode_batch = best_decode.map(|(batch, _)| batch);
     let best_tokens_per_sec = best_decode.map(|(_, tokens_per_sec)| tokens_per_sec);
     format!(
-        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":{},\"best_prefill_sec\":{},\"best_decode_batch\":{},\"best_tokens_per_sec\":{}}}",
+        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":{},\"best_prefill_sec\":{},\"best_decode_batch\":{},\"best_tokens_per_sec\":{}}}",
         json_string(&parsed.model_path),
         json_string(parsed.model_source),
+        json_string(llama32_1b_quantization_for_path(Path::new(
+            &parsed.model_path
+        ))),
         json_string(context_limit),
         parsed.max_tokens,
         parsed.temp,
@@ -4011,6 +4018,12 @@ fn print_smoke_dry_run(
     println!("selected_source: {}", parsed.model_source);
     println!("model: {}", model_path.display());
     println!("model_exists: {}", model_path.is_file());
+    if target == "1b" {
+        println!(
+            "quantization: {}",
+            llama32_1b_quantization_for_path(model_path)
+        );
+    }
     println!("context_limit: {}", context_limit_plan_value());
     if target == "1b" {
         println!("shape_audit: enabled");
@@ -4058,6 +4071,10 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
     println!("selected_source: {}", parsed.model_source);
     println!("selected_model: {}", parsed.model_path);
     println!("selected_exists: {}", model_path.is_file());
+    println!(
+        "quantization: {}",
+        llama32_1b_quantization_for_path(model_path)
+    );
 
     if parsed.dry_run {
         let model_arg = model_path.display().to_string();
@@ -4189,6 +4206,10 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         println!("selected_source: {}", smoke.model_source);
         println!("model: {}", model_path.display());
         println!("model_exists: {}", model_path.is_file());
+        println!(
+            "quantization: {}",
+            llama32_1b_quantization_for_path(model_path)
+        );
         println!("context_limit: {}", context_limit_plan_value());
         println!("shape_audit: enabled");
         println!("smoke_kind: {}", smoke.kind.label());
@@ -4341,9 +4362,10 @@ fn ready_1b_status_json(
         .map(|tokens| tokens.to_string())
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"direct_chat\":{},\"chat_tokens\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
+        json_string(llama32_1b_quantization_for_path(model_path)),
         json_string(context_limit),
         smoke.kind.label(),
         smoke.max_tokens,
@@ -4355,9 +4377,10 @@ fn ready_1b_status_json(
 
 fn model_1b_status_json(model_path: &Path, model_source: &str) -> String {
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true}}",
         json_string(&model_path.display().to_string()),
         json_string(model_source),
+        json_string(llama32_1b_quantization_for_path(model_path)),
     )
 }
 
@@ -4368,14 +4391,23 @@ fn smoke_1b_status_json(
     prefill_batch: usize,
 ) -> String {
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
+        json_string(llama32_1b_quantization_for_path(model_path)),
         json_string(context_limit),
         smoke.kind.label(),
         smoke.max_tokens,
         prefill_batch,
     )
+}
+
+fn llama32_1b_quantization_for_path(model_path: &Path) -> &'static str {
+    match model_path.file_name().and_then(|name| name.to_str()) {
+        Some(LLAMA32_1B_Q4_MODEL) => "q4_0",
+        Some(LLAMA32_1B_Q8_MODEL) => "q8_0",
+        _ => "unknown",
+    }
 }
 
 fn json_string(value: &str) -> String {
@@ -6185,11 +6217,11 @@ mod tests {
         cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
         default_llama32_3b_model_path, device_model, generation_status_json, help_topic_for_args,
         help_topic_named, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
-        json_string, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
-        llama32_3b_model_not_found_message, looks_like_gguf_path, model_1b_status_json,
-        parse_bench_1b_args_with_env, parse_bench_1b_args_with_path, parse_bench_q4_layout_args,
-        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
-        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        json_string, llama32_1b_model_not_found_message, llama32_1b_quantization_for_path,
+        llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
+        model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
+        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
+        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
         parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
@@ -7918,7 +7950,27 @@ flags\t\t: sse4_2 avx2
                 Path::new("/models/Llama-3.2-1B-Instruct-Q4_0.gguf"),
                 "workspace Q4_0 default"
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"workspace Q4_0 default\",\"shape\":\"llama32_1b\",\"shape_ready\":true}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"workspace Q4_0 default\",\"quantization\":\"q4_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true}"
+        );
+    }
+
+    #[test]
+    fn llama32_1b_quantization_comes_from_selected_model_filename() {
+        assert_eq!(
+            llama32_1b_quantization_for_path(Path::new(
+                "/mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
+            )),
+            "q4_0"
+        );
+        assert_eq!(
+            llama32_1b_quantization_for_path(Path::new(
+                "/mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+            )),
+            "q8_0"
+        );
+        assert_eq!(
+            llama32_1b_quantization_for_path(Path::new("/models/custom-1b.gguf")),
+            "unknown"
         );
     }
 
@@ -7942,7 +7994,7 @@ flags\t\t: sse4_2 avx2
                 "512",
                 32,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":32,\"direct_chat\":true,\"chat_tokens\":4}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":32,\"direct_chat\":true,\"chat_tokens\":4}"
         );
     }
 
@@ -7964,7 +8016,7 @@ flags\t\t: sse4_2 avx2
                 "unset",
                 16,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"quantization\":\"q8_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
         );
     }
 
@@ -7987,7 +8039,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(
             prefill_bench_1b_status_json(&parsed, "unset"),
-            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"unset\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q8_0\",\"context_limit\":\"unset\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
         );
     }
 
@@ -8031,7 +8083,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(
             prefill_bench_1b_result_json(&parsed, "512", Some((16, 0.38)), Some((1, 4.18))),
-            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"512\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":16,\"best_prefill_sec\":0.380000,\"best_decode_batch\":1,\"best_tokens_per_sec\":4.180000}"
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"context_limit\":\"512\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":16,\"best_prefill_sec\":0.380000,\"best_decode_batch\":1,\"best_tokens_per_sec\":4.180000}"
         );
     }
 

@@ -213,9 +213,10 @@ prefill_summary_json() {
   local best_decode_batch="$3"
   local best_tokens_per_sec="$4"
 
-  printf '{"benchmark":"llama32-1b-prefill","target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"context_limit":%s,"max_tokens":%s,"temp":%s,"batches":%s,"best_prefill_batch":%s,"best_prefill_sec":%s,"best_decode_batch":%s,"best_tokens_per_sec":%s}\n' \
+  printf '{"benchmark":"llama32-1b-prefill","target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"context_limit":%s,"max_tokens":%s,"temp":%s,"batches":%s,"best_prefill_batch":%s,"best_prefill_sec":%s,"best_decode_batch":%s,"best_tokens_per_sec":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
+    "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
     "$(json_string "$(context_limit_plan_value)")" \
     "$MAX_TOKENS" \
     "$(json_number_or_null "$TEMP")" \
@@ -338,6 +339,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "selected_source: $MODEL_SOURCE"
   echo "model: $MODEL"
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+  echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
   echo "prompt: $PROMPT"
   echo "max_tokens: $MAX_TOKENS"
   echo "temp: $TEMP"

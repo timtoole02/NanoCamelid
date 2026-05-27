@@ -139,9 +139,10 @@ json_string() {
 }
 
 model_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"shape":"llama32_1b","shape_ready":true}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true}\n' \
     "$(json_string "$MODEL")" \
-    "$(json_string "$MODEL_SOURCE")"
+    "$(json_string "$MODEL_SOURCE")" \
+    "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")"
 }
 
 BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
@@ -166,6 +167,7 @@ echo "q8_exists: $([[ -f "$Q8_MODEL" ]] && echo true || echo false)"
 echo "selected_source: $MODEL_SOURCE"
 echo "selected_model: $MODEL"
 echo "selected_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
+echo "quantization: $(llama32_1b_quantization_for_path "$MODEL")"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "shape_audit: enabled"

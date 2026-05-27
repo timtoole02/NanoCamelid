@@ -56,10 +56,10 @@ Non-dry-run `inspect 1b` is also a strict Llama 3.2 1B shape gate: it exits
 nonzero if the selected GGUF does not match the expected 1B architecture,
 metadata, first-layer tensor shapes, and `llama3_instruct` chat renderer.
 `model 1b --dry-run` prints the same selected source, Q4_0/Q8_0 default paths,
-existence checks, and the exact follow-up `inspect`, `smoke`, and `ready`
-commands from the Rust CLI before the heavier gates. Successful `model 1b`
-shape-audit runs end with `model_1b_status: ok` and a compact `json:` status
-row; dry runs print the same row as `json_on_success:`.
+existence checks, selected quantization row, and the exact follow-up `inspect`,
+`smoke`, and `ready` commands from the Rust CLI before the heavier gates.
+Successful `model 1b` shape-audit runs end with `model_1b_status: ok` and a
+compact `json:` status row; dry runs print the same row as `json_on_success:`.
 `inspect 1b --dry-run` prints the resolved inspect command and model existence
 checks without opening the GGUF, so it is safe before the model has been copied.
 `./scripts/pi/model-1b.sh --dry-run` prints the same 1B model resolution plan
@@ -72,9 +72,9 @@ scalar-vs-selected smoke validation; dry runs print `shape_audit: enabled` so
 automation can confirm the guard is in the plan without opening the GGUF, plus
 the exact `model_command` that will run before the smoke gate.
 Successful 1B smoke runs end with `smoke_1b_status: ok` and a compact `json:`
-status row that records the selected model, context cap, strict shape-audit
-marker, smoke kind, smoke token count, and prefill batch; dry runs print the
-same row as `json_on_success:`.
+status row that records the selected model, quantization row, context cap,
+strict shape-audit marker, smoke kind, smoke token count, and prefill batch;
+dry runs print the same row as `json_on_success:`.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
 model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
 override. Their dry runs print the selected model source, resolved model path,
@@ -89,8 +89,8 @@ inspect, scalar-vs-selected smoke validation, and one direct chat turn. Set
 prompt. Successful readiness runs end with `ready_1b_status: ok`; dry runs
 print `status_on_success: ready_1b_status: ok` for log collectors. Successful
 runs also emit a compact `json:` status row with the selected 1B model, context
-cap, probe marker, strict shape-audit marker, smoke kind, smoke token count, and
-direct-chat token count.
+cap, quantization row, probe marker, strict shape-audit marker, smoke kind,
+smoke token count, and direct-chat token count.
 `./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
 without requiring the GGUF to exist yet. If `NANOCAMELID_CHAT_SMOKE=0` skips
 the pre-chat smoke gate, the launcher still runs `nanocamelid model 1b` before
@@ -485,10 +485,10 @@ shape audit, inspect, smoke, and one direct chat turn:
 
 Use `model-1b.sh --dry-run` as a cheap model-placement preflight when the GGUF
 has not been copied yet. It prints the exact `model`, `inspect`, `smoke`, and
-`ready` commands for the selected model plus the success markers automation
-should expect. Without `--dry-run`, it exits nonzero if the selected 1B GGUF is
-missing, otherwise it runs the strict Llama 3.2 1B shape audit through the Rust
-CLI.
+`ready` commands for the selected model plus the selected quantization row and
+success markers automation should expect. Without `--dry-run`, it exits nonzero
+if the selected 1B GGUF is missing, otherwise it runs the strict Llama 3.2 1B
+shape audit through the Rust CLI.
 
 The same gate is available through the CLI when you are already using the
 release binary or Cargo directly:
