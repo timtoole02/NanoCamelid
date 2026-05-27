@@ -348,6 +348,11 @@ the same GGUF path across repeated `inspect`, `generate`, `chat`, and `tui`
 runs, or `NANOCAMELID_SMOKE_GGUF` to override that shared default just for smoke
 validation.
 
+Remote Pi validation can also cap the single readiness pass without changing
+context-pack sweeps. Set `NANOCAMELID_REMOTE_CONTEXT_LIMIT=512` when
+`remote_build.sh` should pass `NANOCAMELID_CONTEXT_LIMIT` into the default 1B
+readiness gate and the optional `NANOCAMELID_REMOTE_PREFILL_BENCH=1` sweep.
+
 For the standard local validation gate, use:
 
 ```bash

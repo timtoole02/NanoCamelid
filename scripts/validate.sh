@@ -497,6 +497,9 @@ expect_output "remote_build disabled smoke skips shape audit" "readiness_shape_a
 echo "==> Checking remote Pi build launcher ignores direct chat env when readiness chat is disabled..."
 env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build shape audit dry run" "readiness_shape_audit: enabled" ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build readiness context limit dry run" "context_limit: 512" env NANOCAMELID_REMOTE_CONTEXT_LIMIT=512 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build readiness command carries context limit" "readiness_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_READY_CHAT=1" env NANOCAMELID_REMOTE_CONTEXT_LIMIT=512 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build invalid readiness context limit" env NANOCAMELID_REMOTE_CONTEXT_LIMIT=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build no-chat readiness command" "readiness_command: NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_SMOKE_KIND=chat" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_no_output "remote_build no-chat omits direct chat token env" "NANOCAMELID_READY_TOKENS=0" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_no_output "remote_build no-chat omits direct chat temp env" "NANOCAMELID_READY_TEMP=bad" env NANOCAMELID_READY_CHAT=0 NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
@@ -509,6 +512,7 @@ expect_failure "remote_build invalid context cap" env NANOCAMELID_REMOTE_CONTEXT
 
 echo "==> Checking remote Pi build launcher plans optional 1B prefill sweep..."
 expect_output "remote_build prefill dry run" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Say\\ hello\\ in\\ one\\ sentence. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/bench-1b-prefill.sh" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build prefill command carries context limit" "prefill_bench_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_PROMPT=Say\\ hello\\ in\\ one\\ sentence." env NANOCAMELID_REMOTE_CONTEXT_LIMIT=512 NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher rejects invalid prefill sweep settings..."
 expect_failure "remote_build invalid prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=1,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
