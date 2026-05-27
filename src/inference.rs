@@ -2229,6 +2229,20 @@ fn compute_q4_0_sdot_1x4_chunk(
     if out_chunk.len() == 4 {
         let mut sums = [0.0_f32; 4];
         for (b, x_scale) in x_scales.iter().copied().enumerate().take(blocks_per_row) {
+            #[cfg(target_arch = "aarch64")]
+            {
+                let next_b = b + 1;
+                if next_b < blocks_per_row {
+                    let next_w_base = row_base * blocks_per_row + next_b;
+                    unsafe {
+                        std::arch::asm!(
+                            "prfm pldl1keep, [{ptr}]",
+                            ptr = in(reg) w.as_ptr().add(next_w_base),
+                            options(nostack, preserves_flags, readonly)
+                        );
+                    }
+                }
+            }
             let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
             let w_base = row_base * blocks_per_row + b;
             let row0 = &w[w_base];
@@ -2322,6 +2336,20 @@ fn compute_q4_0_sdot_1x4_swizzled_chunk(
     let mut sums = [0.0_f32; 4];
     let chunk_base = chunk_idx * blocks_per_row * 4;
     for (b, x_scale) in x_scales.iter().copied().enumerate().take(blocks_per_row) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_b = b + 1;
+            if next_b < blocks_per_row {
+                let next_w_base = chunk_base + next_b * 4;
+                unsafe {
+                    std::arch::asm!(
+                        "prfm pldl1keep, [{ptr}]",
+                        ptr = in(reg) w.as_ptr().add(next_w_base),
+                        options(nostack, preserves_flags, readonly)
+                    );
+                }
+            }
+        }
         let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
         let w_base = chunk_base + b * 4;
         let row0 = &w[w_base];
@@ -2414,6 +2442,20 @@ fn compute_q4_0_page_aligned_1x4_chunk(
         .enumerate()
         .take(matrix.blocks_per_row())
     {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let next_b = b + 1;
+            if next_b < matrix.blocks_per_row() {
+                let next_w_base = next_b * 4;
+                unsafe {
+                    std::arch::asm!(
+                        "prfm pldl1keep, [{ptr}]",
+                        ptr = in(reg) chunk.add(next_w_base),
+                        options(nostack, preserves_flags, readonly)
+                    );
+                }
+            }
+        }
         let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
         let w_base = b * 4;
         let row0 = unsafe { &*chunk.add(w_base) };
