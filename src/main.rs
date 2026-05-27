@@ -4,7 +4,7 @@ use std::{
     hint::black_box,
     io::{self, Write},
     path::{Path, PathBuf},
-    process::ExitCode,
+    process::{Command, ExitCode},
     time::Duration,
 };
 
@@ -263,13 +263,7 @@ fn main() -> ExitCode {
                 Some(alias) if is_llama32_1b_alias(alias) => {
                     match parse_bench_1b_args(&args[2..]) {
                         Ok(parsed) if parsed.dry_run => print_bench_1b_dry_run(&parsed),
-                        Ok(_) => {
-                            eprintln!(
-                                "bench 1b currently supports --dry-run; run scripts/pi/bench-1b-prefill.sh on the Pi for the model-backed sweep"
-                            );
-                            print_help(HelpTopic::Bench);
-                            ExitCode::from(2)
-                        }
+                        Ok(parsed) => run_bench_1b_prefill(parsed),
                         Err(err) => {
                             eprintln!("{err}");
                             print_help(HelpTopic::Bench);
@@ -702,7 +696,7 @@ fn print_usage() {
     );
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
     println!("  bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]");
-    println!("                                            Print the Pi 1B prefill sweep plan");
+    println!("                                            Run the Pi 1B prefill sweep");
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!(
         "                                            Compare scalar vs selected Q8 model logits and greedy generation"
@@ -2909,21 +2903,221 @@ fn prefill_bench_1b_batch_command(
 }
 
 fn prefill_bench_1b_status_json(parsed: &Bench1BArgs, context_limit: &str) -> String {
+    prefill_bench_1b_status_json_with_results(parsed, context_limit, None, None)
+}
+
+fn prefill_bench_1b_status_json_with_results(
+    parsed: &Bench1BArgs,
+    context_limit: &str,
+    best_prefill: Option<(usize, f64)>,
+    best_decode: Option<(usize, f64)>,
+) -> String {
     let batches = parsed
         .batches
         .iter()
         .map(usize::to_string)
         .collect::<Vec<_>>()
         .join(",");
+    let best_prefill_batch = best_prefill.map(|(batch, _)| batch);
+    let best_prefill_sec = best_prefill.map(|(_, seconds)| seconds);
+    let best_decode_batch = best_decode.map(|(batch, _)| batch);
+    let best_tokens_per_sec = best_decode.map(|(_, tokens_per_sec)| tokens_per_sec);
     format!(
-        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}}",
+        "{{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"max_tokens\":{},\"temp\":{},\"batches\":[{}],\"best_prefill_batch\":{},\"best_prefill_sec\":{},\"best_decode_batch\":{},\"best_tokens_per_sec\":{}}}",
         json_string(&parsed.model_path),
         json_string(parsed.model_source),
         json_string(context_limit),
         parsed.max_tokens,
         parsed.temp,
         batches,
+        json_optional_usize(best_prefill_batch),
+        json_optional_f64(best_prefill_sec),
+        json_optional_usize(best_decode_batch),
+        json_optional_f64(best_tokens_per_sec),
     )
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct PrefillBenchBatchMetrics {
+    prefill_sec: Option<f64>,
+    generated_tokens: Option<usize>,
+    generation_sec: Option<f64>,
+    tokens_per_sec: Option<f64>,
+}
+
+fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
+    if let Err(err) = validate_context_limit_env() {
+        eprintln!("Failed to apply context limit: {err}");
+        return ExitCode::from(2);
+    }
+    if !Path::new(&parsed.model_path).is_file() {
+        eprintln!(
+            "{}",
+            llama32_1b_model_not_found_message(Path::new(&parsed.model_path))
+        );
+        return ExitCode::from(2);
+    }
+
+    println!("NanoCamelid Llama 3.2 1B prefill sweep");
+    println!("workspace: {}", parsed.workspace);
+    println!("q4_model: {}", parsed.q4_model_path);
+    println!("q4_exists: {}", Path::new(&parsed.q4_model_path).is_file());
+    println!("q8_model: {}", parsed.q8_model_path);
+    println!("q8_exists: {}", Path::new(&parsed.q8_model_path).is_file());
+    println!("selected_source: {}", parsed.model_source);
+    println!("model: {}", parsed.model_path);
+    println!("prompt: {}", parsed.prompt);
+    println!("max_tokens: {}", parsed.max_tokens);
+    println!("temp: {}", parsed.temp);
+    println!("context_limit: {}", context_limit_plan_value());
+    println!("shape_audit: enabled");
+    println!(
+        "batches: {}",
+        parsed
+            .batches
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+
+    println!("==> Auditing 1B model shape: {}", parsed.model_path);
+    let audit_code = run_model_1b_audit(Model1BAuditArgs {
+        workspace: parsed.workspace.clone(),
+        q4_model_path: parsed.q4_model_path.clone(),
+        q8_model_path: parsed.q8_model_path.clone(),
+        model_path: parsed.model_path.clone(),
+        model_source: parsed.model_source,
+        dry_run: false,
+    });
+    if audit_code != ExitCode::SUCCESS {
+        return audit_code;
+    }
+
+    let mut best_prefill: Option<(usize, f64)> = None;
+    let mut best_decode: Option<(usize, f64)> = None;
+
+    for batch in &parsed.batches {
+        println!();
+        println!("==> Running with {PREFILL_BATCH_ENV}={batch}");
+        match run_prefill_bench_1b_batch(&parsed, *batch) {
+            Ok((status, output, metrics)) => {
+                print!("{output}");
+                print_prefill_bench_1b_batch_json(*batch, status, metrics);
+                if status != 0 {
+                    return ExitCode::from(status as u8);
+                }
+                if let Some(prefill_sec) = metrics.prefill_sec
+                    && best_prefill.is_none_or(|(_, best_sec)| prefill_sec < best_sec)
+                {
+                    best_prefill = Some((*batch, prefill_sec));
+                }
+                if let Some(tokens_per_sec) = metrics.tokens_per_sec
+                    && best_decode
+                        .is_none_or(|(_, best_tokens_per_sec)| tokens_per_sec > best_tokens_per_sec)
+                {
+                    best_decode = Some((*batch, tokens_per_sec));
+                }
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    println!("prefill_bench_1b_status: ok");
+    println!(
+        "json: {}",
+        prefill_bench_1b_result_json(
+            &parsed,
+            &context_limit_plan_value(),
+            best_prefill,
+            best_decode
+        )
+    );
+    ExitCode::SUCCESS
+}
+
+fn run_prefill_bench_1b_batch(
+    parsed: &Bench1BArgs,
+    batch: usize,
+) -> Result<(i32, String, PrefillBenchBatchMetrics), String> {
+    let current_exe =
+        env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let output = Command::new(current_exe)
+        .arg("chat")
+        .arg(&parsed.model_path)
+        .arg(&parsed.prompt)
+        .arg(&parsed.temp)
+        .arg(parsed.max_tokens.to_string())
+        .env("NANOCAMELID_Q8_DOT_SDOT", "1")
+        .env("NANOCAMELID_Q8_DOT_KERNEL", "sdot")
+        .env(PREFILL_BATCH_ENV, batch.to_string())
+        .output()
+        .map_err(|err| format!("failed to run 1B prefill batch {batch}: {err}"))?;
+    io::stderr().write_all(&output.stderr).ok();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let status = output.status.code().unwrap_or(1);
+    let metrics = parse_prefill_bench_1b_batch_metrics(&stdout);
+    Ok((status, stdout, metrics))
+}
+
+fn parse_prefill_bench_1b_batch_metrics(output: &str) -> PrefillBenchBatchMetrics {
+    let mut metrics = PrefillBenchBatchMetrics::default();
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Prompt ingested in ")
+            && let Some((seconds, _)) = rest.split_once("s with prefill batch ")
+        {
+            metrics.prefill_sec = seconds.parse::<f64>().ok();
+        } else if let Some(rest) = line.strip_prefix("Generated ")
+            && let Some((tokens, rest)) = rest.split_once(" tokens in ")
+            && let Some((seconds, rest)) = rest.split_once("s (")
+            && let Some((tokens_per_sec, _)) = rest.split_once(" tokens/sec)")
+        {
+            metrics.generated_tokens = tokens.parse::<usize>().ok();
+            metrics.generation_sec = seconds.parse::<f64>().ok();
+            metrics.tokens_per_sec = tokens_per_sec.parse::<f64>().ok();
+        }
+    }
+    metrics
+}
+
+fn print_prefill_bench_1b_batch_json(
+    batch: usize,
+    exit_status: i32,
+    metrics: PrefillBenchBatchMetrics,
+) {
+    let status = if exit_status == 0 { "ok" } else { "failed" };
+    println!(
+        "json: {{\"benchmark\":\"llama32-1b-prefill\",\"batch_size\":{},\"status\":\"{}\",\"exit_status\":{},\"prefill_sec\":{},\"generated_tokens\":{},\"generation_sec\":{},\"tokens_per_sec\":{}}}",
+        batch,
+        status,
+        exit_status,
+        json_optional_f64(metrics.prefill_sec),
+        json_optional_usize(metrics.generated_tokens),
+        json_optional_f64(metrics.generation_sec),
+        json_optional_f64(metrics.tokens_per_sec),
+    );
+}
+
+fn prefill_bench_1b_result_json(
+    parsed: &Bench1BArgs,
+    context_limit: &str,
+    best_prefill: Option<(usize, f64)>,
+    best_decode: Option<(usize, f64)>,
+) -> String {
+    prefill_bench_1b_status_json_with_results(parsed, context_limit, best_prefill, best_decode)
+}
+
+fn json_optional_f64(value: Option<f64>) -> String {
+    value.map(json_f64).unwrap_or_else(|| "null".to_owned())
+}
+
+fn json_optional_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_owned())
 }
 
 fn synthetic_q4_blocks(rows: usize, blocks_per_row: usize) -> Vec<q8::Q4_0Block> {
@@ -5732,9 +5926,9 @@ mod tests {
         DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_Q4_PREFILL_BATCH,
         DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, GenerationStatusJson, HelpTopic,
         InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
-        PERFORMANCE_GOVERNOR_COMMAND, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind,
-        TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
-        default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
+        PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs,
+        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation,
+        cpu_model, default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         generation_status_json, help_topic_for_args, help_topic_named, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
         llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
@@ -5742,14 +5936,15 @@ mod tests {
         parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
         parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
-        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
+        parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
+        parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
         parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
         parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
-        prefill_bench_1b_status_json, print_runtime_trace_summary, ready_1b_status_json,
-        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
+        prefill_bench_1b_result_json, prefill_bench_1b_status_json, print_runtime_trace_summary,
+        ready_1b_status_json, ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
         runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
@@ -7448,6 +7643,45 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             prefill_bench_1b_status_json(&parsed, "unset"),
             "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"unset\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":null,\"best_prefill_sec\":null,\"best_decode_batch\":null,\"best_tokens_per_sec\":null}"
+        );
+    }
+
+    #[test]
+    fn prefill_bench_1b_batch_metrics_parse_generation_output() {
+        let metrics = parse_prefill_bench_1b_batch_metrics(
+            "Prompt ingested in 0.38s with prefill batch 16\nGenerated 8 tokens in 1.91s (4.18 tokens/sec)\n",
+        );
+
+        assert_eq!(
+            metrics,
+            PrefillBenchBatchMetrics {
+                prefill_sec: Some(0.38),
+                generated_tokens: Some(8),
+                generation_sec: Some(1.91),
+                tokens_per_sec: Some(4.18),
+            }
+        );
+    }
+
+    #[test]
+    fn prefill_bench_1b_result_json_records_best_observed_batches() {
+        let parsed = parse_bench_1b_args_with_path(
+            &[
+                "/models/Llama-3.2-1B-Instruct-Q4_0.gguf".to_owned(),
+                "Say hello".to_owned(),
+                "2".to_owned(),
+                "0.0".to_owned(),
+                "1,16".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("1B prefill benchmark plan should parse");
+
+        assert_eq!(
+            prefill_bench_1b_result_json(&parsed, "512", Some((16, 0.38)), Some((1, 4.18))),
+            "{\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"context_limit\":\"512\",\"max_tokens\":2,\"temp\":0.0,\"batches\":[1,16],\"best_prefill_batch\":16,\"best_prefill_sec\":0.380000,\"best_decode_batch\":1,\"best_tokens_per_sec\":4.180000}"
         );
     }
 
