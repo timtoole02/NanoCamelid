@@ -238,6 +238,7 @@ cargo clippy --all-targets -- -D warnings
 
 echo "==> Checking 1B model audit CLI dry run..."
 cargo run -- model 1b --dry-run
+expect_output "model 1b shape audit dry run" "shape_audit: enabled" cargo run -- model 1b --dry-run
 expect_output "model 1b success marker dry run" "status_on_success: model_1b_status: ok" cargo run -- model 1b --dry-run
 expect_output "model 1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- model 1b --dry-run
 expect_output "model 1b shape json marker dry run" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- model 1b --dry-run

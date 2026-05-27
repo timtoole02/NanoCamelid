@@ -3973,6 +3973,7 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
     if parsed.dry_run {
         let model_arg = model_path.display().to_string();
         let smoke_tokens = DEFAULT_1B_SMOKE_TOKENS.to_string();
+        println!("shape_audit: enabled");
         println!("status_on_success: model_1b_status: ok");
         println!(
             "json_on_success: {}",
