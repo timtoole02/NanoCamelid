@@ -868,6 +868,9 @@ fn print_generate_usage() {
     println!();
     println!("Env:");
     println!(
+        "  {SMOKE_MODEL_GGUF_ENV}                    Override the 1b/3b aliases before {DEFAULT_MODEL_GGUF_ENV}"
+    );
+    println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect and generate"
     );
     println!(
@@ -915,6 +918,9 @@ fn print_chat_usage() {
     println!();
     println!("Env:");
     println!(
+        "  {SMOKE_MODEL_GGUF_ENV}                    Override the 1b/3b aliases before {DEFAULT_MODEL_GGUF_ENV}"
+    );
+    println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, and chat"
     );
     println!(
@@ -958,6 +964,9 @@ fn print_tui_usage() {
     );
     println!();
     println!("Env:");
+    println!(
+        "  {SMOKE_MODEL_GGUF_ENV}                    Override the 1b/3b aliases before {DEFAULT_MODEL_GGUF_ENV}"
+    );
     println!(
         "  {DEFAULT_MODEL_GGUF_ENV}                    Default GGUF path for inspect, generate, chat, and tui"
     );
@@ -1400,9 +1409,10 @@ struct Evidence1BArgs {
 
 fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
     let (workspace, q4_exists) = llama32_1b_workspace_defaults();
-    parse_generate_args_with_env_and_workspace(
+    parse_generate_args_with_env_and_alias_env_and_workspace(
         args,
         default_model_path_from_env(),
+        model_1b_env_path_and_source(),
         &workspace,
         q4_exists,
     )
@@ -1410,9 +1420,10 @@ fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
 
 fn parse_tui_args(args: &[String]) -> Result<TuiArgs, &'static str> {
     let (workspace, q4_exists) = llama32_1b_workspace_defaults();
-    parse_tui_args_with_env_and_workspace(
+    parse_tui_args_with_env_and_alias_env_and_workspace(
         args,
         default_model_path_from_env(),
+        model_1b_env_path_and_source(),
         &workspace,
         q4_exists,
     )
@@ -1500,14 +1511,30 @@ fn parse_tui_args_with_env(
     parse_tui_args_with_env_and_workspace(args, env_model_path, DEFAULT_PI_WORKSPACE, false)
 }
 
+#[cfg(test)]
 fn parse_tui_args_with_env_and_workspace(
     args: &[String],
     env_model_path: Option<String>,
     workspace: &str,
     q4_exists: bool,
 ) -> Result<TuiArgs, &'static str> {
-    let env_model_path =
-        require_env_gguf_path_value(env_model_path, "model env path must be a .gguf path")?;
+    parse_tui_args_with_env_and_alias_env_and_workspace(
+        args,
+        env_model_path.clone(),
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
+        workspace,
+        q4_exists,
+    )
+}
+
+fn parse_tui_args_with_env_and_alias_env_and_workspace(
+    args: &[String],
+    env_model_path: Option<String>,
+    alias_env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<TuiArgs, &'static str> {
+    let env_model_path = env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV));
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
@@ -1520,10 +1547,15 @@ fn parse_tui_args_with_env_and_workspace(
     let (model_path, model_source, option_idx, audit_1b_shape) = parse_model_path_position(
         &positionals,
         env_model_path,
+        alias_env_model_path,
         workspace,
         q4_exists,
-        "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
-        "model alias argument must not be a path; use `tui <model.gguf>` for explicit models",
+        ModelPathPositionErrors {
+            env_path: "model env path must be a .gguf path",
+            alias_env_path: "model alias env path must be a .gguf path",
+            missing: "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
+            alias_path: "model alias argument must not be a path; use `tui <model.gguf>` for explicit models",
+        },
     )?;
 
     let temp = positionals
@@ -1560,14 +1592,30 @@ fn parse_generate_args_with_env(
     parse_generate_args_with_env_and_workspace(args, env_model_path, DEFAULT_PI_WORKSPACE, false)
 }
 
+#[cfg(test)]
 fn parse_generate_args_with_env_and_workspace(
     args: &[String],
     env_model_path: Option<String>,
     workspace: &str,
     q4_exists: bool,
 ) -> Result<GenerateArgs, &'static str> {
-    let env_model_path =
-        require_env_gguf_path_value(env_model_path, "model env path must be a .gguf path")?;
+    parse_generate_args_with_env_and_alias_env_and_workspace(
+        args,
+        env_model_path.clone(),
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
+        workspace,
+        q4_exists,
+    )
+}
+
+fn parse_generate_args_with_env_and_alias_env_and_workspace(
+    args: &[String],
+    env_model_path: Option<String>,
+    alias_env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<GenerateArgs, &'static str> {
+    let env_model_path = env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV));
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
@@ -1580,10 +1628,15 @@ fn parse_generate_args_with_env_and_workspace(
     let (model_path, model_source, prompt_idx, audit_1b_shape) = parse_model_path_position(
         &positionals,
         env_model_path,
+        alias_env_model_path,
         workspace,
         q4_exists,
-        "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
-        "model alias prompt must not look like a model path; omit the alias when passing an explicit model",
+        ModelPathPositionErrors {
+            env_path: "model env path must be a .gguf path",
+            alias_env_path: "model alias env path must be a .gguf path",
+            missing: "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
+            alias_path: "model alias prompt must not look like a model path; omit the alias when passing an explicit model",
+        },
     )?;
 
     let prompt = match positionals.get(prompt_idx) {
@@ -1624,11 +1677,11 @@ fn parse_generate_args_with_env_and_workspace(
 
 fn parse_model_path_position(
     args: &[String],
-    env_model_path: Option<String>,
+    env_model_path: Option<(String, &'static str)>,
+    alias_env_model_path: Option<(String, &'static str)>,
     workspace: &str,
     q4_exists: bool,
-    missing_error: &'static str,
-    alias_path_error: &'static str,
+    errors: ModelPathPositionErrors,
 ) -> Result<(String, &'static str, usize, bool), &'static str> {
     let first_looks_like_model = args
         .first()
@@ -1640,35 +1693,64 @@ fn parse_model_path_position(
             .get(1)
             .is_some_and(|value| looks_like_model_path_argument(value))
     {
-        return Err(alias_path_error);
+        return Err(errors.alias_path);
     }
 
     match (args.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => {
             Ok((path.clone(), "explicit argument", 1, false))
         }
-        (Some(_), Some(path)) if first_is_1b_alias => Ok((path, DEFAULT_MODEL_GGUF_ENV, 1, true)),
-        (Some(_), None) if first_is_1b_alias => Ok((
-            resolve_llama32_1b_model_path_with_workspace(None, workspace, q4_exists),
-            if q4_exists {
-                "workspace Q4_0 default"
+        (Some(_), _) if first_is_1b_alias => {
+            if let Some((path, source)) = alias_env_model_path {
+                if !looks_like_gguf_path(&path) {
+                    return Err(errors.alias_env_path);
+                }
+                Ok((path, source, 1, true))
             } else {
-                "workspace Q8_0 fallback"
-            },
-            1,
-            true,
-        )),
-        (Some(_), Some(path)) if first_is_3b_alias => Ok((path, DEFAULT_MODEL_GGUF_ENV, 1, false)),
-        (Some(_), None) if first_is_3b_alias => Ok((
-            resolve_llama32_3b_model_path_with_workspace(None, workspace),
-            "workspace 3B Q4_0 default",
-            1,
-            false,
-        )),
+                Ok((
+                    resolve_llama32_1b_model_path_with_workspace(None, workspace, q4_exists),
+                    if q4_exists {
+                        "workspace Q4_0 default"
+                    } else {
+                        "workspace Q8_0 fallback"
+                    },
+                    1,
+                    true,
+                ))
+            }
+        }
+        (Some(_), _) if first_is_3b_alias => {
+            if let Some((path, source)) = alias_env_model_path {
+                if !looks_like_gguf_path(&path) {
+                    return Err(errors.alias_env_path);
+                }
+                Ok((path, source, 1, false))
+            } else {
+                Ok((
+                    resolve_llama32_3b_model_path_with_workspace(None, workspace),
+                    "workspace 3B Q4_0 default",
+                    1,
+                    false,
+                ))
+            }
+        }
         (Some(path), None) => Ok((path.clone(), "explicit argument", 1, false)),
-        (_, Some(path)) => Ok((path, DEFAULT_MODEL_GGUF_ENV, 0, false)),
-        (None, None) => Err(missing_error),
+        (_, Some((path, source))) => {
+            if !looks_like_gguf_path(&path) {
+                return Err(errors.env_path);
+            }
+            Ok((path, source, 0, false))
+        }
+        (None, None) => Err(errors.missing),
     }
+}
+
+#[derive(Clone, Copy)]
+struct ModelPathPositionErrors {
+    env_path: &'static str,
+    alias_env_path: &'static str,
+    missing: &'static str,
+    alias_path: &'static str,
 }
 
 fn llama32_1b_workspace_defaults() -> (String, bool) {
@@ -2252,18 +2334,6 @@ fn require_env_gguf_path(
     error: &'static str,
 ) -> Result<Option<(String, &'static str)>, &'static str> {
     if let Some((path, _source)) = &env_model_path
-        && !looks_like_gguf_path(path)
-    {
-        return Err(error);
-    }
-    Ok(env_model_path)
-}
-
-fn require_env_gguf_path_value(
-    env_model_path: Option<String>,
-    error: &'static str,
-) -> Result<Option<String>, &'static str> {
-    if let Some(path) = &env_model_path
         && !looks_like_gguf_path(path)
     {
         return Err(error);
@@ -7113,13 +7183,15 @@ mod tests {
         parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
         parse_context_packs, parse_cpu_list, parse_evidence_1b_args_with_env,
         parse_evidence_1b_args_with_path, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
         parse_model_1b_args_with_path, parse_prefill_batches, parse_prefill_bench_1b_batch_metrics,
         parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
-        parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
+        parse_smoke_args_with_env, parse_tui_args_with_env,
+        parse_tui_args_with_env_and_alias_env_and_workspace, parse_tui_args_with_env_and_workspace,
         parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
         prefill_bench_1b_batch_env, prefill_bench_1b_result_json, prefill_bench_1b_smoke_command,
         prefill_bench_1b_smoke_env, prefill_bench_1b_status_json, prefill_prompt_tokens_per_sec,
@@ -8058,6 +8130,23 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn generate_args_1b_alias_prefers_smoke_env_model_override() {
+        let parsed = parse_generate_args_with_env_and_alias_env_and_workspace(
+            &["llama-3.2-1b".to_owned(), "Say hello".to_owned()],
+            Some("/models/default-1b.gguf".to_owned()),
+            Some(("/models/smoke-1b.gguf".to_owned(), SMOKE_MODEL_GGUF_ENV)),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("1B alias should prefer smoke env override");
+
+        assert_eq!(parsed.model_path, "/models/smoke-1b.gguf");
+        assert_eq!(parsed.model_source, SMOKE_MODEL_GGUF_ENV);
+        assert_eq!(parsed.prompt, "Say hello");
+        assert!(parsed.audit_1b_shape);
+    }
+
+    #[test]
     fn generate_args_reject_non_gguf_env_model_path() {
         let err = parse_generate_args_with_env_and_workspace(
             &["1b".to_owned(), "--dry-run".to_owned()],
@@ -8067,7 +8156,7 @@ flags\t\t: sse4_2 avx2
         )
         .expect_err("non-GGUF generate env path should fail");
 
-        assert_eq!(err, "model env path must be a .gguf path");
+        assert_eq!(err, "model alias env path must be a .gguf path");
     }
 
     #[test]
@@ -8232,6 +8321,24 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn tui_args_1b_alias_prefers_smoke_env_model_override() {
+        let parsed = parse_tui_args_with_env_and_alias_env_and_workspace(
+            &["llama32-1b".to_owned(), "0.1".to_owned(), "64".to_owned()],
+            Some("/models/default-1b.gguf".to_owned()),
+            Some(("/models/smoke-1b.gguf".to_owned(), SMOKE_MODEL_GGUF_ENV)),
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("1B TUI alias should prefer smoke env override");
+
+        assert_eq!(parsed.model_path, "/models/smoke-1b.gguf");
+        assert_eq!(parsed.model_source, SMOKE_MODEL_GGUF_ENV);
+        assert_eq!(parsed.temp, 0.1);
+        assert_eq!(parsed.max_tokens, 64);
+        assert!(parsed.audit_1b_shape);
+    }
+
+    #[test]
     fn tui_args_accept_3b_alias() {
         let parsed = parse_tui_args_with_env_and_workspace(
             &["llama32-3b".to_owned(), "0.1".to_owned(), "64".to_owned()],
@@ -8288,7 +8395,7 @@ flags\t\t: sse4_2 avx2
         )
         .expect_err("non-GGUF TUI env path should fail");
 
-        assert_eq!(err, "model env path must be a .gguf path");
+        assert_eq!(err, "model alias env path must be a .gguf path");
     }
 
     #[test]

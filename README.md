@@ -82,9 +82,10 @@ status row that records the selected model, quantization row, context cap,
 strict shape-audit marker, smoke prompt, smoke kind, smoke token count, and
 prefill batch; dry runs print the same row as `json_on_success:`.
 The `generate 1b`, `chat 1b`, and `tui 1b` commands use the same Pi-local 1B
-model resolution, with `NANOCAMELID_MODEL_GGUF` available as an explicit
-override. Their dry runs print the selected model source, resolved model path,
-strict shape-audit command, and launch plan without loading the GGUF.
+model resolution, with `NANOCAMELID_SMOKE_GGUF` taking precedence over
+`NANOCAMELID_MODEL_GGUF` for those aliases. Their dry runs print the selected
+model source, resolved model path, strict shape-audit command, and launch plan
+without loading the GGUF.
 Non-dry-run 1B aliases run the strict Llama 3.2 1B shape audit before direct
 generation, chat, or TUI launch.
 `ready 1b` runs the host fast-path probe, strict Llama 3.2 1B shape audit,
@@ -395,8 +396,8 @@ prompt text. `smoke q8-chat` runs the same parity/generation validation through
 the tokenizer chat template so Llama 3.2 1B Instruct rows can be smoke-tested
 through the real instruct prompt path. Set `NANOCAMELID_MODEL_GGUF` to reuse
 the same GGUF path across repeated `inspect`, `generate`, `chat`, and `tui`
-runs, or `NANOCAMELID_SMOKE_GGUF` to override that shared default just for smoke
-validation.
+runs, or `NANOCAMELID_SMOKE_GGUF` to make the 1B/3B alias launchers use the
+same GGUF selected for smoke validation.
 
 Remote Pi validation can also cap the single readiness pass without changing
 context-pack sweeps. Set `NANOCAMELID_REMOTE_CONTEXT_LIMIT=512` when
