@@ -4323,7 +4323,7 @@ fn smoke_1b_status_json(
     prefill_batch: usize,
 ) -> String {
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
         json_string(context_limit),
@@ -7905,7 +7905,7 @@ flags\t\t: sse4_2 avx2
                 "unset",
                 16,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q8_0.gguf\",\"selected_source\":\"NANOCAMELID_SMOKE_GGUF\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"smoke_kind\":\"model\",\"smoke_tokens\":2,\"prefill_batch\":16}"
         );
     }
 

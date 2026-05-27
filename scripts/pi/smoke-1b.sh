@@ -176,7 +176,7 @@ json_string() {
 }
 
 smoke_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "${NANOCAMELID_CONTEXT_LIMIT:-unset}")" \
