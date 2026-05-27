@@ -35,23 +35,43 @@ Target-dir resolution:
   1. CARGO_TARGET_DIR
   2. NANOCAMELID_TARGET_DIR
   3. /mnt/nanocamelid/target when /mnt/nanocamelid exists
-  4. $HOME/.cache/nanocamelid/target on non-macOS hosts
+  4. a single existing /Volumes/*/nanocamelid-target on macOS hosts
+  5. $HOME/.cache/nanocamelid/target on non-macOS hosts
 
 On macOS, set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to an external
-/Volumes path that resolves back under /Volumes, so validation does not create
-build artifacts on the internal disk. Dry runs print the resolved commands
-without creating the target dir.
+/Volumes path that resolves back under /Volumes, or create one
+/Volumes/<drive>/nanocamelid-target directory. Validation refuses to create or
+guess an internal-disk target dir. Dry runs print the resolved commands without
+creating the target dir.
 USAGE
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+find_macos_external_target_dir() {
+  local candidates=()
+  local candidate
+
+  for candidate in /Volumes/*/nanocamelid-target; do
+    if [[ -d "$candidate" ]]; then
+      candidates+=("$candidate")
+    fi
+  done
+
+  if [[ "${#candidates[@]}" -eq 1 ]]; then
+    echo "${candidates[0]}"
+    return 0
+  fi
+
+  return 1
+}
+
 default_target_dir() {
   if [[ -d /mnt/nanocamelid || -e /mnt/nanocamelid ]]; then
     echo "/mnt/nanocamelid/target"
   elif [[ "$(uname -s)" == "Darwin" ]]; then
-    return 1
+    find_macos_external_target_dir
   else
     echo "$HOME/.cache/nanocamelid/target"
   fi
@@ -80,7 +100,7 @@ TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-}}"
 if [[ -z "$TARGET_DIR" ]]; then
   if ! TARGET_DIR="$(default_target_dir)"; then
     echo "Refusing to guess a Cargo target dir on macOS." >&2
-    echo "Set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to an external path." >&2
+    echo "Set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to an external path, or create one /Volumes/<drive>/nanocamelid-target directory." >&2
     exit 2
   fi
 fi
