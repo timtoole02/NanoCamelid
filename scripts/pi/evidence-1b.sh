@@ -147,6 +147,9 @@ context_env_prefix() {
   if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
     env_prefix NANOCAMELID_CONTEXT_LIMIT "$NANOCAMELID_CONTEXT_LIMIT"
   fi
+  if [[ -n "${NANOCAMELID_PREFILL_BATCH:-}" ]]; then
+    env_prefix NANOCAMELID_PREFILL_BATCH "$NANOCAMELID_PREFILL_BATCH"
+  fi
 }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -228,7 +231,7 @@ CONTEXT_PACKS=($(parse_unique_positive_integer_list "context cap" "$CONTEXT_PACK
 PREFILL_BATCHES=($(parse_unique_positive_integer_list "prefill batch size" "$PREFILL_BATCHES_RAW"))
 
 evidence_1b_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_prompt":%s,"smoke_kind":"%s","smoke_tokens":%s,"context_pack_caps":%s,"prefill_prompt":%s,"prefill_tokens":%s,"prefill_temp":%s,"prefill_batches":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"ready_no_chat":true,"context_pack":true,"prefill_bench":true,"smoke_prompt":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s,"context_pack_caps":%s,"prefill_prompt":%s,"prefill_tokens":%s,"prefill_temp":%s,"prefill_batches":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
@@ -236,6 +239,7 @@ evidence_1b_status_json() {
     "$(json_string "$SMOKE_PROMPT")" \
     "$SMOKE_KIND" \
     "$SMOKE_TOKENS" \
+    "$(prefill_batch_plan_value)" \
     "$(json_integer_array "${CONTEXT_PACKS[@]}")" \
     "$(json_string "$PREFILL_PROMPT")" \
     "$PREFILL_TOKENS" \
@@ -256,6 +260,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
+  echo "prefill_batch: $(prefill_batch_plan_value)"
   echo "context_pack_caps: ${CONTEXT_PACKS[*]}"
   echo "prefill_prompt: $PREFILL_PROMPT"
   echo "prefill_tokens: $PREFILL_TOKENS"
@@ -309,6 +314,7 @@ echo "context_limit: $(context_limit_plan_value)"
 echo "smoke_kind: $SMOKE_KIND"
 echo "smoke_prompt: $SMOKE_PROMPT"
 echo "smoke_tokens: $SMOKE_TOKENS"
+echo "prefill_batch: $(prefill_batch_plan_value)"
 echo "prefill_prompt: $PREFILL_PROMPT"
 echo "prefill_tokens: $PREFILL_TOKENS"
 echo "prefill_temp: $PREFILL_TEMP"

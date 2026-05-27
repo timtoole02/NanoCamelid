@@ -1392,6 +1392,7 @@ struct Evidence1BArgs {
     model_path: String,
     model_source: &'static str,
     smoke: SmokeDefaults,
+    prefill_batch: usize,
     context_packs: Vec<usize>,
     prefill: Bench1BArgs,
     dry_run: bool,
@@ -2430,6 +2431,7 @@ fn parse_evidence_1b_args_with_env(
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_1B_PREFILL_BATCHES.to_owned());
     let prefill_batches = parse_prefill_batches(&prefill_batches_raw)?;
+    let prefill_batch = prefill_batch_size_from_env()?;
 
     let prefill = Bench1BArgs {
         workspace: workspace.to_owned(),
@@ -2451,6 +2453,7 @@ fn parse_evidence_1b_args_with_env(
         model_path,
         model_source,
         smoke,
+        prefill_batch,
         context_packs,
         prefill,
         dry_run,
@@ -4861,6 +4864,7 @@ fn print_evidence_1b_dry_run(parsed: &Evidence1BArgs) -> ExitCode {
     println!("smoke_kind: {}", parsed.smoke.kind.label());
     println!("smoke_prompt: {}", parsed.smoke.prompt);
     println!("smoke_tokens: {}", parsed.smoke.max_tokens);
+    println!("prefill_batch: {}", parsed.prefill_batch);
     println!(
         "context_pack_caps: {}",
         join_usize_values(&parsed.context_packs, " ")
@@ -4920,6 +4924,7 @@ fn run_evidence_1b(parsed: Evidence1BArgs) -> ExitCode {
     println!("smoke_kind: {}", parsed.smoke.kind.label());
     println!("smoke_prompt: {}", parsed.smoke.prompt);
     println!("smoke_tokens: {}", parsed.smoke.max_tokens);
+    println!("prefill_batch: {}", parsed.prefill_batch);
     println!(
         "context_pack_caps: {}",
         join_usize_values(&parsed.context_packs, " ")
@@ -5064,7 +5069,7 @@ fn evidence_prefill_bench_command(parsed: &Evidence1BArgs, context_limit: Option
 
 fn evidence_1b_status_json(parsed: &Evidence1BArgs) -> String {
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"ready_no_chat\":true,\"context_pack\":true,\"prefill_bench\":true,\"smoke_prompt\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"context_pack_caps\":[{}],\"prefill_prompt\":{},\"prefill_tokens\":{},\"prefill_temp\":{},\"prefill_batches\":[{}]}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"ready_no_chat\":true,\"context_pack\":true,\"prefill_bench\":true,\"smoke_prompt\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"context_pack_caps\":[{}],\"prefill_prompt\":{},\"prefill_tokens\":{},\"prefill_temp\":{},\"prefill_batches\":[{}]}}",
         json_string(&parsed.model_path),
         json_string(parsed.model_source),
         json_string(llama32_1b_quantization_for_path(Path::new(
@@ -5074,6 +5079,7 @@ fn evidence_1b_status_json(parsed: &Evidence1BArgs) -> String {
         json_string(&parsed.smoke.prompt),
         parsed.smoke.kind.label(),
         parsed.smoke.max_tokens,
+        parsed.prefill_batch,
         join_usize_values(&parsed.context_packs, ","),
         json_string(&parsed.prefill.prompt),
         parsed.prefill.max_tokens,
@@ -7725,6 +7731,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(defaults.smoke.kind, SmokeKind::Q8Chat);
         assert_eq!(defaults.smoke.prompt, DEFAULT_1B_SMOKE_PROMPT);
         assert_eq!(defaults.smoke.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
+        assert_eq!(defaults.prefill_batch, DEFAULT_Q4_PREFILL_BATCH);
         assert_eq!(defaults.context_packs, vec![512, 1024, 2048, 4096, 8192]);
         assert_eq!(defaults.prefill.prompt, DEFAULT_1B_PREFILL_PROMPT);
         assert_eq!(defaults.prefill.max_tokens, DEFAULT_1B_PREFILL_TOKENS);
@@ -7819,7 +7826,7 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(
             evidence_1b_status_json(&parsed),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"ready_no_chat\":true,\"context_pack\":true,\"prefill_bench\":true,\"smoke_prompt\":\"Say hello in one sentence.\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"context_pack_caps\":[512,1024,2048,4096,8192],\"prefill_prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\",\"prefill_tokens\":2,\"prefill_temp\":0.0,\"prefill_batches\":[1,16,32,64]}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"unset\",\"ready_no_chat\":true,\"context_pack\":true,\"prefill_bench\":true,\"smoke_prompt\":\"Say hello in one sentence.\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":16,\"context_pack_caps\":[512,1024,2048,4096,8192],\"prefill_prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\",\"prefill_tokens\":2,\"prefill_temp\":0.0,\"prefill_batches\":[1,16,32,64]}"
         );
     }
 

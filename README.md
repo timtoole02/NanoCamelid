@@ -115,9 +115,10 @@ caps; dry runs also print `shape_audit: enabled` and the same row as
 `./scripts/pi/evidence-1b.sh` is the Pi-side evidence bundle for one 1B run. It
 delegates to `model-1b.sh`, `ready-1b.sh --no-chat`, `context-pack-1b.sh`, and
 `bench-1b-prefill.sh` in that order. It records and forwards any
-`NANOCAMELID_CONTEXT_LIMIT` cap in the delegated dry-run plan. Successful runs
-end with `evidence_1b_status: ok`; dry runs print the exact delegated command
-plan.
+`NANOCAMELID_CONTEXT_LIMIT` cap in the delegated dry-run plan, and its JSON
+status records the active `NANOCAMELID_PREFILL_BATCH` used by readiness/context
+smoke separately from the prefill sweep batch list. Successful runs end with
+`evidence_1b_status: ok`; dry runs print the exact delegated command plan.
 `cargo run -- evidence 1b` runs the same bounded 1B evidence bundle from the
 Rust CLI when the selected GGUF is present. Dry runs print the selected-model
 audit, readiness no-chat, per-context smoke, and prefill sweep commands plus a
@@ -399,7 +400,8 @@ context-pack sweeps. Set `NANOCAMELID_REMOTE_CONTEXT_LIMIT=512` when
 readiness gate and the optional `NANOCAMELID_REMOTE_PREFILL_BENCH=1` sweep.
 Set `NANOCAMELID_REMOTE_PREFILL_BATCH=32` to forward a tuned
 `NANOCAMELID_PREFILL_BATCH` into remote readiness, context-pack, evidence, and
-prefill-sweep smoke preflights without changing the sweep batch list.
+prefill-sweep smoke preflights without changing the sweep batch list. Evidence
+bundle JSON records that active smoke/readiness prefill batch as `prefill_batch`.
 Set `NANOCAMELID_REMOTE_EVIDENCE=1` when the remote build should delegate the
 model-backed 1B portion to `./scripts/pi/evidence-1b.sh` after format, tests,
 clippy, release build, probe, and Q8 benchmark complete. The evidence mode uses

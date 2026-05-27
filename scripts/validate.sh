@@ -445,6 +445,7 @@ expect_output "evidence 1b json success marker dry run" "\"target\":\"llama32-1b
 expect_output "evidence 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" cargo run -- evidence 1b --dry-run
+expect_output "evidence 1b json records prefill batch" "\"prefill_batch\":16" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b json records context caps" "\"context_pack_caps\":[512,1024,2048,4096,8192]" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b json records prefill batches" "\"prefill_batches\":[1,16,32,64]" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- evidence 1b --dry-run
@@ -707,6 +708,7 @@ expect_output "evidence-1b success marker dry run" "status_on_success: evidence_
 expect_output "evidence-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b json records prefill batch" "\"prefill_batch\":16" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records prefill prompt" "\"prefill_prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records context limit" "\"context_limit\":\"512\"" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/evidence-1b.sh --dry-run
@@ -715,6 +717,7 @@ expect_output "evidence-1b json records prefill batches" "\"prefill_batches\":[1
 expect_output "evidence-1b model command" "model_command: ./scripts/pi/model-1b.sh" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b ready no-chat command" "ready_command: ./scripts/pi/ready-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b ready command carries context limit" "ready_command: NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/ready-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b ready command carries prefill batch" "ready_command: NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/ready-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8 --no-chat" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b context-pack command" "context_pack_command: NANOCAMELID_CONTEXT_PACKS=512\\,1024\\,2048\\,4096\\,8192 ./scripts/pi/context-pack-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b context-pack command carries context limit" "context_pack_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_CONTEXT_PACKS=512\\,1024\\,2048\\,4096\\,8192 ./scripts/pi/context-pack-1b.sh chat Say\\ hello\\ in\\ one\\ sentence. 8" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b prefill command" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/bench-1b-prefill.sh" ./scripts/pi/evidence-1b.sh --dry-run
