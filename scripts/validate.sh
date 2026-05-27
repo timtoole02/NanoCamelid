@@ -501,6 +501,8 @@ expect_failure "ready-1b repo-local target dir" env CARGO_TARGET_DIR=target ./sc
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b selected source" "selected_source: " ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b smoke env override" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b smoke-covered model audit" "model_command: covered by smoke_command" ./scripts/pi/chat-1b.sh --dry-run
@@ -509,6 +511,7 @@ expect_output "chat-1b context-limited tui command" "tui_command: NANOCAMELID_CO
 expect_output "chat-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad ./scripts/pi/chat-1b.sh --dry-run
+expect_failure "chat-1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/chat-1b.sh
 
