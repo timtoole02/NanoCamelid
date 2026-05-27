@@ -92,7 +92,9 @@ runs also emit a compact `json:` status row with the selected 1B model, context
 cap, probe marker, strict shape-audit marker, smoke kind, smoke token count, and
 direct-chat token count.
 `./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
-without requiring the GGUF to exist yet.
+without requiring the GGUF to exist yet. If `NANOCAMELID_CHAT_SMOKE=0` skips
+the pre-chat smoke gate, the launcher still runs `nanocamelid model 1b` before
+TUI so the strict Llama 3.2 1B shape gate remains in the launch path.
 `./scripts/pi/context-pack-1b.sh` reruns the 1B smoke gate across context caps
 from `NANOCAMELID_CONTEXT_PACKS`, defaulting to `512,1024,2048,4096,8192`.
 Successful context-pack runs end with `context_pack_1b_status: ok` and a compact

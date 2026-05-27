@@ -181,6 +181,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "temp: $TEMP"
   echo "max_tokens: $MAX_TOKENS"
   echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
+  echo "shape_audit: enabled"
   echo "prefill_batch: $(prefill_batch_plan_value)"
   echo "smoke_enabled: $SMOKE_ENABLED"
   echo "smoke_kind: $SMOKE_KIND"
@@ -188,9 +189,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_tokens: $SMOKE_TOKENS"
   case "$SMOKE_ENABLED_LOWER" in
     0 | false | no)
+      printf 'model_command: '
+      shell_command nanocamelid model 1b "$MODEL"
       echo "smoke_command: skipped"
       ;;
     *)
+      echo "model_command: covered by smoke_command"
       printf 'smoke_command: '
       context_env_prefix
       shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
@@ -239,7 +243,10 @@ exec_nanocamelid() {
 }
 
 case "$SMOKE_ENABLED_LOWER" in
-  0 | false | no) ;;
+  0 | false | no)
+    echo "Running 1B model shape audit before launching chat..."
+    run_nanocamelid model 1b "$MODEL"
+    ;;
   *)
     echo "Running $SMOKE_KIND smoke gate before launching 1B chat..."
     run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"

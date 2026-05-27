@@ -452,6 +452,8 @@ echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b selected source" "selected_source: " ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b smoke-covered model audit" "model_command: covered by smoke_command" ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Say\\ hello\\ in\\ one\\ sentence. 1" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b context-limited tui command" "tui_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0.0 64" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/chat-1b.sh --dry-run
@@ -465,6 +467,8 @@ expect_failure "chat-1b invalid temperature" env NANOCAMELID_TEMP=bad ./scripts/
 
 echo "==> Checking 1B Pi chat launcher ignores smoke env when smoke is disabled..."
 env NANOCAMELID_CHAT_SMOKE=0 NANOCAMELID_CHAT_SMOKE_KIND=bad NANOCAMELID_CHAT_SMOKE_TOKENS=bad ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b disabled smoke keeps model audit" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" env NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b disabled smoke skips smoke command" "smoke_command: skipped" env NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh --dry-run
 
 echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run
