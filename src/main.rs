@@ -2939,6 +2939,7 @@ fn prefill_bench_1b_status_json_with_results(
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct PrefillBenchBatchMetrics {
+    prompt_tokens: Option<usize>,
     prefill_sec: Option<f64>,
     generated_tokens: Option<usize>,
     generation_sec: Option<f64>,
@@ -3078,9 +3079,37 @@ fn parse_prefill_bench_1b_batch_metrics(output: &str) -> PrefillBenchBatchMetric
             metrics.generated_tokens = tokens.parse::<usize>().ok();
             metrics.generation_sec = seconds.parse::<f64>().ok();
             metrics.tokens_per_sec = tokens_per_sec.parse::<f64>().ok();
+        } else if let Some(json) = line.strip_prefix("json: ") {
+            metrics.prompt_tokens =
+                parse_json_usize_field(json, "prompt_tokens").or(metrics.prompt_tokens);
+            metrics.prefill_sec = parse_json_f64_field(json, "prefill_sec").or(metrics.prefill_sec);
+            metrics.generated_tokens =
+                parse_json_usize_field(json, "generated_tokens").or(metrics.generated_tokens);
+            metrics.generation_sec =
+                parse_json_f64_field(json, "generation_sec").or(metrics.generation_sec);
+            metrics.tokens_per_sec =
+                parse_json_f64_field(json, "tokens_per_sec").or(metrics.tokens_per_sec);
         }
     }
     metrics
+}
+
+fn parse_json_usize_field(json: &str, field: &str) -> Option<usize> {
+    parse_json_number_field(json, field)?.parse::<usize>().ok()
+}
+
+fn parse_json_f64_field(json: &str, field: &str) -> Option<f64> {
+    parse_json_number_field(json, field)?.parse::<f64>().ok()
+}
+
+fn parse_json_number_field<'a>(json: &'a str, field: &str) -> Option<&'a str> {
+    let marker = format!("\"{field}\":");
+    let rest = json.split_once(&marker)?.1;
+    let value = rest.trim_start();
+    let end = value
+        .find(|ch: char| !(ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | 'e' | 'E')))
+        .unwrap_or(value.len());
+    (end > 0).then_some(&value[..end])
 }
 
 fn print_prefill_bench_1b_batch_json(
@@ -3090,15 +3119,23 @@ fn print_prefill_bench_1b_batch_json(
 ) {
     let status = if exit_status == 0 { "ok" } else { "failed" };
     println!(
-        "json: {{\"benchmark\":\"llama32-1b-prefill\",\"batch_size\":{},\"status\":\"{}\",\"exit_status\":{},\"prefill_sec\":{},\"generated_tokens\":{},\"generation_sec\":{},\"tokens_per_sec\":{}}}",
+        "json: {{\"benchmark\":\"llama32-1b-prefill\",\"batch_size\":{},\"status\":\"{}\",\"exit_status\":{},\"prompt_tokens\":{},\"prefill_sec\":{},\"prompt_tokens_per_sec\":{},\"generated_tokens\":{},\"generation_sec\":{},\"tokens_per_sec\":{}}}",
         batch,
         status,
         exit_status,
+        json_optional_usize(metrics.prompt_tokens),
         json_optional_f64(metrics.prefill_sec),
+        json_optional_f64(prefill_prompt_tokens_per_sec(metrics)),
         json_optional_usize(metrics.generated_tokens),
         json_optional_f64(metrics.generation_sec),
         json_optional_f64(metrics.tokens_per_sec),
     );
+}
+
+fn prefill_prompt_tokens_per_sec(metrics: PrefillBenchBatchMetrics) -> Option<f64> {
+    let prompt_tokens = metrics.prompt_tokens?;
+    let prefill_sec = metrics.prefill_sec?;
+    (prefill_sec > 0.0).then_some(prompt_tokens as f64 / prefill_sec)
 }
 
 fn prefill_bench_1b_result_json(
@@ -5943,13 +5980,14 @@ mod tests {
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
         parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
         parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
-        prefill_bench_1b_result_json, prefill_bench_1b_status_json, print_runtime_trace_summary,
-        ready_1b_status_json, ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
-        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
-        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
-        smoke_1b_status_json, smoke_defaults_from_values, smoke_plan_command_with_context,
-        trim_tui_history, tui_prompt_history, validate_generation_budget,
+        prefill_bench_1b_result_json, prefill_bench_1b_status_json, prefill_prompt_tokens_per_sec,
+        print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_from_env_value,
+        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
+        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
+        resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
+        shared_token_prefix_len, shell_command, shell_command_with_env, smoke_1b_status_json,
+        smoke_defaults_from_values, smoke_plan_command_with_context, trim_tui_history,
+        tui_prompt_history, validate_generation_budget,
     };
 
     #[test]
@@ -7649,17 +7687,22 @@ flags\t\t: sse4_2 avx2
     #[test]
     fn prefill_bench_1b_batch_metrics_parse_generation_output() {
         let metrics = parse_prefill_bench_1b_batch_metrics(
-            "Prompt ingested in 0.38s with prefill batch 16\nGenerated 8 tokens in 1.91s (4.18 tokens/sec)\n",
+            "Prompt ingested in 0.38s with prefill batch 16\nGenerated 8 tokens in 1.91s (4.18 tokens/sec)\njson: {\"command\":\"chat\",\"status\":\"ok\",\"prompt_tokens\":142,\"generated_tokens\":8,\"prefill_batch\":16,\"prefill_sec\":0.376000,\"generation_sec\":1.912000,\"tokens_per_sec\":4.184100}\n",
         );
 
         assert_eq!(
             metrics,
             PrefillBenchBatchMetrics {
-                prefill_sec: Some(0.38),
+                prompt_tokens: Some(142),
+                prefill_sec: Some(0.376),
                 generated_tokens: Some(8),
-                generation_sec: Some(1.91),
-                tokens_per_sec: Some(4.18),
+                generation_sec: Some(1.912),
+                tokens_per_sec: Some(4.1841),
             }
+        );
+        assert_eq!(
+            prefill_prompt_tokens_per_sec(metrics),
+            Some(377.6595744680851)
         );
     }
 

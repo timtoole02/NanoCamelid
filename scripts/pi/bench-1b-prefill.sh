@@ -150,10 +150,20 @@ json_array_from_batches() {
 extract_batch_metrics() {
   local run_log="$1"
 
+  BATCH_PROMPT_TOKENS="$(
+    sed -nE 's/^json: \{.*"prompt_tokens":([0-9]+),.*$/\1/p' "$run_log" \
+      | tail -n 1
+  )"
   BATCH_PREFILL_SEC="$(
     sed -nE 's/^Prompt ingested in ([0-9.]+)s with prefill batch [0-9]+$/\1/p' "$run_log" \
       | tail -n 1
   )"
+  if [[ -z "$BATCH_PREFILL_SEC" ]]; then
+    BATCH_PREFILL_SEC="$(
+      sed -nE 's/^json: \{.*"prefill_sec":([0-9.]+),.*$/\1/p' "$run_log" \
+        | tail -n 1
+    )"
+  fi
   read -r BATCH_GENERATED_TOKENS BATCH_GENERATION_SEC BATCH_TOKENS_PER_SEC < <(
     sed -nE 's/^Generated ([0-9]+) tokens in ([0-9.]+)s \(([0-9.]+) tokens\/sec\)$/\1 \2 \3/p' "$run_log" \
       | tail -n 1
@@ -164,16 +174,23 @@ print_batch_json() {
   local batch="$1"
   local exit_status="$2"
   local status="ok"
+  local prompt_tokens_per_sec=""
 
   if [[ "$exit_status" -ne 0 ]]; then
     status="failed"
   fi
 
-  printf 'json: {"benchmark":"llama32-1b-prefill","batch_size":%s,"status":"%s","exit_status":%s,"prefill_sec":%s,"generated_tokens":%s,"generation_sec":%s,"tokens_per_sec":%s}\n' \
+  if [[ "$BATCH_PROMPT_TOKENS" =~ ^[0-9]+$ ]] && [[ "$BATCH_PREFILL_SEC" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    prompt_tokens_per_sec="$(awk "BEGIN { if ($BATCH_PREFILL_SEC > 0) printf \"%.6f\", $BATCH_PROMPT_TOKENS / $BATCH_PREFILL_SEC }")"
+  fi
+
+  printf 'json: {"benchmark":"llama32-1b-prefill","batch_size":%s,"status":"%s","exit_status":%s,"prompt_tokens":%s,"prefill_sec":%s,"prompt_tokens_per_sec":%s,"generated_tokens":%s,"generation_sec":%s,"tokens_per_sec":%s}\n' \
     "$batch" \
     "$status" \
     "$exit_status" \
+    "$(json_integer_or_null "$BATCH_PROMPT_TOKENS")" \
     "$(json_number_or_null "$BATCH_PREFILL_SEC")" \
+    "$(json_number_or_null "$prompt_tokens_per_sec")" \
     "$(json_integer_or_null "$BATCH_GENERATED_TOKENS")" \
     "$(json_number_or_null "$BATCH_GENERATION_SEC")" \
     "$(json_number_or_null "$BATCH_TOKENS_PER_SEC")"
