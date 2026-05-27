@@ -411,6 +411,14 @@ fn print_runtime_trace_summary() {
     }
 }
 
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn pthread_set_qos_class_self_np(
+        qos_class: u32,
+        relative_priority: std::os::raw::c_int,
+    ) -> std::os::raw::c_int;
+}
+
 fn setup_thread_pool() {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let worker_core_indices =
@@ -437,6 +445,10 @@ fn setup_thread_pool() {
         .start_handler(move |thread_idx| {
             if let Some(core_id) = worker_core_ids.get(thread_idx % worker_core_ids.len().max(1)) {
                 core_affinity::set_for_current(*core_id);
+            }
+            #[cfg(target_os = "macos")]
+            unsafe {
+                pthread_set_qos_class_self_np(0x21, 0); // QOS_CLASS_USER_INTERACTIVE (forces P-cores)
             }
         })
         .build_global();
