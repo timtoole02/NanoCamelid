@@ -258,17 +258,20 @@ ready_1b_status_json() {
   local direct_chat="$1"
   local chat_tokens="$2"
   local chat_prompt="${3:-}"
+  local chat_temp="${4:-}"
   local chat_prompt_json="null"
   local chat_tokens_json="null"
+  local chat_temp_json="null"
 
   if [[ -n "$chat_tokens" ]]; then
     chat_tokens_json="$chat_tokens"
   fi
   if [[ "$direct_chat" == "true" ]]; then
     chat_prompt_json="$(json_string "$chat_prompt")"
+    chat_temp_json="$chat_temp"
   fi
 
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"probe":true,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"smoke_prompt":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s,"direct_chat":%s,"chat_prompt":%s,"chat_tokens":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"quantization":%s,"probe":true,"shape":"llama32_1b","shape_ready":true,"context_limit":%s,"smoke_prompt":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s,"direct_chat":%s,"chat_prompt":%s,"chat_tokens":%s,"chat_temp":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$(json_string "$(llama32_1b_quantization_for_path "$MODEL")")" \
@@ -279,7 +282,8 @@ ready_1b_status_json() {
     "$(prefill_batch_plan_value)" \
     "$direct_chat" \
     "$chat_prompt_json" \
-    "$chat_tokens_json"
+    "$chat_tokens_json" \
+    "$chat_temp_json"
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -307,10 +311,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "status_on_success: ready_1b_status: ok"
   case "$CHAT_ENABLED_LOWER" in
     0 | false | no | off)
-      echo "json_on_success: $(ready_1b_status_json false "" "")"
+      echo "json_on_success: $(ready_1b_status_json false "" "" "")"
       ;;
     *)
-      echo "json_on_success: $(ready_1b_status_json true "$CHAT_TOKENS" "$CHAT_PROMPT")"
+      echo "json_on_success: $(ready_1b_status_json true "$CHAT_TOKENS" "$CHAT_PROMPT" "$CHAT_TEMP")"
       ;;
   esac
   printf 'probe_command: '
@@ -380,7 +384,7 @@ case "$CHAT_ENABLED_LOWER" in
 0 | false | no | off)
   echo "==> Skipping direct 1B chat turn; NANOCAMELID_READY_CHAT=$CHAT_ENABLED"
   echo "ready_1b_status: ok"
-  echo "json: $(ready_1b_status_json false "" "")"
+  echo "json: $(ready_1b_status_json false "" "" "")"
   exit 0
   ;;
 esac
@@ -388,4 +392,4 @@ esac
 echo "==> Running direct 1B chat turn"
 run_nanocamelid chat "$MODEL" "$CHAT_PROMPT" "$CHAT_TEMP" "$CHAT_TOKENS"
 echo "ready_1b_status: ok"
-echo "json: $(ready_1b_status_json true "$CHAT_TOKENS" "$CHAT_PROMPT")"
+echo "json: $(ready_1b_status_json true "$CHAT_TOKENS" "$CHAT_PROMPT" "$CHAT_TEMP")"

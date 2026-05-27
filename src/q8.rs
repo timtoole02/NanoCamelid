@@ -25,6 +25,8 @@ pub const Q3_K_BLOCK_BYTES: usize = 32 + 64 + 12 + 2;
 pub const Q4_K_BLOCK_BYTES: usize = 4 + 12 + 128;
 pub const Q5_K_BLOCK_BYTES: usize = 4 + 12 + 32 + 128;
 pub const Q6_K_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
+pub const Q8_K_BLOCK_BYTES: usize = 292;
+pub const IQ4_NL_BLOCK_BYTES: usize = 18;
 
 const BENCH_BLOCKS: usize = 1_024;
 const BENCH_ELEMENTS: usize = Q8_BLOCK_SIZE * BENCH_BLOCKS;
@@ -182,6 +184,123 @@ pub struct Q6KBlock {
     qh: [u8; 64],
     scales: [i8; 16],
     scale_bits: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Q8KBlock {
+    d: f32,
+    qs: [i8; QK_K_BLOCK_SIZE],
+    bsums: [i16; QK_K_BLOCK_SIZE / 16],
+}
+
+impl Q8KBlock {
+    pub fn from_bytes(bytes: &[u8; Q8_K_BLOCK_BYTES]) -> Self {
+        let d = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let mut qs = [0_i8; 256];
+        for (i, &byte) in qs.iter_mut().zip(&bytes[4..260]) {
+            *i = byte as i8;
+        }
+        let mut bsums = [0_i16; 16];
+        for (i, bsum) in bsums.iter_mut().enumerate() {
+            let offset = 260 + i * 2;
+            *bsum = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        }
+        Self { d, qs, bsums }
+    }
+
+    pub fn d(&self) -> f32 {
+        self.d
+    }
+
+    pub fn qs(&self) -> &[i8; 256] {
+        &self.qs
+    }
+
+    pub fn bsums(&self) -> &[i16; 16] {
+        &self.bsums
+    }
+
+    pub fn dequantize(&self, out: &mut [f32; QK_K_BLOCK_SIZE]) {
+        let d = self.d;
+        for (out_value, &q) in out.iter_mut().zip(&self.qs) {
+            *out_value = d * q as f32;
+        }
+    }
+
+    pub fn dot_q8_scaled(
+        &self,
+        x_i8: &[i8],
+        x_scales: &[f32],
+        selector: Q8DotKernelSelector,
+    ) -> f32 {
+        debug_assert_eq!(x_i8.len(), 256);
+        debug_assert_eq!(x_scales.len(), 8);
+
+        let d = self.d;
+        let mut sum = 0.0_f32;
+        for b in 0..8 {
+            let x_scale = x_scales[b];
+            let x_vals = &x_i8[b * 32..(b + 1) * 32];
+            let w_vals = &self.qs[b * 32..(b + 1) * 32];
+            let block_sum = dot_i8_with_selector(w_vals, x_vals, selector);
+            sum += x_scale * (d * block_sum as f32);
+        }
+        sum
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IQ4NLBlock {
+    d: u16,
+    qs: [u8; 16],
+}
+
+impl IQ4NLBlock {
+    pub fn from_bytes(bytes: &[u8; IQ4_NL_BLOCK_BYTES]) -> Self {
+        let d = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let mut qs = [0_u8; 16];
+        qs.copy_from_slice(&bytes[2..18]);
+        Self { d, qs }
+    }
+
+    pub fn scale_bits(&self) -> u16 {
+        self.d
+    }
+
+    pub fn scale_f32(&self) -> f32 {
+        fast_f16_to_f32(self.d)
+    }
+
+    pub fn dequantize(&self, out: &mut [f32; 32]) {
+        let d = self.scale_f32();
+        const KVALUES: [f32; 16] = [
+            -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0, 1.0, 13.0, 25.0, 38.0, 53.0,
+            69.0, 89.0, 113.0,
+        ];
+        for j in 0..16 {
+            let byte = self.qs[j];
+            out[j] = d * KVALUES[(byte & 0x0F) as usize];
+            out[j + 16] = d * KVALUES[(byte >> 4) as usize];
+        }
+    }
+
+    pub fn dot_q8_scaled(&self, x_i8: &[i8], x_scale: f32) -> f32 {
+        debug_assert_eq!(x_i8.len(), 32);
+        let d = self.scale_f32();
+        const KVALUES: [f32; 16] = [
+            -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0, 1.0, 13.0, 25.0, 38.0, 53.0,
+            69.0, 89.0, 113.0,
+        ];
+        let mut sum = 0.0_f32;
+        for j in 0..16 {
+            let byte = self.qs[j];
+            let w0 = KVALUES[(byte & 0x0F) as usize];
+            let w1 = KVALUES[(byte >> 4) as usize];
+            sum += w0 * x_i8[j] as f32;
+            sum += w1 * x_i8[j + 16] as f32;
+        }
+        x_scale * (d * sum)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2021,6 +2140,44 @@ pub fn decode_q6_k_blocks(bytes: &[u8]) -> Result<Vec<Q6KBlock>, Q8BlockError> {
         .collect())
 }
 
+pub fn decode_q8_k_blocks(bytes: &[u8]) -> Result<Vec<Q8KBlock>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(Q8_K_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: Q8_K_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(Q8_K_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; Q8_K_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees Q8_K block length");
+            Q8KBlock::from_bytes(bytes)
+        })
+        .collect())
+}
+
+pub fn decode_iq4_nl_blocks(bytes: &[u8]) -> Result<Vec<IQ4NLBlock>, Q8BlockError> {
+    if !bytes.len().is_multiple_of(IQ4_NL_BLOCK_BYTES) {
+        return Err(Q8BlockError::MisalignedLength {
+            bytes: bytes.len(),
+            block_bytes: IQ4_NL_BLOCK_BYTES,
+        });
+    }
+
+    Ok(bytes
+        .chunks_exact(IQ4_NL_BLOCK_BYTES)
+        .map(|chunk| {
+            let bytes: &[u8; IQ4_NL_BLOCK_BYTES] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees IQ4_NL block length");
+            IQ4NLBlock::from_bytes(bytes)
+        })
+        .collect())
+}
+
 pub fn dot_q4_0_q8_0_scalar(weight: &Q4_0Block, activation: &[i8; Q8_BLOCK_SIZE]) -> i32 {
     let weight_values = weight.unpack_values();
     dot_i8_scalar(&weight_values, activation)
@@ -3497,15 +3654,110 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     use super::dot_q8_scaled_sdot_preloaded;
     use super::{
-        Q2KBlock, Q3KBlock, Q4_0_BLOCK_BYTES, Q4_0Block, Q4_1_BLOCK_BYTES, Q4_1Block, Q4KBlock,
-        Q5KBlock, Q6_K_BLOCK_BYTES, Q6KBlock, Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader,
-        Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector, QK_K_BLOCK_SIZE,
+        IQ4NLBlock, Q2KBlock, Q3KBlock, Q4_0_BLOCK_BYTES, Q4_0Block, Q4_1_BLOCK_BYTES, Q4_1Block,
+        Q4KBlock, Q5KBlock, Q6_K_BLOCK_BYTES, Q6KBlock, Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader,
+        Q8_BLOCK_SIZE, Q8BlockError, Q8DotKernel, Q8DotKernelSelector, Q8KBlock, QK_K_BLOCK_SIZE,
         RuntimeFeatures, bench_dot_runs, decode_q4_1_blocks, decode_q8_0_blocks, dot_i8_neon,
         dot_i8_neon_32_selected, dot_i8_scalar, dot_i8_sdot, dot_i8_sdot_32_selected,
         dot_i8_with_selector, dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar,
         dot_q4_0_q8_0_with_selector, dot_q4_1_q8_0_scalar, dot_q8_0_blocks_scalar,
         dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32, fast_f32_to_f16,
     };
+
+    #[test]
+    fn q8_k_block_dequantize_and_dot_product() {
+        let mut bytes = [0_u8; 292];
+        let d_bytes = 1.5_f32.to_le_bytes();
+        bytes[0..4].copy_from_slice(&d_bytes);
+        for i in 0..256 {
+            bytes[4 + i] = (i % 7) as u8;
+        }
+        for i in 0..16 {
+            let bsum = (i * 3) as i16;
+            let bsum_bytes = bsum.to_le_bytes();
+            bytes[260 + i * 2..260 + i * 2 + 2].copy_from_slice(&bsum_bytes);
+        }
+
+        let block = Q8KBlock::from_bytes(&bytes);
+        assert_eq!(block.d(), 1.5);
+        assert_eq!(block.bsums()[5], 15);
+        assert_eq!(block.qs()[2], 2);
+
+        let mut out = [0.0_f32; 256];
+        block.dequantize(&mut out);
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[1], 1.5);
+        assert_eq!(out[2], 3.0);
+
+        let mut x_i8 = [0_i8; 256];
+        for (i, value) in x_i8.iter_mut().enumerate() {
+            *value = ((i * 3) % 5) as i8;
+        }
+        let mut x_scales = [0.0_f32; 8];
+        for (i, scale) in x_scales.iter_mut().enumerate() {
+            *scale = (i as f32 + 1.0) * 0.5;
+        }
+
+        let selector = Q8DotKernelSelector {
+            requested: None,
+            selected: Q8DotKernel::Scalar,
+            fallback_reason: None,
+        };
+        let dot = block.dot_q8_scaled(&x_i8, &x_scales, selector);
+
+        let mut expected = 0.0_f32;
+        for (b, &scale) in x_scales.iter().enumerate() {
+            let mut block_sum = 0.0_f32;
+            for i in 0..32 {
+                let idx = b * 32 + i;
+                block_sum += out[idx] * x_i8[idx] as f32;
+            }
+            expected += scale * block_sum;
+        }
+
+        assert!((dot - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn iq4_nl_block_dequantize_and_dot_product() {
+        let mut bytes = [0_u8; 18];
+        let d_bits = fast_f32_to_f16(2.0);
+        let d_bytes = d_bits.to_le_bytes();
+        bytes[0..2].copy_from_slice(&d_bytes);
+        for i in 0..16 {
+            let nibble = (i & 0x0F) as u8;
+            bytes[2 + i] = nibble | (nibble << 4);
+        }
+
+        let block = IQ4NLBlock::from_bytes(&bytes);
+        assert!((block.scale_f32() - 2.0).abs() < 1e-4);
+
+        let mut out = [0.0_f32; 32];
+        block.dequantize(&mut out);
+
+        const KVALUES: [f32; 16] = [
+            -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0, 1.0, 13.0, 25.0, 38.0, 53.0,
+            69.0, 89.0, 113.0,
+        ];
+        for i in 0..16 {
+            assert_eq!(out[i], 2.0 * KVALUES[i]);
+            assert_eq!(out[i + 16], 2.0 * KVALUES[i]);
+        }
+
+        let mut x_i8 = [0_i8; 32];
+        for (i, value) in x_i8.iter_mut().enumerate() {
+            *value = (i as i8 % 7) - 3;
+        }
+        let dot = block.dot_q8_scaled(&x_i8, 0.5);
+
+        let mut expected = 0.0_f32;
+        for i in 0..32 {
+            expected += out[i] * x_i8[i] as f32;
+        }
+        expected *= 0.5;
+
+        assert!((dot - expected).abs() < 1e-4);
+    }
 
     #[test]
     fn scalar_dot_handles_signed_q8_values() {

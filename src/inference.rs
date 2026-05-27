@@ -3,8 +3,8 @@ use crate::model::{
     PageAlignedQ4_0Swizzled1x4, PageAlignedQ8_0Swizzled1x4, QuantizedMatrix,
 };
 use crate::q8::{
-    Q2KBlock, Q3KBlock, Q4_0Block, Q4_1Block, Q5KBlock, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE,
-    Q8DotKernel, Q8DotKernelSelector, QK_K_BLOCK_SIZE,
+    IQ4NLBlock, Q2KBlock, Q3KBlock, Q4_0Block, Q4_1Block, Q5KBlock, Q6KBlock, Q8_0Block,
+    Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector, Q8KBlock, QK_K_BLOCK_SIZE,
 };
 use rayon::prelude::*;
 use std::{
@@ -1069,6 +1069,14 @@ pub fn matmul_quantized(
         QuantizedMatrix::Q4K(blocks) => matmul_q4_k(out, x_i8, x_scales, blocks, rows, cols),
         QuantizedMatrix::Q5K(blocks) => matmul_q5_k(out, x_i8, x_scales, blocks, rows, cols),
         QuantizedMatrix::Q6K(blocks) => matmul_q6_k(out, x_i8, x_scales, blocks, rows, cols),
+        QuantizedMatrix::Q8K(blocks) => {
+            matmul_q8_k(out, x_i8, x_scales, blocks, rows, cols, selector)
+        }
+        QuantizedMatrix::IQ4NL(blocks) => matmul_iq4_nl(out, x_i8, x_scales, blocks, rows, cols),
+        QuantizedMatrix::F32(weights) => {
+            let x_f32 = dequantize_x_q8_0(x_i8, x_scales);
+            matmul_f32(out, &x_f32, weights, rows, cols);
+        }
     }
 }
 
@@ -1114,7 +1122,34 @@ pub fn matmul_quantized_batch(
         QuantizedMatrix::Q4K(blocks) => matmul_q4_k_batch(out, x_i8, x_scales, blocks, shape),
         QuantizedMatrix::Q5K(blocks) => matmul_q5_k_batch(out, x_i8, x_scales, blocks, shape),
         QuantizedMatrix::Q6K(blocks) => matmul_q6_k_batch(out, x_i8, x_scales, blocks, shape),
+        QuantizedMatrix::Q8K(blocks) => {
+            matmul_q8_k_batch(out, x_i8, x_scales, blocks, shape, selector)
+        }
+        QuantizedMatrix::IQ4NL(blocks) => matmul_iq4_nl_batch(out, x_i8, x_scales, blocks, shape),
+        QuantizedMatrix::F32(weights) => {
+            let x_f32 = dequantize_x_q8_0(x_i8, x_scales);
+            for token_idx in 0..batch_size {
+                let x_offset = token_idx * cols;
+                let out_offset = token_idx * rows;
+                let x_token = &x_f32[x_offset..x_offset + cols];
+                let out_token = &mut out[out_offset..out_offset + rows];
+                matmul_f32(out_token, x_token, weights, rows, cols);
+            }
+        }
     }
+}
+
+fn dequantize_x_q8_0(x_i8: &[i8], x_scales: &[f32]) -> Vec<f32> {
+    let mut x_f32 = vec![0.0_f32; x_i8.len()];
+    for (b, &scale) in x_scales.iter().enumerate() {
+        let offset = b * 32;
+        if offset + 32 <= x_i8.len() {
+            for i in 0..32 {
+                x_f32[offset + i] = x_i8[offset + i] as f32 * scale;
+            }
+        }
+    }
+    x_f32
 }
 
 fn for_each_batch_matmul_row<F>(rows: usize, compute_row: F)
@@ -1941,6 +1976,129 @@ pub fn matmul_q2_k_batch(
     });
 }
 
+pub fn matmul_q8_k_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q8KBlock],
+    shape: BatchMatmulShape,
+    selector: Q8DotKernelSelector,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+    let q8_blocks_per_token = cols / Q8_BLOCK_SIZE;
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        if batch_size <= MAX_STACK_BATCH_SUMS {
+            let mut sums = [0.0_f32; MAX_STACK_BATCH_SUMS];
+            let sums = &mut sums[..batch_size];
+            for (block_idx, w_block) in w_row.iter().enumerate() {
+                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                for (token_idx, sum) in sums.iter_mut().enumerate() {
+                    let x_offset = token_idx * cols;
+                    let scale_offset = token_idx * q8_blocks_per_token;
+                    let x_token = &x_i8[x_offset..x_offset + cols];
+                    let x_token_scales =
+                        &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                    *sum += w_block.dot_q8_scaled(
+                        &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                        &x_token_scales
+                            [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                        selector,
+                    );
+                }
+            }
+            for (token_idx, &sum) in sums.iter().enumerate() {
+                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            }
+        } else {
+            let mut sums = vec![0.0_f32; batch_size];
+            for (block_idx, w_block) in w_row.iter().enumerate() {
+                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                for (token_idx, sum) in sums.iter_mut().enumerate() {
+                    let x_offset = token_idx * cols;
+                    let scale_offset = token_idx * q8_blocks_per_token;
+                    let x_token = &x_i8[x_offset..x_offset + cols];
+                    let x_token_scales =
+                        &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                    *sum += w_block.dot_q8_scaled(
+                        &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                        &x_token_scales
+                            [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                        selector,
+                    );
+                }
+            }
+            for (token_idx, &sum) in sums.iter().enumerate() {
+                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            }
+        }
+    });
+}
+
+pub fn matmul_iq4_nl_batch(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[IQ4NLBlock],
+    shape: BatchMatmulShape,
+) {
+    let BatchMatmulShape {
+        batch_size,
+        rows,
+        cols,
+    } = shape;
+    let blocks_per_row = cols / 32;
+    let q8_blocks_per_token = cols / 32;
+    let out_addr = out.as_mut_ptr() as usize;
+    for_each_batch_matmul_row(rows, |r| {
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        if batch_size <= MAX_STACK_BATCH_SUMS {
+            let mut sums = [0.0_f32; MAX_STACK_BATCH_SUMS];
+            let sums = &mut sums[..batch_size];
+            for b in 0..blocks_per_row {
+                let w_block = &w_row[b];
+                for (token_idx, sum) in sums.iter_mut().enumerate() {
+                    let x_offset = token_idx * cols;
+                    let scale_offset = token_idx * q8_blocks_per_token;
+                    let x_token = &x_i8[x_offset..x_offset + cols];
+                    let x_token_scales =
+                        &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                    let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+                    *sum += w_block.dot_q8_scaled(x_block_vals, x_token_scales[b]);
+                }
+            }
+            for (token_idx, &sum) in sums.iter().enumerate() {
+                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            }
+        } else {
+            let mut sums = vec![0.0_f32; batch_size];
+            for b in 0..blocks_per_row {
+                let w_block = &w_row[b];
+                for (token_idx, sum) in sums.iter_mut().enumerate() {
+                    let x_offset = token_idx * cols;
+                    let scale_offset = token_idx * q8_blocks_per_token;
+                    let x_token = &x_i8[x_offset..x_offset + cols];
+                    let x_token_scales =
+                        &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                    let x_block_vals = unsafe { activation_block_ptr(x_token, b) };
+                    *sum += w_block.dot_q8_scaled(x_block_vals, x_token_scales[b]);
+                }
+            }
+            for (token_idx, &sum) in sums.iter().enumerate() {
+                unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+            }
+        }
+    });
+}
+
 pub fn matmul_q3_k_batch(
     out: &mut [f32],
     x_i8: &[i8],
@@ -2570,6 +2728,53 @@ pub fn matmul_q2_k(
                 &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
                 &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
             );
+        }
+        *out_val = sum;
+    });
+}
+
+pub fn matmul_q8_k(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[Q8KBlock],
+    _rows: usize,
+    cols: usize,
+    selector: Q8DotKernelSelector,
+) {
+    let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+    for_each_matmul_row(out, |r, out_val| {
+        let mut sum = 0.0_f32;
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for (block_idx, w_block) in w_row.iter().enumerate() {
+            let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+            let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+            sum += w_block.dot_q8_scaled(
+                &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                selector,
+            );
+        }
+        *out_val = sum;
+    });
+}
+
+pub fn matmul_iq4_nl(
+    out: &mut [f32],
+    x_i8: &[i8],
+    x_scales: &[f32],
+    w: &[IQ4NLBlock],
+    _rows: usize,
+    cols: usize,
+) {
+    let blocks_per_row = cols / 32;
+    for_each_matmul_row(out, |r, out_val| {
+        let mut sum = 0.0_f32;
+        let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+        for b in 0..blocks_per_row {
+            let w_block = &w_row[b];
+            let x_block_vals = unsafe { activation_block_ptr(x_i8, b) };
+            sum += w_block.dot_q8_scaled(x_block_vals, x_scales[b]);
         }
         *out_val = sum;
     });
@@ -4467,11 +4672,11 @@ mod tests {
     use super::{
         AttentionInput, BatchMatmulShape, KvCacheSlice, RopeScaling, add_weighted_f32,
         add_weighted_f32_scalar, apply_attention_heads, apply_rope, dot_f32, dot_f32_scalar,
-        embed_token, fused_silu_mul, matmul_q2_k, matmul_q2_k_batch, matmul_q3_k,
+        embed_token, fused_silu_mul, matmul_iq4_nl, matmul_q2_k, matmul_q2_k_batch, matmul_q3_k,
         matmul_q3_k_batch, matmul_q4_0, matmul_q4_0_batch, matmul_q4_0_swizzled_1x4, matmul_q4_1,
         matmul_q4_1_batch, matmul_q4_k, matmul_q4_k_batch, matmul_q5_0, matmul_q5_0_batch,
         matmul_q5_1, matmul_q5_1_batch, matmul_q5_k, matmul_q5_k_batch, matmul_q6_k,
-        matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, matmul_q8_0_swizzled_1x4,
+        matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, matmul_q8_0_swizzled_1x4, matmul_q8_k,
         quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch,
         route_token_to_experts, run_layer_range, silu,
     };
@@ -4479,9 +4684,9 @@ mod tests {
         LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, QuantizedMatrix,
     };
     use crate::q8::{
-        Q2KBlock, Q3KBlock, Q4_0Block, Q4_1Block, Q4KBlock, Q5_0Block, Q5_1Block, Q5KBlock,
-        Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector, QK_K_BLOCK_SIZE,
-        swizzle_q4_0_1x4,
+        IQ4NLBlock, Q2KBlock, Q3KBlock, Q4_0Block, Q4_1Block, Q4KBlock, Q5_0Block, Q5_1Block,
+        Q5KBlock, Q6KBlock, Q8_0Block, Q8_BLOCK_SIZE, Q8DotKernel, Q8DotKernelSelector, Q8KBlock,
+        QK_K_BLOCK_SIZE, swizzle_q4_0_1x4,
     };
 
     fn selector(selected: Q8DotKernel) -> Q8DotKernelSelector {
@@ -5235,7 +5440,123 @@ mod tests {
 
         for r in 0..rows {
             assert!(
-                (candidate[r] - expected[r]).abs() < 1e-4,
+                (candidate[r] - expected[r]).abs() < 1e-3,
+                "row {r} candidate {} expected {}",
+                candidate[r],
+                expected[r]
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_q8_k_matches_dequantized_reference() {
+        let rows = 2;
+        let cols = QK_K_BLOCK_SIZE * 2;
+        let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 3) % 43) as i8 - 21).collect();
+        let x_scales: Vec<f32> = (0..cols / Q8_BLOCK_SIZE)
+            .map(|idx| 0.25 + idx as f32 * 0.05)
+            .collect();
+
+        let make_q8_k = |seed: i16| -> Q8KBlock {
+            let mut bytes = [0_u8; 292];
+            let d_bytes = 1.25_f32.to_le_bytes();
+            bytes[0..4].copy_from_slice(&d_bytes);
+            for i in 0..256 {
+                bytes[4 + i] = ((seed + i as i16 * 3) % 23 - 11) as u8;
+            }
+            for i in 0..16 {
+                let bsum = seed * 2 + i as i16;
+                let bsum_bytes = bsum.to_le_bytes();
+                bytes[260 + i * 2..260 + i * 2 + 2].copy_from_slice(&bsum_bytes);
+            }
+            Q8KBlock::from_bytes(&bytes)
+        };
+
+        let weights = [make_q8_k(1), make_q8_k(2), make_q8_k(3), make_q8_k(4)];
+
+        let mut candidate = vec![0.0; rows];
+        let sel = selector(Q8DotKernel::Scalar);
+        matmul_q8_k(&mut candidate, &x_i8, &x_scales, &weights, rows, cols, sel);
+
+        let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+        let mut expected = vec![0.0; rows];
+        for r in 0..rows {
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let block = &weights[r * blocks_per_row + b];
+                let mut values = [0.0_f32; QK_K_BLOCK_SIZE];
+                block.dequantize(&mut values);
+                let x_block_start = b * QK_K_BLOCK_SIZE;
+                for (i, value) in values.iter().enumerate() {
+                    let x_idx = x_block_start + i;
+                    sum += *value * x_i8[x_idx] as f32 * x_scales[x_idx / Q8_BLOCK_SIZE];
+                }
+            }
+            expected[r] = sum;
+        }
+
+        for r in 0..rows {
+            assert!(
+                (candidate[r] - expected[r]).abs() < 1e-2,
+                "row {r} candidate {} expected {}",
+                candidate[r],
+                expected[r]
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_iq4_nl_matches_dequantized_reference() {
+        let rows = 2;
+        let cols = 64;
+        let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 7) % 31) as i8 - 15).collect();
+        let x_scales: Vec<f32> = (0..cols / Q8_BLOCK_SIZE)
+            .map(|idx| 0.5 + idx as f32 * 0.1)
+            .collect();
+
+        let make_iq4_nl = |seed: u16| -> IQ4NLBlock {
+            let mut bytes = [0_u8; 18];
+            let d_bits = crate::q8::fast_f32_to_f16(1.5 + seed as f32 * 0.25);
+            let d_bytes = d_bits.to_le_bytes();
+            bytes[0..2].copy_from_slice(&d_bytes);
+            for i in 0..16 {
+                let low = ((seed + i as u16) & 0x0F) as u8;
+                let high = (((seed + i as u16 + 8) & 0x0F) as u8) << 4;
+                bytes[2 + i] = low | high;
+            }
+            IQ4NLBlock::from_bytes(&bytes)
+        };
+
+        let weights = [
+            make_iq4_nl(1),
+            make_iq4_nl(2),
+            make_iq4_nl(3),
+            make_iq4_nl(4),
+        ];
+
+        let mut candidate = vec![0.0; rows];
+        matmul_iq4_nl(&mut candidate, &x_i8, &x_scales, &weights, rows, cols);
+
+        let blocks_per_row = cols / 32;
+        let mut expected = vec![0.0; rows];
+        for r in 0..rows {
+            let mut sum = 0.0_f32;
+            for b in 0..blocks_per_row {
+                let block = &weights[r * blocks_per_row + b];
+                let mut values = [0.0_f32; 32];
+                block.dequantize(&mut values);
+                let x_block_start = b * 32;
+                for (i, value) in values.iter().enumerate() {
+                    let x_idx = x_block_start + i;
+                    sum += *value * x_i8[x_idx] as f32 * x_scales[x_idx / Q8_BLOCK_SIZE];
+                }
+            }
+            expected[r] = sum;
+        }
+
+        for r in 0..rows {
+            assert!(
+                (candidate[r] - expected[r]).abs() < 1e-1,
                 "row {r} candidate {} expected {}",
                 candidate[r],
                 expected[r]

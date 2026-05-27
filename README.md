@@ -96,8 +96,8 @@ prompt. Successful readiness runs end with `ready_1b_status: ok`; dry runs
 print `status_on_success: ready_1b_status: ok` for log collectors. Successful
 runs also emit a compact `json:` status row with the selected 1B model, context
 cap, quantization row, probe marker, strict shape-audit marker, smoke kind,
-smoke prompt, smoke token count, direct-chat prompt, and direct-chat token
-count.
+smoke prompt, smoke token count, direct-chat prompt, direct-chat token count,
+and direct-chat temperature.
 `./scripts/pi/chat-1b.sh --dry-run` prints the exact smoke and TUI launch plan
 without requiring the GGUF to exist yet. It honors the same
 `NANOCAMELID_SMOKE_GGUF` then `NANOCAMELID_MODEL_GGUF` override order as the

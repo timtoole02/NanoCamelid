@@ -4740,9 +4740,12 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             ready_1b_status_json(
                 model_path,
                 &smoke,
-                chat_enabled,
-                chat_enabled.then_some(chat_prompt.as_str()),
-                chat_tokens,
+                ReadyDirectChatStatus {
+                    enabled: chat_enabled,
+                    prompt: chat_enabled.then_some(chat_prompt.as_str()),
+                    tokens: chat_tokens,
+                    temp: chat_temp,
+                },
                 &context_limit_plan_value(),
                 prefill_batch,
             )
@@ -4832,9 +4835,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             ready_1b_status_json(
                 model_path,
                 &smoke,
-                false,
-                None,
-                None,
+                ReadyDirectChatStatus::disabled(),
                 &context_limit_plan_value(),
                 prefill_batch,
             )
@@ -4856,9 +4857,12 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             ready_1b_status_json(
                 model_path,
                 &smoke,
-                true,
-                Some(chat_prompt.as_str()),
-                chat_tokens,
+                ReadyDirectChatStatus {
+                    enabled: true,
+                    prompt: Some(chat_prompt.as_str()),
+                    tokens: chat_tokens,
+                    temp: chat_temp,
+                },
                 &context_limit_plan_value(),
                 prefill_batch,
             )
@@ -5125,25 +5129,51 @@ fn join_usize_values(values: &[usize], separator: &str) -> String {
         .join(separator)
 }
 
+#[derive(Clone, Copy)]
+struct ReadyDirectChatStatus<'a> {
+    enabled: bool,
+    prompt: Option<&'a str>,
+    tokens: Option<usize>,
+    temp: Option<f32>,
+}
+
+impl ReadyDirectChatStatus<'_> {
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            prompt: None,
+            tokens: None,
+            temp: None,
+        }
+    }
+}
+
 fn ready_1b_status_json(
     model_path: &Path,
     smoke: &Smoke1BArgs,
-    direct_chat: bool,
-    chat_prompt: Option<&str>,
-    chat_tokens: Option<usize>,
+    direct_chat: ReadyDirectChatStatus<'_>,
     context_limit: &str,
     prefill_batch: usize,
 ) -> String {
-    let chat_prompt = if direct_chat {
-        json_optional_string(chat_prompt)
+    let chat_prompt = if direct_chat.enabled {
+        json_optional_string(direct_chat.prompt)
     } else {
         "null".to_owned()
     };
-    let chat_tokens = chat_tokens
+    let chat_tokens = direct_chat
+        .tokens
         .map(|tokens| tokens.to_string())
         .unwrap_or_else(|| "null".to_owned());
+    let chat_temp = if direct_chat.enabled {
+        direct_chat
+            .temp
+            .map(|temp| temp.to_string())
+            .unwrap_or_else(|| "null".to_owned())
+    } else {
+        "null".to_owned()
+    };
     format!(
-        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_prompt\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"direct_chat\":{},\"chat_prompt\":{},\"chat_tokens\":{}}}",
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"quantization\":{},\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":{},\"smoke_prompt\":{},\"smoke_kind\":\"{}\",\"smoke_tokens\":{},\"prefill_batch\":{},\"direct_chat\":{},\"chat_prompt\":{},\"chat_tokens\":{},\"chat_temp\":{}}}",
         json_string(&model_path.display().to_string()),
         json_string(smoke.model_source),
         json_string(llama32_1b_quantization_for_path(model_path)),
@@ -5152,9 +5182,10 @@ fn ready_1b_status_json(
         smoke.kind.label(),
         smoke.max_tokens,
         prefill_batch,
-        direct_chat,
+        direct_chat.enabled,
         chat_prompt,
-        chat_tokens
+        chat_tokens,
+        chat_temp
     )
 }
 
@@ -7067,12 +7098,12 @@ mod tests {
         DEFAULT_Q4_PREFILL_BATCH, DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS,
         GenerationStatusJson, HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL,
         LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
-        SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand,
-        cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
-        default_llama32_3b_model_path, device_model, evidence_1b_status_json,
-        evidence_context_pack_command, evidence_model_command, evidence_prefill_bench_command,
-        evidence_ready_no_chat_command, generation_status_json, help_topic_for_args,
-        help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
+        ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind,
+        TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
+        default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
+        evidence_1b_status_json, evidence_context_pack_command, evidence_model_command,
+        evidence_prefill_bench_command, evidence_ready_no_chat_command, generation_status_json,
+        help_topic_for_args, help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
         llama32_1b_quantization_for_path, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
@@ -9165,13 +9196,16 @@ flags\t\t: sse4_2 avx2
             ready_1b_status_json(
                 Path::new("/models/Llama-3.2-1B-Instruct-Q4_0.gguf"),
                 &smoke,
-                true,
-                Some("Direct hello"),
-                Some(4),
+                ReadyDirectChatStatus {
+                    enabled: true,
+                    prompt: Some("Direct hello"),
+                    tokens: Some(4),
+                    temp: Some(0.2),
+                },
                 "512",
                 32,
             ),
-            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_prompt\":\"Say hello\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":32,\"direct_chat\":true,\"chat_prompt\":\"Direct hello\",\"chat_tokens\":4}"
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"explicit argument\",\"quantization\":\"q4_0\",\"probe\":true,\"shape\":\"llama32_1b\",\"shape_ready\":true,\"context_limit\":\"512\",\"smoke_prompt\":\"Say hello\",\"smoke_kind\":\"chat\",\"smoke_tokens\":8,\"prefill_batch\":32,\"direct_chat\":true,\"chat_prompt\":\"Direct hello\",\"chat_tokens\":4,\"chat_temp\":0.2}"
         );
     }
 

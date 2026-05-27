@@ -407,7 +407,8 @@ expect_output "ready 1b json records probe" "\"probe\":true" cargo run -- ready 
 expect_output "ready 1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records chat prompt" "\"chat_prompt\":\"Say hello in one sentence.\"" cargo run -- ready 1b --dry-run
-expect_output "ready 1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_prompt\":null,\"chat_tokens\":null" cargo run -- ready 1b --no-chat --dry-run
+expect_output "ready 1b json records chat temperature" "\"chat_temp\":0" cargo run -- ready 1b --dry-run
+expect_output "ready 1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_prompt\":null,\"chat_tokens\":null,\"chat_temp\":null" cargo run -- ready 1b --no-chat --dry-run
 expect_output "ready 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records prefill batch" "\"prefill_batch\":32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- ready 1b --dry-run
 expect_output "ready 1b smoke command carries prefill batch" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" env NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 cargo run -- ready 1b --dry-run
@@ -583,7 +584,8 @@ expect_output "ready-1b json records probe" "\"probe\":true" ./scripts/pi/ready-
 expect_output "ready-1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records chat prompt" "\"chat_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/ready-1b.sh --dry-run
-expect_output "ready-1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_prompt\":null,\"chat_tokens\":null" ./scripts/pi/ready-1b.sh --no-chat --dry-run
+expect_output "ready-1b json records chat temperature" "\"chat_temp\":0.0" ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b no-chat json success marker dry run" "\"direct_chat\":false,\"chat_prompt\":null,\"chat_tokens\":null,\"chat_temp\":null" ./scripts/pi/ready-1b.sh --no-chat --dry-run
 expect_output "ready-1b selected source" "selected_source: " ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records prefill batch" "\"prefill_batch\":32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/ready-1b.sh --dry-run
