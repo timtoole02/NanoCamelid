@@ -606,6 +606,14 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
         {
             Some(HelpTopic::Ready)
         }
+        Some("bench")
+            if args.get(1).is_some_and(|value| {
+                is_llama32_1b_alias(value)
+                    || matches!(value.as_str(), "q8-dot" | "q4-layout" | "q4-prefill")
+            }) && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Bench)
+        }
         Some("smoke")
             if args.get(1).is_some_and(|value| {
                 is_llama32_1b_alias(value)
@@ -6419,6 +6427,14 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["model".to_owned(), "1b".to_owned(), "--help".to_owned()]),
             Some(HelpTopic::Model)
+        );
+        assert_eq!(
+            help_topic_for_args(&["bench".to_owned(), "1b".to_owned(), "--help".to_owned()]),
+            Some(HelpTopic::Bench)
+        );
+        assert_eq!(
+            help_topic_for_args(&["bench".to_owned(), "q8-dot".to_owned(), "-h".to_owned()]),
+            Some(HelpTopic::Bench)
         );
         assert_eq!(
             help_topic_for_args(&[
