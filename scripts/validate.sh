@@ -262,6 +262,7 @@ expect_output "generate 1b default model" "model: /mnt/nanocamelid/models/Llama-
 expect_output "generate 1b placeholder prompt" "prompt: <prompt>" cargo run -- generate 1b --dry-run
 expect_output "generate 1b command" "generate_command: nanocamelid generate /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- generate 1b --dry-run
 expect_output "generate 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- generate 1b --dry-run
+expect_output "generate 1b context-limited command" "generate_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid generate /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- generate 1b --dry-run
 
 echo "==> Checking 1B chat CLI dry run..."
@@ -270,6 +271,7 @@ expect_output "chat 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-
 expect_output "chat 1b placeholder prompt" "prompt: <prompt>" cargo run -- chat 1b --dry-run
 expect_output "chat 1b command" "chat_command: nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- chat 1b --dry-run
 expect_output "chat 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- chat 1b --dry-run
+expect_output "chat 1b context-limited command" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- chat 1b --dry-run
 
 echo "==> Checking 1B smoke CLI dry run..."
@@ -278,6 +280,7 @@ expect_output "smoke 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama
 expect_output "smoke 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b selected source" "selected_source: " cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- smoke 1b --dry-run
+expect_output "smoke 1b context-limited command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b shape audit dry run" "shape_audit: enabled" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b success marker dry run" "status_on_success: smoke_1b_status: ok" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- smoke 1b --dry-run
@@ -300,6 +303,8 @@ expect_output "ready 1b model audit command" "model_command: nanocamelid model 1
 expect_output_order "ready 1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" cargo run -- ready 1b --dry-run
 expect_output_order "ready 1b model audit before inspect" "model_command: nanocamelid model 1b" "inspect_command: nanocamelid inspect" cargo run -- ready 1b --dry-run
 expect_output "ready 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- ready 1b --dry-run
+expect_output "ready 1b context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- ready 1b --dry-run
+expect_output "ready 1b context-limited chat command" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Say hello in one sentence.' 0 8" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- ready 1b --dry-run
 
@@ -314,6 +319,7 @@ echo "==> Checking 1B TUI CLI dry run..."
 cargo run -- tui 1b --dry-run
 expect_output "tui 1b dry-run command" "tui_command: nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0 128" cargo run -- tui 1b --dry-run
 expect_output "tui 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- tui 1b --dry-run
+expect_output "tui 1b context-limited command" "tui_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0 128" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- tui 1b --dry-run
 
 echo "==> Checking 1B model audit dry run..."
@@ -364,6 +370,9 @@ expect_failure "ready-1b repo-local target dir" env CARGO_TARGET_DIR=target ./sc
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b selected source" "selected_source: " ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Say\\ hello\\ in\\ one\\ sentence. 1" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b context-limited tui command" "tui_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0.0 64" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/chat-1b.sh
@@ -378,6 +387,7 @@ echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill selected source" "selected_source: " ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output "bench-1b-prefill context-limited batch command" "batch_16_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. 0.0 2" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill success marker dry run" "status_on_success: prefill_bench_1b_status: ok" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill json success marker dry run" "\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill json batches dry run" "\"batches\":[1,16,32,64]" ./scripts/pi/bench-1b-prefill.sh --dry-run

@@ -2754,7 +2754,7 @@ fn print_tui_dry_run(parsed: &TuiArgs) -> ExitCode {
     println!("context_limit: {}", context_limit_plan_value());
     println!(
         "tui_command: {}",
-        shell_command(&[
+        context_limited_shell_command(&[
             "nanocamelid",
             "tui",
             &model_path.display().to_string(),
@@ -2781,7 +2781,7 @@ fn print_generation_dry_run(command: &str, parsed: &GenerateArgs) -> ExitCode {
     println!("context_limit: {}", context_limit_plan_value());
     println!(
         "{command}_command: {}",
-        shell_command(&[
+        context_limited_shell_command(&[
             "nanocamelid",
             command,
             &model_path.display().to_string(),
@@ -3463,7 +3463,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
             println!("chat_tokens: {chat_tokens}");
             println!(
                 "chat_command: {}",
-                shell_command(&[
+                context_limited_shell_command(&[
                     "nanocamelid",
                     "chat",
                     &model_path.display().to_string(),
@@ -3604,15 +3604,28 @@ fn json_string(value: &str) -> String {
 }
 
 fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
-    shell_command(&[
-        "nanocamelid",
-        "smoke",
-        target,
-        &model_path.display().to_string(),
-        parsed.kind.label(),
-        &parsed.prompt,
-        &parsed.max_tokens.to_string(),
-    ])
+    let context_limit = context_limit_env_value();
+    smoke_plan_command_with_context(target, model_path, parsed, context_limit.as_deref())
+}
+
+fn smoke_plan_command_with_context(
+    target: &str,
+    model_path: &Path,
+    parsed: &Smoke1BArgs,
+    context_limit: Option<&str>,
+) -> String {
+    shell_command_with_optional_context_limit(
+        &[
+            "nanocamelid",
+            "smoke",
+            target,
+            &model_path.display().to_string(),
+            parsed.kind.label(),
+            &parsed.prompt,
+            &parsed.max_tokens.to_string(),
+        ],
+        context_limit,
+    )
 }
 
 fn run_smoke_1b_gate(model_path: &Path, parsed: &Smoke1BArgs) -> ExitCode {
@@ -3643,10 +3656,7 @@ fn run_smoke_1b_gate(model_path: &Path, parsed: &Smoke1BArgs) -> ExitCode {
 }
 
 fn context_limit_plan_value() -> String {
-    env::var(CONTEXT_LIMIT_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "unset".to_owned())
+    context_limit_env_value().unwrap_or_else(|| "unset".to_owned())
 }
 
 fn validate_context_limit_env() -> Result<(), String> {
@@ -3658,6 +3668,33 @@ fn shell_command(args: &[&str]) -> String {
         .map(|arg| shell_quote_arg(arg))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn shell_command_with_env(args: &[&str], env: &[(&str, &str)]) -> String {
+    let mut parts = env
+        .iter()
+        .map(|(key, value)| format!("{key}={}", shell_quote_arg(value)))
+        .collect::<Vec<_>>();
+    parts.push(shell_command(args));
+    parts.join(" ")
+}
+
+fn context_limited_shell_command(args: &[&str]) -> String {
+    let context_limit = context_limit_env_value();
+    shell_command_with_optional_context_limit(args, context_limit.as_deref())
+}
+
+fn shell_command_with_optional_context_limit(args: &[&str], context_limit: Option<&str>) -> String {
+    match context_limit {
+        Some(context_limit) => shell_command_with_env(args, &[(CONTEXT_LIMIT_ENV, context_limit)]),
+        None => shell_command(args),
+    }
+}
+
+fn context_limit_env_value() -> Option<String> {
+    env::var(CONTEXT_LIMIT_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn shell_quote_arg(arg: &str) -> String {
@@ -5230,9 +5267,9 @@ mod tests {
         ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        runtime_options_from_gguf, shared_token_prefix_len, shell_command, smoke_1b_status_json,
-        smoke_defaults_from_values, smoke_plan_command, trim_tui_history, tui_prompt_history,
-        validate_generation_budget,
+        runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
+        smoke_1b_status_json, smoke_defaults_from_values, smoke_plan_command_with_context,
+        trim_tui_history, tui_prompt_history, validate_generation_budget,
     };
 
     #[test]
@@ -6586,6 +6623,46 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn dry_run_commands_prefix_context_limit_for_reusable_plans() {
+        let command = shell_command_with_env(
+            &[
+                "nanocamelid",
+                "chat",
+                "/models/model.gguf",
+                "Say hello",
+                "0",
+                "8",
+            ],
+            &[("NANOCAMELID_CONTEXT_LIMIT", "512")],
+        );
+
+        assert_eq!(
+            command,
+            "NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid chat /models/model.gguf 'Say hello' 0 8"
+        );
+    }
+
+    #[test]
+    fn dry_run_env_assignments_escape_shell_values() {
+        let command = shell_command_with_env(
+            &[
+                "nanocamelid",
+                "chat",
+                "/models/model.gguf",
+                "can't",
+                "0",
+                "8",
+            ],
+            &[("NANOCAMELID_CONTEXT_LIMIT", "5 12")],
+        );
+
+        assert_eq!(
+            command,
+            "NANOCAMELID_CONTEXT_LIMIT='5 12' nanocamelid chat /models/model.gguf 'can'\\''t' 0 8"
+        );
+    }
+
+    #[test]
     fn smoke_plan_command_uses_resolved_model_and_normalized_kind() {
         let parsed = Smoke1BArgs {
             kind: SmokeKind::Q8Model,
@@ -6597,8 +6674,30 @@ flags\t\t: sse4_2 avx2
         };
 
         assert_eq!(
-            smoke_plan_command("1b", Path::new("/models/custom.gguf"), &parsed),
+            smoke_plan_command_with_context("1b", Path::new("/models/custom.gguf"), &parsed, None),
             "nanocamelid smoke 1b /models/custom.gguf model 'Hello Pi' 2"
+        );
+    }
+
+    #[test]
+    fn smoke_plan_command_can_include_context_limit_prefix() {
+        let parsed = Smoke1BArgs {
+            kind: SmokeKind::Q8Chat,
+            model_path: "/models/ignored.gguf".to_owned(),
+            model_source: "explicit argument",
+            prompt: "Hello Pi".to_owned(),
+            max_tokens: 2,
+            dry_run: true,
+        };
+
+        assert_eq!(
+            smoke_plan_command_with_context(
+                "1b",
+                Path::new("/models/custom.gguf"),
+                &parsed,
+                Some("512"),
+            ),
+            "NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /models/custom.gguf chat 'Hello Pi' 2"
         );
     }
 

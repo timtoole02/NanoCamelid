@@ -77,6 +77,12 @@ shell_command() {
   printf '\n'
 }
 
+context_env_prefix() {
+  if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
+    printf 'NANOCAMELID_CONTEXT_LIMIT=%q ' "$NANOCAMELID_CONTEXT_LIMIT"
+  fi
+}
+
 DRY_RUN=0
 POSITIONAL_ARGS=()
 for arg in "$@"; do
@@ -173,6 +179,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "model_exists: $([[ -f "$MODEL" ]] && echo true || echo false)"
   echo "temp: $TEMP"
   echo "max_tokens: $MAX_TOKENS"
+  echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
   echo "smoke_enabled: $SMOKE_ENABLED"
   echo "smoke_kind: $SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"
@@ -183,10 +190,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
       ;;
     *)
       printf 'smoke_command: '
+      context_env_prefix
       shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
       ;;
   esac
   printf 'tui_command: '
+  context_env_prefix
   shell_command nanocamelid tui "$MODEL" "$TEMP" "$MAX_TOKENS"
   exit 0
 fi

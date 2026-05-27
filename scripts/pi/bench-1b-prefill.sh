@@ -75,6 +75,12 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+context_env_prefix() {
+  if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
+    printf 'NANOCAMELID_CONTEXT_LIMIT=%q ' "$NANOCAMELID_CONTEXT_LIMIT"
+  fi
+}
+
 json_number_or_null() {
   if [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     printf '%s' "$1"
@@ -303,8 +309,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "status_on_success: prefill_bench_1b_status: ok"
   echo "json_on_success: $(prefill_summary_json "" "" "" "")"
   for batch in "${BATCHES[@]}"; do
-    printf 'batch_%s_command: NANOCAMELID_Q8_DOT_SDOT=%s NANOCAMELID_Q8_DOT_KERNEL=%s NANOCAMELID_PREFILL_BATCH=%s nanocamelid chat %s %s %s %s\n' \
-      "$batch" \
+    printf 'batch_%s_command: ' "$batch"
+    context_env_prefix
+    printf 'NANOCAMELID_Q8_DOT_SDOT=%s NANOCAMELID_Q8_DOT_KERNEL=%s NANOCAMELID_PREFILL_BATCH=%s nanocamelid chat %s %s %s %s\n' \
       "$(shell_quote "$NANOCAMELID_Q8_DOT_SDOT")" \
       "$(shell_quote "$NANOCAMELID_Q8_DOT_KERNEL")" \
       "$(shell_quote "$batch")" \
