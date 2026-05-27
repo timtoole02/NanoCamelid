@@ -467,6 +467,7 @@ expect_output "context-pack-1b success marker dry run" "status_on_success: conte
 expect_output "context-pack-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json caps dry run" "\"context_caps\":[512,1024,2048,4096,8192]" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b json records prefill batch" "\"prefill_batch\":32" env NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b prompt without explicit kind" "smoke_kind: chat" ./scripts/pi/context-pack-1b.sh "Say hello in one sentence." 3 512,1024 --dry-run
 expect_output "context-pack-1b caps without explicit kind" "context_caps: 512 1024" ./scripts/pi/context-pack-1b.sh "Say hello in one sentence." 3 512,1024 --dry-run
 expect_failure "context-pack-1b invalid q8 kind" ./scripts/pi/context-pack-1b.sh q8-broken --dry-run

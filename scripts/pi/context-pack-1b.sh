@@ -201,11 +201,12 @@ else
 fi
 
 context_pack_status_json() {
-  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"smoke_kind":"%s","smoke_tokens":%s,"context_caps":%s}\n' \
+  printf '{"target":"llama32-1b","status":"ok","model":%s,"selected_source":%s,"smoke_kind":"%s","smoke_tokens":%s,"prefill_batch":%s,"context_caps":%s}\n' \
     "$(json_string "$MODEL")" \
     "$(json_string "$MODEL_SOURCE")" \
     "$SMOKE_KIND" \
     "$SMOKE_TOKENS" \
+    "$(prefill_batch_plan_value)" \
     "$(json_integer_array "${CONTEXT_PACKS[@]}")"
 }
 
