@@ -448,7 +448,9 @@ expect_output "evidence 1b json records smoke prompt" "\"smoke_prompt\":\"Say he
 expect_output "evidence 1b json records context caps" "\"context_pack_caps\":[512,1024,2048,4096,8192]" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b json records prefill batches" "\"prefill_batches\":[1,16,32,64]" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- evidence 1b --dry-run
+expect_output "evidence 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b ready no-chat command" "ready_command: nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8 --no-chat" cargo run -- evidence 1b --dry-run
+expect_output_order "evidence 1b model audit before ready" "model_command: nanocamelid model 1b" "ready_command: nanocamelid ready 1b" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b context command" "context_512_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b prefill command" "prefill_bench_command: nanocamelid bench 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2 0.0 '1,16,32,64'" cargo run -- evidence 1b --dry-run
 expect_output "evidence 1b context-limited ready command" "ready_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8 --no-chat" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- evidence 1b --dry-run

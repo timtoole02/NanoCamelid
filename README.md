@@ -119,9 +119,9 @@ delegates to `model-1b.sh`, `ready-1b.sh --no-chat`, `context-pack-1b.sh`, and
 end with `evidence_1b_status: ok`; dry runs print the exact delegated command
 plan.
 `cargo run -- evidence 1b` runs the same bounded 1B evidence bundle from the
-Rust CLI when the selected GGUF is present. Dry runs print the readiness
-no-chat, per-context smoke, and prefill sweep commands plus a compact
-`json_on_success` row before loading the model.
+Rust CLI when the selected GGUF is present. Dry runs print the selected-model
+audit, readiness no-chat, per-context smoke, and prefill sweep commands plus a
+compact `json_on_success` row before loading the model.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
 preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
 prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then

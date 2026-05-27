@@ -4874,6 +4874,7 @@ fn print_evidence_1b_dry_run(parsed: &Evidence1BArgs) -> ExitCode {
     );
     println!("status_on_success: evidence_1b_status: ok");
     println!("json_on_success: {}", evidence_1b_status_json(parsed));
+    println!("model_command: {}", evidence_model_command(parsed));
     println!(
         "ready_command: {}",
         evidence_ready_no_chat_command(parsed, context_limit_env_value().as_deref())
@@ -4930,6 +4931,19 @@ fn run_evidence_1b(parsed: Evidence1BArgs) -> ExitCode {
         "prefill_batches: {}",
         join_usize_values(&parsed.prefill.batches, " ")
     );
+
+    println!("==> Auditing selected 1B model");
+    let model_code = run_model_1b_audit(Model1BAuditArgs {
+        workspace: parsed.workspace.clone(),
+        q4_model_path: parsed.q4_model_path.clone(),
+        q8_model_path: parsed.q8_model_path.clone(),
+        model_path: parsed.model_path.clone(),
+        model_source: parsed.model_source,
+        dry_run: false,
+    });
+    if model_code != ExitCode::SUCCESS {
+        return model_code;
+    }
 
     println!("==> Running readiness gate without final direct chat");
     let ready_code = run_ready_1b(Ready1BArgs {
@@ -4992,6 +5006,10 @@ fn run_evidence_context_pack_smoke(parsed: &Evidence1BArgs, cap: usize) -> Resul
     io::stderr().write_all(&output.stderr).ok();
     print!("{}", String::from_utf8_lossy(&output.stdout));
     Ok(output.status.code().unwrap_or(1))
+}
+
+fn evidence_model_command(parsed: &Evidence1BArgs) -> String {
+    shell_command(&["nanocamelid", "model", "1b", &parsed.model_path])
 }
 
 fn evidence_ready_no_chat_command(parsed: &Evidence1BArgs, context_limit: Option<&str>) -> String {
@@ -7017,7 +7035,7 @@ mod tests {
         SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand,
         cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
         default_llama32_3b_model_path, device_model, evidence_1b_status_json,
-        evidence_context_pack_command, evidence_prefill_bench_command,
+        evidence_context_pack_command, evidence_model_command, evidence_prefill_bench_command,
         evidence_ready_no_chat_command, generation_status_json, help_topic_for_args,
         help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
@@ -7783,6 +7801,10 @@ flags\t\t: sse4_2 avx2
         )
         .expect("explicit 1B evidence args should parse");
 
+        assert_eq!(
+            evidence_model_command(&parsed),
+            "nanocamelid model 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf"
+        );
         assert_eq!(
             evidence_ready_no_chat_command(&parsed, Some("512")),
             "NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid ready 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf chat 'Say hello in one sentence.' 8 --no-chat"
