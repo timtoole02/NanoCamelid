@@ -2636,7 +2636,7 @@ pub fn matmul_f32(out: &mut [f32], x: &[f32], w: &[f32], rows: usize, cols: usiz
     }
 }
 
-fn add_bias(values: &mut [f32], bias: &[f32]) {
+pub fn add_bias(values: &mut [f32], bias: &[f32]) {
     debug_assert_eq!(values.len(), bias.len());
     for (value, bias) in values.iter_mut().zip(bias) {
         *value += bias;
@@ -3340,7 +3340,7 @@ pub fn run_layer_range_batch(
     }
 }
 
-fn add_bias_batch(values: &mut [f32], bias: &Option<Vec<f32>>, batch_size: usize, dim: usize) {
+pub fn add_bias_batch(values: &mut [f32], bias: &Option<Vec<f32>>, batch_size: usize, dim: usize) {
     if let Some(bias) = bias {
         for token_idx in 0..batch_size {
             let start = token_idx * dim;
@@ -3349,27 +3349,27 @@ fn add_bias_batch(values: &mut [f32], bias: &Option<Vec<f32>>, batch_size: usize
     }
 }
 
-fn add_residual_batch(values: &mut [f32], residual: &[f32]) {
+pub fn add_residual_batch(values: &mut [f32], residual: &[f32]) {
     debug_assert_eq!(values.len(), residual.len());
     for (value, residual) in values.iter_mut().zip(residual) {
         *value += residual;
     }
 }
 
-struct AttentionInput<'a> {
-    q: &'a [f32],
-    k_cache: KvCacheSlice<'a>,
-    v_cache: KvCacheSlice<'a>,
-    pos: usize,
-    head_count: usize,
-    kv_head_count: usize,
-    head_dim: usize,
-    cache_kv_width: usize,
-    context_length: usize,
-    scale: f32,
+pub struct AttentionInput<'a> {
+    pub q: &'a [f32],
+    pub k_cache: KvCacheSlice<'a>,
+    pub v_cache: KvCacheSlice<'a>,
+    pub pos: usize,
+    pub head_count: usize,
+    pub kv_head_count: usize,
+    pub head_dim: usize,
+    pub cache_kv_width: usize,
+    pub context_length: usize,
+    pub scale: f32,
 }
 
-fn apply_attention_heads(
+pub fn apply_attention_heads(
     attn_output: &mut [f32],
     attn_scores: &mut [f32],
     input: AttentionInput<'_>,
