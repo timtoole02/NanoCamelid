@@ -221,6 +221,20 @@ expect_no_output() {
   fi
 }
 
+expect_output_count() {
+  local description="$1"
+  local expected="$2"
+  local expected_count="$3"
+  shift 3
+
+  local actual_count
+  actual_count="$("$@" | awk -v expected="$expected" 'index($0, expected) { count++ } END { print count + 0 }')"
+  if [[ "$actual_count" != "$expected_count" ]]; then
+    echo "Expected $expected_count occurrences for $description but found $actual_count: $expected" >&2
+    exit 1
+  fi
+}
+
 mkdir -p "$CARGO_TARGET_DIR"
 
 echo "==> Cargo target dir: $CARGO_TARGET_DIR"
@@ -437,6 +451,7 @@ expect_failure "smoke-1b repo-local target dir" env CARGO_TARGET_DIR=target ./sc
 
 echo "==> Checking 1B Pi readiness launcher dry run..."
 ./scripts/pi/ready-1b.sh --dry-run
+expect_output_count "ready-1b smoke prompt printed once" "smoke_prompt:" 1 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/ready-1b.sh --dry-run
