@@ -409,12 +409,14 @@ expect_failure "ready 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=ba
 expect_failure "ready 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid explicit model path" cargo run -- ready 1b /models/not-a-gguf --dry-run
+expect_failure "ready 1b invalid direct chat toggle" env NANOCAMELID_READY_CHAT=flase cargo run -- ready 1b --dry-run
 
 echo "==> Checking 1B readiness CLI rejects invalid direct chat env..."
 expect_failure "ready 1b invalid direct chat temperature" env NANOCAMELID_READY_TEMP=bad cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid direct chat token count" env NANOCAMELID_READY_TOKENS=0 cargo run -- ready 1b --dry-run
 
 echo "==> Checking 1B readiness CLI ignores direct chat env when chat is disabled..."
+env NANOCAMELID_READY_CHAT=flase cargo run -- ready 1b --no-chat --dry-run
 env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 cargo run -- ready 1b --no-chat --dry-run
 
 echo "==> Checking 1B TUI CLI dry run..."
@@ -684,8 +686,10 @@ expect_failure "mixtral-cluster invalid context cap" env NANOCAMELID_CLUSTER_CON
 
 echo "==> Checking 1B Pi readiness launcher rejects invalid temperature..."
 expect_failure "ready-1b invalid temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/pi/ready-1b.sh --dry-run
+expect_failure "ready-1b invalid direct chat toggle" env NANOCAMELID_READY_CHAT=flase ./scripts/pi/ready-1b.sh --dry-run
 
 echo "==> Checking 1B Pi readiness launcher ignores direct chat env when chat is disabled..."
+env NANOCAMELID_READY_CHAT=flase ./scripts/pi/ready-1b.sh --no-chat --dry-run
 env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/pi/ready-1b.sh --no-chat --dry-run
 
 echo "==> Checking remote Pi build launcher dry run..."
@@ -700,6 +704,7 @@ expect_failure "remote_build invalid explicit model path" env NANOCAMELID_REMOTE
 
 echo "==> Checking remote Pi build launcher rejects invalid readiness temperature..."
 expect_failure "remote_build invalid readiness temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build invalid readiness chat toggle" env NANOCAMELID_READY_CHAT=flase ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher ignores smoke env when remote smoke is disabled..."
 env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_SMOKE_TOKENS=bad NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run

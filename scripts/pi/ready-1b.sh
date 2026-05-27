@@ -30,7 +30,7 @@ Useful env:
   NANOCAMELID_READY_PROMPT         Direct chat prompt
   NANOCAMELID_READY_TOKENS         Direct chat generated token count
   NANOCAMELID_READY_TEMP           Direct chat temperature, default 0.0
-  NANOCAMELID_READY_CHAT=0         Stop after audit, inspect, and smoke
+  NANOCAMELID_READY_CHAT=0         Stop after audit, inspect, and smoke; also accepts false/no/off
   --no-chat, --smoke-only          Stop after audit, inspect, and smoke; positionals override the smoke prompt
   --chat                           Force the direct chat turn even when NANOCAMELID_READY_CHAT=0
   --dry-run                        Print the resolved readiness plan without loading the model
@@ -162,7 +162,14 @@ CHAT_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
 CHAT_ENABLED="${CHAT_ENABLED_OVERRIDE:-${NANOCAMELID_READY_CHAT:-1}}"
 CHAT_ENABLED_LOWER="$(printf '%s' "$CHAT_ENABLED" | tr '[:upper:]' '[:lower:]')"
 case "$CHAT_ENABLED_LOWER" in
-  0 | false | no)
+  "" | 0 | 1 | false | true | no | yes | off | on) ;;
+  *)
+    echo "NANOCAMELID_READY_CHAT must be 0, 1, false, true, no, yes, off, or on: $CHAT_ENABLED" >&2
+    exit 2
+    ;;
+esac
+case "$CHAT_ENABLED_LOWER" in
+  0 | false | no | off)
     SMOKE_PROMPT="${1:-$SMOKE_PROMPT}"
     SMOKE_TOKENS="${2:-$SMOKE_TOKENS}"
     CHAT_PROMPT="$SMOKE_PROMPT"
@@ -175,7 +182,7 @@ case "$CHAT_ENABLED_LOWER" in
 esac
 require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
 case "$CHAT_ENABLED_LOWER" in
-  0 | false | no)
+  0 | false | no | off)
     ;;
   *)
     require_positive_integer "Direct chat token count" "$CHAT_TOKENS"
@@ -289,10 +296,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
   echo "prefill_batch: $(prefill_batch_plan_value)"
-  echo "direct_chat: $([[ "$CHAT_ENABLED_LOWER" == "0" || "$CHAT_ENABLED_LOWER" == "false" || "$CHAT_ENABLED_LOWER" == "no" ]] && echo disabled || echo enabled)"
+  echo "direct_chat: $([[ "$CHAT_ENABLED_LOWER" == "0" || "$CHAT_ENABLED_LOWER" == "false" || "$CHAT_ENABLED_LOWER" == "no" || "$CHAT_ENABLED_LOWER" == "off" ]] && echo disabled || echo enabled)"
   echo "status_on_success: ready_1b_status: ok"
   case "$CHAT_ENABLED_LOWER" in
-    0 | false | no)
+    0 | false | no | off)
       echo "json_on_success: $(ready_1b_status_json false "")"
       ;;
     *)
@@ -309,7 +316,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   context_env_prefix
   shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   case "$CHAT_ENABLED_LOWER" in
-    0 | false | no)
+    0 | false | no | off)
       echo "chat_command: skipped"
       ;;
     *)
@@ -363,7 +370,7 @@ echo "==> Running 1B $SMOKE_KIND smoke gate"
 run_nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 
 case "$CHAT_ENABLED_LOWER" in
-0 | false | no)
+0 | false | no | off)
   echo "==> Skipping direct 1B chat turn; NANOCAMELID_READY_CHAT=$CHAT_ENABLED"
   echo "ready_1b_status: ok"
   echo "json: $(ready_1b_status_json false "")"

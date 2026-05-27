@@ -504,17 +504,19 @@ fn prefill_batch_size_from_env_value(value: Option<String>) -> Result<usize, &'s
     }
 }
 
-fn ready_chat_enabled() -> bool {
+fn ready_chat_enabled() -> Result<bool, &'static str> {
     env::var(READY_CHAT_ENV)
+        .ok()
         .map(|value| ready_chat_enabled_from_env_value(&value))
-        .unwrap_or(true)
+        .unwrap_or(Ok(true))
 }
 
-fn ready_chat_enabled_from_env_value(value: &str) -> bool {
-    !matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "no"
-    )
+fn ready_chat_enabled_from_env_value(value: &str) -> Result<bool, &'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err("NANOCAMELID_READY_CHAT must be 0, 1, false, true, no, yes, off, or on"),
+    }
 }
 
 fn ready_chat_prompt(smoke_prompt: &str) -> String {
@@ -983,7 +985,9 @@ fn print_ready_usage() {
     println!("  {READY_SMOKE_KIND_ENV:<38} Smoke kind, default chat");
     println!("  {READY_SMOKE_PROMPT_ENV:<38} Smoke prompt");
     println!("  {READY_SMOKE_TOKENS_ENV:<38} Smoke generated token count");
-    println!("  {READY_CHAT_ENV:<38} Set to 0 to stop after audit, inspect, and smoke");
+    println!(
+        "  {READY_CHAT_ENV:<38} Set to 0/false/no/off to stop after audit, inspect, and smoke"
+    );
     println!("  {READY_PROMPT_ENV:<38} Direct chat prompt after smoke");
     println!("  {READY_TOKENS_ENV:<38} Direct chat generated token count");
     println!("  {READY_TEMP_ENV:<38} Direct chat temperature, default 0.0");
@@ -1677,7 +1681,7 @@ fn parse_ready_1b_args(args: &[String]) -> Result<Ready1BArgs, &'static str> {
     let q4_path = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
     let q4_exists = Path::new(&q4_path).is_file();
     let smoke_defaults = ready_smoke_defaults_from_env()?;
-    let chat_enabled_default = ready_chat_enabled();
+    let chat_enabled_default = ready_chat_enabled_default_for_args(args)?;
     parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default(
         args,
         smoke_model_path_and_source_from_env(),
@@ -1686,6 +1690,17 @@ fn parse_ready_1b_args(args: &[String]) -> Result<Ready1BArgs, &'static str> {
         smoke_defaults,
         chat_enabled_default,
     )
+}
+
+fn ready_chat_enabled_default_for_args(args: &[String]) -> Result<bool, &'static str> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--no-chat" | "--smoke-only" | "--chat"))
+    {
+        Ok(true)
+    } else {
+        ready_chat_enabled()
+    }
 }
 
 #[cfg(test)]
@@ -4354,9 +4369,16 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
     };
     let smoke = parsed.smoke;
     let model_path = Path::new(&smoke.model_path);
-    let chat_enabled = parsed
-        .chat_enabled_override
-        .unwrap_or_else(ready_chat_enabled);
+    let chat_enabled = match parsed.chat_enabled_override {
+        Some(enabled) => enabled,
+        None => match ready_chat_enabled() {
+            Ok(enabled) => enabled,
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::from(2);
+            }
+        },
+    };
     let chat_prompt = parsed
         .chat_prompt_override
         .clone()
@@ -6486,13 +6508,14 @@ mod tests {
         parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
         prefill_bench_1b_batch_env, prefill_bench_1b_result_json, prefill_bench_1b_smoke_command,
         prefill_bench_1b_smoke_env, prefill_bench_1b_status_json, prefill_prompt_tokens_per_sec,
-        print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_from_env_value,
-        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
-        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
-        resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
-        shared_token_prefix_len, shell_command, shell_command_with_env, smoke_1b_status_json,
-        smoke_defaults_from_values, smoke_plan_command_with_context, smoke_plan_command_with_env,
-        trim_tui_history, tui_prompt_history, validate_generation_budget,
+        print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_default_for_args,
+        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
+        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
+        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
+        runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
+        smoke_1b_status_json, smoke_defaults_from_values, smoke_plan_command_with_context,
+        smoke_plan_command_with_env, trim_tui_history, tui_prompt_history,
+        validate_generation_budget,
     };
 
     #[test]
@@ -6524,12 +6547,31 @@ mod tests {
 
     #[test]
     fn ready_chat_env_value_disables_direct_chat_for_falsey_values() {
-        assert!(!ready_chat_enabled_from_env_value("0"));
-        assert!(!ready_chat_enabled_from_env_value("false"));
-        assert!(!ready_chat_enabled_from_env_value(" no "));
-        assert!(ready_chat_enabled_from_env_value("1"));
-        assert!(ready_chat_enabled_from_env_value("true"));
-        assert!(ready_chat_enabled_from_env_value(""));
+        assert_eq!(ready_chat_enabled_from_env_value("0"), Ok(false));
+        assert_eq!(ready_chat_enabled_from_env_value("false"), Ok(false));
+        assert_eq!(ready_chat_enabled_from_env_value(" no "), Ok(false));
+        assert_eq!(ready_chat_enabled_from_env_value("off"), Ok(false));
+        assert_eq!(ready_chat_enabled_from_env_value("1"), Ok(true));
+        assert_eq!(ready_chat_enabled_from_env_value("true"), Ok(true));
+        assert_eq!(ready_chat_enabled_from_env_value("yes"), Ok(true));
+        assert_eq!(ready_chat_enabled_from_env_value("on"), Ok(true));
+        assert_eq!(ready_chat_enabled_from_env_value(""), Ok(true));
+        assert_eq!(
+            ready_chat_enabled_from_env_value("flase"),
+            Err("NANOCAMELID_READY_CHAT must be 0, 1, false, true, no, yes, off, or on")
+        );
+    }
+
+    #[test]
+    fn ready_chat_default_skips_env_when_flag_overrides() {
+        assert_eq!(
+            ready_chat_enabled_default_for_args(&["--no-chat".to_owned()]),
+            Ok(true)
+        );
+        assert_eq!(
+            ready_chat_enabled_default_for_args(&["--chat".to_owned()]),
+            Ok(true)
+        );
     }
 
     #[test]

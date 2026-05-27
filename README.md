@@ -84,7 +84,8 @@ Non-dry-run 1B aliases run the strict Llama 3.2 1B shape audit before direct
 generation, chat, or TUI launch.
 `ready 1b` runs the host fast-path probe, strict Llama 3.2 1B shape audit,
 inspect, scalar-vs-selected smoke validation, and one direct chat turn. Set
-`NANOCAMELID_READY_CHAT=0` for probe+audit+inspect+smoke only, or set
+`NANOCAMELID_READY_CHAT=0` (also `false`, `no`, or `off`) for
+probe+audit+inspect+smoke only, or set
 `NANOCAMELID_READY_PROMPT`, `NANOCAMELID_READY_TOKENS`, and
 `NANOCAMELID_READY_TEMP` when the direct chat turn should differ from the smoke
 prompt. Successful readiness runs end with `ready_1b_status: ok`; dry runs
@@ -596,8 +597,8 @@ optional leading `chat`, `model`, `q8-chat`, or `q8-model` argument selects the
 smoke gate kind. The remaining optional arguments override the final direct-chat
 prompt and token budget; when omitted, direct chat reuses the selected smoke
 prompt and token budget. Set `--no-chat`, `--smoke-only`, or
-`NANOCAMELID_READY_CHAT=0` to stop after inspect and smoke when you only need
-the readiness gate:
+`NANOCAMELID_READY_CHAT=0` (also `false`, `no`, or `off`) to stop after
+inspect and smoke when you only need the readiness gate:
 
 ```bash
 ./scripts/pi/ready-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf "Say hello in one sentence." 8

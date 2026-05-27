@@ -17,6 +17,7 @@ Useful env:
   NANOCAMELID_REMOTE_PREFILL_BENCH  Set to 1 to run the 1B prefill batch sweep after readiness
   NANOCAMELID_REMOTE_PREFILL_BATCHES Optional comma-separated prefill batches for the remote sweep
   NANOCAMELID_REMOTE_EVIDENCE       Set to 1 to run the 1B evidence bundle after the core build
+  NANOCAMELID_REMOTE_READY_CHAT     Set to 0/false/no/off to skip the direct readiness chat turn
 USAGE
 }
 
@@ -60,6 +61,13 @@ READY_PROMPT="${NANOCAMELID_READY_PROMPT:-$SMOKE_PROMPT}"
 READY_TOKENS="${NANOCAMELID_READY_TOKENS:-$SMOKE_TOKENS}"
 READY_TEMP="${NANOCAMELID_READY_TEMP:-0.0}"
 READY_CHAT_LOWER="$(printf '%s' "$READY_CHAT" | tr '[:upper:]' '[:lower:]')"
+case "$READY_CHAT_LOWER" in
+  "" | 0 | 1 | false | true | no | yes | off | on) ;;
+  *)
+    echo "NANOCAMELID_READY_CHAT must be 0, 1, false, true, no, yes, off, or on: $READY_CHAT" >&2
+    exit 2
+    ;;
+esac
 REMOTE_CONTEXT_LIMIT="${NANOCAMELID_REMOTE_CONTEXT_LIMIT:-${NANOCAMELID_CONTEXT_LIMIT:-}}"
 REMOTE_CONTEXT_PACKS="${NANOCAMELID_REMOTE_CONTEXT_PACKS:-}"
 REMOTE_PREFILL_BENCH="${NANOCAMELID_REMOTE_PREFILL_BENCH:-0}"
@@ -215,7 +223,7 @@ redacted_deploy_key_label() {
 }
 
 ready_chat_disabled() {
-  [[ "$READY_CHAT_LOWER" == "0" || "$READY_CHAT_LOWER" == "false" || "$READY_CHAT_LOWER" == "no" ]]
+  [[ "$READY_CHAT_LOWER" == "0" || "$READY_CHAT_LOWER" == "false" || "$READY_CHAT_LOWER" == "no" || "$READY_CHAT_LOWER" == "off" ]]
 }
 
 print_readiness_command() {
@@ -306,7 +314,7 @@ if ! remote_smoke_disabled; then
     exit 2
   fi
   require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
-  if [[ "$READY_CHAT_LOWER" != "0" && "$READY_CHAT_LOWER" != "false" && "$READY_CHAT_LOWER" != "no" ]]; then
+  if [[ "$READY_CHAT_LOWER" != "0" && "$READY_CHAT_LOWER" != "false" && "$READY_CHAT_LOWER" != "no" && "$READY_CHAT_LOWER" != "off" ]]; then
     require_positive_integer "Readiness token count" "$READY_TOKENS"
     require_non_negative_float "Readiness temperature" "$READY_TEMP"
   fi
@@ -496,7 +504,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
       env_args+=("NANOCAMELID_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT")
     fi
     case "$ready_chat_lower" in
-      0 | false | no) ;;
+      0 | false | no | off) ;;
       *)
         env_args+=(
           "NANOCAMELID_READY_PROMPT=$READY_PROMPT"
