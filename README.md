@@ -108,9 +108,11 @@ also print `shape_audit: enabled` and the same row as `json_on_success:`.
 preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
 prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
 `NANOCAMELID_MODEL_GGUF` override order as the smoke gate, and validates any
-`NANOCAMELID_CONTEXT_LIMIT` cap before the model is loaded. Successful sweeps
-end with `prefill_bench_1b_status: ok` and a compact `json:` summary row for
-log collectors that includes the strict `llama32_1b` shape marker.
+`NANOCAMELID_CONTEXT_LIMIT` cap before the model is loaded. Batch lists must be
+positive and unique, so Pi sweeps cannot spend time rerunning the same batch.
+Successful sweeps end with `prefill_bench_1b_status: ok` and a compact `json:`
+summary row for log collectors that includes the strict `llama32_1b` shape
+marker.
 `cargo run -- bench 1b` runs the same model-backed prefill sweep from the Rust
 CLI when the selected 1B GGUF is present. It audits the strict 1B shape first,
 runs inspect and smoke preflights, runs each `NANOCAMELID_PREFILL_BATCH`, emits
@@ -616,7 +618,7 @@ generation timing for each selected batch size. It emits a
 sweeps also end with `prefill_bench_1b_status: ok` and a final JSON summary
 including the selected model, strict 1B shape marker, context cap, planned
 batches, best prefill batch, best prefill prompt tokens/sec, and best decode
-throughput batch.
+throughput batch. Duplicate batch sizes are rejected before the model is loaded.
 
 Useful environment controls:
 

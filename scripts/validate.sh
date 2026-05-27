@@ -439,6 +439,7 @@ expect_failure "bench 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=ba
 expect_failure "bench 1b invalid token count" cargo run -- bench 1b prompt 0 --dry-run
 expect_failure "bench 1b invalid temp" cargo run -- bench 1b prompt 1 bad --dry-run
 expect_failure "bench 1b invalid batch" cargo run -- bench 1b prompt 1 0.0 0 --dry-run
+expect_failure "bench 1b duplicate batch" cargo run -- bench 1b prompt 1 0.0 16,32,16 --dry-run
 expect_failure "bench 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- bench 1b --dry-run
 expect_failure "bench 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- bench 1b --dry-run
 expect_failure "bench 1b invalid explicit model path" cargo run -- bench 1b /models/not-a-gguf --dry-run
@@ -590,6 +591,7 @@ expect_failure "bench-1b-prefill invalid temperature" env NANOCAMELID_PREFILL_TE
 
 echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid batch size..."
 expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BATCHES=1,bad,32 ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_failure "bench-1b-prefill duplicate batch size" env NANOCAMELID_PREFILL_BATCHES=16,32,16 ./scripts/pi/bench-1b-prefill.sh --dry-run
 
 echo "==> Checking 1B Pi context-pack launcher dry run..."
 ./scripts/pi/context-pack-1b.sh --dry-run
@@ -677,6 +679,7 @@ expect_output "remote_build prefill prompt override" "prefill_bench_command: NAN
 
 echo "==> Checking remote Pi build launcher rejects invalid prefill sweep settings..."
 expect_failure "remote_build invalid prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=1,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build duplicate prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=16,32,16 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build invalid prefill token count" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build invalid prefill temperature" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TEMP=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 

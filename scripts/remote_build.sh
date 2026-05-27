@@ -173,6 +173,7 @@ require_prefill_batches() {
   local raw_batches="$1"
   local batch
   local batch_count=0
+  local seen_batches=" "
 
   for batch in ${raw_batches//,/ }; do
     batch_count=$((batch_count + 1))
@@ -180,6 +181,13 @@ require_prefill_batches() {
       echo "Prefill batch size must be a positive integer: $batch" >&2
       exit 2
     fi
+    case "$seen_batches" in
+      *" $batch "*)
+        echo "Prefill batch sizes must be unique: $batch" >&2
+        exit 2
+        ;;
+    esac
+    seen_batches+="$batch "
   done
   if [[ "$batch_count" -eq 0 ]]; then
     echo "Prefill batches must include at least one positive integer." >&2

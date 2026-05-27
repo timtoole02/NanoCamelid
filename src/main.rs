@@ -2336,9 +2336,18 @@ fn parse_prefill_batches(value: &str) -> Result<Vec<usize>, &'static str> {
 
     if batches.is_empty() {
         Err("1B prefill benchmark batches must include at least one positive integer")
+    } else if has_duplicate_usize(&batches) {
+        Err("1B prefill benchmark batches must be unique")
     } else {
         Ok(batches)
     }
+}
+
+fn has_duplicate_usize(values: &[usize]) -> bool {
+    values
+        .iter()
+        .enumerate()
+        .any(|(idx, value)| values[..idx].contains(value))
 }
 
 fn looks_like_gguf_path(value: &str) -> bool {
@@ -7042,6 +7051,10 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             parse_prefill_batches("1,0").expect_err("zero batch should fail"),
             "1B prefill benchmark batches must be positive integers"
+        );
+        assert_eq!(
+            parse_prefill_batches("16, 32 16").expect_err("duplicate batch should fail"),
+            "1B prefill benchmark batches must be unique"
         );
         assert_eq!(
             parse_bench_1b_args_with_path(
