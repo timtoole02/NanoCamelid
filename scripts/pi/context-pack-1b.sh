@@ -231,6 +231,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "json_on_success: $(context_pack_status_json)"
   for cap in "${CONTEXT_PACKS[@]}"; do
     printf 'context_%s_command: NANOCAMELID_CONTEXT_LIMIT=%s ' "$cap" "$cap"
+    if [[ -n "${NANOCAMELID_PREFILL_BATCH:-}" ]]; then
+      printf 'NANOCAMELID_PREFILL_BATCH=%q ' "$NANOCAMELID_PREFILL_BATCH"
+    fi
     shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   done
   exit 0

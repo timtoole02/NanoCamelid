@@ -4464,16 +4464,34 @@ fn json_string(value: &str) -> String {
 
 fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
     let context_limit = context_limit_env_value();
-    smoke_plan_command_with_context(target, model_path, parsed, context_limit.as_deref())
+    let prefill_batch = prefill_batch_env_value();
+    smoke_plan_command_with_env(
+        target,
+        model_path,
+        parsed,
+        context_limit.as_deref(),
+        prefill_batch.as_deref(),
+    )
 }
 
+#[cfg(test)]
 fn smoke_plan_command_with_context(
     target: &str,
     model_path: &Path,
     parsed: &Smoke1BArgs,
     context_limit: Option<&str>,
 ) -> String {
-    shell_command_with_optional_context_limit(
+    smoke_plan_command_with_env(target, model_path, parsed, context_limit, None)
+}
+
+fn smoke_plan_command_with_env(
+    target: &str,
+    model_path: &Path,
+    parsed: &Smoke1BArgs,
+    context_limit: Option<&str>,
+    prefill_batch: Option<&str>,
+) -> String {
+    shell_command_with_optional_runtime_env(
         &[
             "nanocamelid",
             "smoke",
@@ -4484,6 +4502,7 @@ fn smoke_plan_command_with_context(
             &parsed.max_tokens.to_string(),
         ],
         context_limit,
+        prefill_batch,
     )
 }
 
@@ -4547,6 +4566,7 @@ fn shell_command(args: &[&str]) -> String {
         .join(" ")
 }
 
+#[cfg(test)]
 fn shell_command_with_env(args: &[&str], env: &[(&str, &str)]) -> String {
     let mut parts = env
         .iter()
@@ -4567,18 +4587,42 @@ fn shell_command_with_owned_env(args: &[&str], env: &[(&str, String)]) -> String
 
 fn context_limited_shell_command(args: &[&str]) -> String {
     let context_limit = context_limit_env_value();
-    shell_command_with_optional_context_limit(args, context_limit.as_deref())
+    let prefill_batch = prefill_batch_env_value();
+    shell_command_with_optional_runtime_env(
+        args,
+        context_limit.as_deref(),
+        prefill_batch.as_deref(),
+    )
 }
 
-fn shell_command_with_optional_context_limit(args: &[&str], context_limit: Option<&str>) -> String {
-    match context_limit {
-        Some(context_limit) => shell_command_with_env(args, &[(CONTEXT_LIMIT_ENV, context_limit)]),
-        None => shell_command(args),
+fn shell_command_with_optional_runtime_env(
+    args: &[&str],
+    context_limit: Option<&str>,
+    prefill_batch: Option<&str>,
+) -> String {
+    let mut env = Vec::with_capacity(2);
+    if let Some(context_limit) = context_limit {
+        env.push((CONTEXT_LIMIT_ENV, context_limit.to_owned()));
+    }
+    if let Some(prefill_batch) = prefill_batch {
+        env.push((PREFILL_BATCH_ENV, prefill_batch.to_owned()));
+    }
+
+    if env.is_empty() {
+        shell_command(args)
+    } else {
+        shell_command_with_owned_env(args, &env)
     }
 }
 
 fn context_limit_env_value() -> Option<String> {
     env::var(CONTEXT_LIMIT_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn prefill_batch_env_value() -> Option<String> {
+    env::var(PREFILL_BATCH_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
 }
@@ -6284,7 +6328,8 @@ mod tests {
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
         runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
         smoke_1b_status_json, smoke_defaults_from_values, smoke_plan_command_with_context,
-        trim_tui_history, tui_prompt_history, validate_generation_budget,
+        smoke_plan_command_with_env, trim_tui_history, tui_prompt_history,
+        validate_generation_budget,
     };
 
     #[test]
@@ -7942,6 +7987,29 @@ flags\t\t: sse4_2 avx2
                 Some("512"),
             ),
             "NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /models/custom.gguf chat 'Hello Pi' 2"
+        );
+    }
+
+    #[test]
+    fn smoke_plan_command_can_include_context_limit_and_prefill_batch_prefix() {
+        let parsed = Smoke1BArgs {
+            kind: SmokeKind::Q8Chat,
+            model_path: "/models/ignored.gguf".to_owned(),
+            model_source: "explicit argument",
+            prompt: "Hello Pi".to_owned(),
+            max_tokens: 2,
+            dry_run: true,
+        };
+
+        assert_eq!(
+            smoke_plan_command_with_env(
+                "1b",
+                Path::new("/models/custom.gguf"),
+                &parsed,
+                Some("512"),
+                Some("32"),
+            ),
+            "NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 nanocamelid smoke 1b /models/custom.gguf chat 'Hello Pi' 2"
         );
     }
 

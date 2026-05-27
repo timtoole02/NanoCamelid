@@ -84,6 +84,9 @@ context_env_prefix() {
   if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
     printf 'NANOCAMELID_CONTEXT_LIMIT=%q ' "$NANOCAMELID_CONTEXT_LIMIT"
   fi
+  if [[ -n "${NANOCAMELID_PREFILL_BATCH:-}" ]]; then
+    printf 'NANOCAMELID_PREFILL_BATCH=%q ' "$NANOCAMELID_PREFILL_BATCH"
+  fi
 }
 
 DRY_RUN=0
