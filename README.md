@@ -89,7 +89,8 @@ Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
 validated context caps; dry runs print the same row as `json_on_success:`.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the real 1B prefill batch
 sweep plan and validates any `NANOCAMELID_CONTEXT_LIMIT` cap before the model is
-loaded.
+loaded. Successful sweeps end with `prefill_bench_1b_status: ok` and a compact
+`json:` summary row for log collectors.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 
@@ -386,7 +387,9 @@ single-token reference behavior, or use `bench q4-prefill` to compare candidate
 batch sizes on the current host without loading a GGUF model.
 On a prepared Pi workspace, `./scripts/pi/bench-1b-prefill.sh` sweeps the real
 Llama 3.2 1B chat path across prefill batch sizes and prints the model-backed
-prompt ingestion timing plus one `json:` summary line for each batch.
+prompt ingestion timing plus one `json:` summary line for each batch. When the
+sweep finishes, it also reports the best observed prefill batch and decode
+throughput batch in a final JSON status row.
 
 Set `NANOCAMELID_TRACE=1` on `generate`, `chat`, or `tui` runs to print an
 aggregate stage-level timing summary. It is intended for focused tuning: the
@@ -566,7 +569,10 @@ tokens/sec so Pi prefill sweeps can be compared without manual conversion.
 Treat results as specific to the exact Pi, model, build, and environment used.
 The 1B prefill sweep is model-backed and reports NanoCamelid's normal prompt
 ingestion and generation timing for each selected batch size, then emits a
-`json: {"benchmark":"llama32-1b-prefill",...}` line for log collection.
+`json: {"benchmark":"llama32-1b-prefill",...}` line for each batch. Successful
+sweeps also end with `prefill_bench_1b_status: ok` and a final JSON summary
+including the selected model, context cap, planned batches, best prefill batch,
+and best decode throughput batch.
 
 Useful environment controls:
 
