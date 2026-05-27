@@ -110,7 +110,7 @@ preflight, inspect preflight, and real prefill batch sweep plan, honors the same
 smoke gate, and validates any
 `NANOCAMELID_CONTEXT_LIMIT` cap before the model is loaded. Successful sweeps
 end with `prefill_bench_1b_status: ok` and a compact `json:` summary row for
-log collectors.
+log collectors that includes the strict `llama32_1b` shape marker.
 `cargo run -- bench 1b` runs the same model-backed prefill sweep from the Rust
 CLI when the selected 1B GGUF is present. It audits the strict 1B shape first,
 runs an inspect preflight, runs each `NANOCAMELID_PREFILL_BATCH`, emits
@@ -614,8 +614,8 @@ reports NanoCamelid's normal prompt ingestion and generation timing for each
 selected batch size and emits a
 `json: {"benchmark":"llama32-1b-prefill",...}` line for each batch. Successful
 sweeps also end with `prefill_bench_1b_status: ok` and a final JSON summary
-including the selected model, context cap, planned batches, best prefill batch,
-and best decode throughput batch.
+including the selected model, strict 1B shape marker, context cap, planned
+batches, best prefill batch, and best decode throughput batch.
 
 Useful environment controls:
 
