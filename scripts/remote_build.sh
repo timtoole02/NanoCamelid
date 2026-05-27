@@ -16,6 +16,7 @@ Useful env:
   NANOCAMELID_REMOTE_CONTEXT_PACKS  Optional comma-separated 1B context caps to run after readiness
   NANOCAMELID_REMOTE_PREFILL_BENCH  Set to 1 to run the 1B prefill batch sweep after readiness
   NANOCAMELID_REMOTE_PREFILL_BATCHES Optional comma-separated prefill batches for the remote sweep
+  NANOCAMELID_REMOTE_EVIDENCE       Set to 1 to run the 1B evidence bundle after the core build
 USAGE
 }
 
@@ -63,6 +64,8 @@ REMOTE_CONTEXT_LIMIT="${NANOCAMELID_REMOTE_CONTEXT_LIMIT:-${NANOCAMELID_CONTEXT_
 REMOTE_CONTEXT_PACKS="${NANOCAMELID_REMOTE_CONTEXT_PACKS:-}"
 REMOTE_PREFILL_BENCH="${NANOCAMELID_REMOTE_PREFILL_BENCH:-0}"
 REMOTE_PREFILL_BENCH_LOWER="$(printf '%s' "$REMOTE_PREFILL_BENCH" | tr '[:upper:]' '[:lower:]')"
+REMOTE_EVIDENCE="${NANOCAMELID_REMOTE_EVIDENCE:-0}"
+REMOTE_EVIDENCE_LOWER="$(printf '%s' "$REMOTE_EVIDENCE" | tr '[:upper:]' '[:lower:]')"
 DEFAULT_PREFILL_PROMPT="Explain one practical Raspberry Pi inference bottleneck in two short sentences."
 PREFILL_PROMPT="${NANOCAMELID_PREFILL_PROMPT:-$DEFAULT_PREFILL_PROMPT}"
 PREFILL_TOKENS="${NANOCAMELID_PREFILL_TOKENS:-2}"
@@ -236,6 +239,14 @@ prefill_bench_enabled() {
   [[ "$REMOTE_PREFILL_BENCH_LOWER" != "0" && "$REMOTE_PREFILL_BENCH_LOWER" != "false" && "$REMOTE_PREFILL_BENCH_LOWER" != "no" ]]
 }
 
+evidence_enabled() {
+  [[ "$REMOTE_EVIDENCE_LOWER" != "0" && "$REMOTE_EVIDENCE_LOWER" != "false" && "$REMOTE_EVIDENCE_LOWER" != "no" ]]
+}
+
+remote_smoke_disabled() {
+  [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" ]]
+}
+
 print_prefill_bench_command() {
   local model_arg="${1:-}"
 
@@ -254,7 +265,34 @@ print_prefill_bench_command() {
   printf '\n'
 }
 
-if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "false" && "$REMOTE_SMOKE_ENABLED_LOWER" != "no" ]]; then
+print_evidence_command() {
+  local model_arg="${1:-}"
+
+  printf 'evidence_command:'
+  if [[ -n "$REMOTE_CONTEXT_LIMIT" ]]; then
+    printf ' NANOCAMELID_CONTEXT_LIMIT=%s' "$(shell_quote "$REMOTE_CONTEXT_LIMIT")"
+  fi
+  printf ' NANOCAMELID_SMOKE_KIND=%s NANOCAMELID_SMOKE_PROMPT=%s NANOCAMELID_SMOKE_TOKENS=%s NANOCAMELID_CONTEXT_PACKS=%s NANOCAMELID_PREFILL_PROMPT=%s NANOCAMELID_PREFILL_TOKENS=%s NANOCAMELID_PREFILL_TEMP=%s NANOCAMELID_PREFILL_BATCHES=%s ./scripts/pi/evidence-1b.sh' \
+    "$(shell_quote "$REMOTE_SMOKE_KIND")" \
+    "$(shell_quote "$SMOKE_PROMPT")" \
+    "$(shell_quote "$SMOKE_TOKENS")" \
+    "$(shell_quote "${REMOTE_CONTEXT_PACKS:-512,1024,2048,4096,8192}")" \
+    "$(shell_quote "$PREFILL_PROMPT")" \
+    "$(shell_quote "$PREFILL_TOKENS")" \
+    "$(shell_quote "$PREFILL_TEMP")" \
+    "$(shell_quote "$PREFILL_BATCHES")"
+  if [[ -n "$model_arg" ]]; then
+    printf ' %s' "$(shell_quote "$model_arg")"
+  fi
+  printf '\n'
+}
+
+if evidence_enabled && remote_smoke_disabled; then
+  echo "NANOCAMELID_REMOTE_EVIDENCE requires NANOCAMELID_REMOTE_SMOKE to be enabled." >&2
+  exit 2
+fi
+
+if ! remote_smoke_disabled; then
   if [[ -n "$REMOTE_SMOKE_GGUF" ]] && ! looks_like_gguf_path "$REMOTE_SMOKE_GGUF"; then
     echo "NANOCAMELID_REMOTE_SMOKE_GGUF must be a .gguf path: $REMOTE_SMOKE_GGUF" >&2
     exit 2
@@ -270,7 +308,7 @@ if [[ "$REMOTE_SMOKE_ENABLED_LOWER" != "0" && "$REMOTE_SMOKE_ENABLED_LOWER" != "
   if [[ -n "$REMOTE_CONTEXT_PACKS" ]]; then
     require_context_caps "$REMOTE_CONTEXT_PACKS"
   fi
-  if prefill_bench_enabled; then
+  if prefill_bench_enabled || evidence_enabled; then
     require_positive_integer "Prefill token count" "$PREFILL_TOKENS"
     require_non_negative_float "Prefill temperature" "$PREFILL_TEMP"
     require_prefill_batches "$PREFILL_BATCHES"
@@ -298,6 +336,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "context_limit: ${REMOTE_CONTEXT_LIMIT:-unset}"
   echo "context_pack_caps: ${REMOTE_CONTEXT_PACKS:-skipped}"
   echo "prefill_bench_enabled: $REMOTE_PREFILL_BENCH"
+  echo "evidence_enabled: $REMOTE_EVIDENCE"
   echo "prefill_prompt: $PREFILL_PROMPT"
   echo "prefill_tokens: $PREFILL_TOKENS"
   echo "prefill_temp: $PREFILL_TEMP"
@@ -308,17 +347,28 @@ if [[ "$DRY_RUN" == "1" ]]; then
     "<pi-user>" \
     "$(shell_quote "$DEPLOY_MODE")"
   echo "remote_steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo check; cargo build --release; probe; bench q8-dot 1000 3"
-  if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" ]]; then
+  if remote_smoke_disabled; then
     echo "readiness_shape_audit: skipped"
     echo "readiness_command: skipped"
+    echo "evidence_command: skipped"
+  elif evidence_enabled && [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
+    echo "readiness_shape_audit: delegated_to_evidence_bundle"
+    echo "readiness_command: skipped"
+    print_evidence_command "$REMOTE_SMOKE_GGUF"
+  elif evidence_enabled; then
+    echo "readiness_shape_audit: delegated_to_evidence_bundle"
+    echo "readiness_command: skipped"
+    print_evidence_command
   elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
     echo "readiness_shape_audit: enabled"
+    echo "evidence_command: skipped"
     print_readiness_command "$REMOTE_SMOKE_GGUF"
   else
     echo "readiness_shape_audit: enabled"
+    echo "evidence_command: skipped"
     print_readiness_command
   fi
-  if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" || -z "$REMOTE_CONTEXT_PACKS" ]]; then
+  if remote_smoke_disabled || evidence_enabled || [[ -z "$REMOTE_CONTEXT_PACKS" ]]; then
     echo "context_pack_command: skipped"
   elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
     printf 'context_pack_command: NANOCAMELID_CONTEXT_PACKS=%s ./scripts/pi/context-pack-1b.sh %s %s %s %s\n' \
@@ -334,7 +384,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
       "$(shell_quote "$SMOKE_PROMPT")" \
       "$(shell_quote "$SMOKE_TOKENS")"
   fi
-  if [[ "$REMOTE_SMOKE_ENABLED_LOWER" == "0" || "$REMOTE_SMOKE_ENABLED_LOWER" == "false" || "$REMOTE_SMOKE_ENABLED_LOWER" == "no" ]] || ! prefill_bench_enabled; then
+  if remote_smoke_disabled || evidence_enabled || ! prefill_bench_enabled; then
     echo "prefill_bench_command: skipped"
   elif [[ -n "$REMOTE_SMOKE_GGUF" ]]; then
     print_prefill_bench_command "$REMOTE_SMOKE_GGUF"
@@ -365,12 +415,14 @@ printf -v REMOTE_CONTEXT_LIMIT_ARG '%q' "$REMOTE_CONTEXT_LIMIT"
 printf -v REMOTE_CONTEXT_PACKS_ARG '%q' "$REMOTE_CONTEXT_PACKS"
 printf -v REMOTE_PREFILL_BENCH_ARG '%q' "$REMOTE_PREFILL_BENCH"
 printf -v REMOTE_PREFILL_BENCH_LOWER_ARG '%q' "$REMOTE_PREFILL_BENCH_LOWER"
+printf -v REMOTE_EVIDENCE_ARG '%q' "$REMOTE_EVIDENCE"
+printf -v REMOTE_EVIDENCE_LOWER_ARG '%q' "$REMOTE_EVIDENCE_LOWER"
 printf -v PREFILL_PROMPT_ARG '%q' "$PREFILL_PROMPT"
 printf -v PREFILL_TOKENS_ARG '%q' "$PREFILL_TOKENS"
 printf -v PREFILL_TEMP_ARG '%q' "$PREFILL_TEMP"
 printf -v PREFILL_BATCHES_ARG '%q' "$PREFILL_BATCHES"
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
-  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG REMOTE_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT_ARG REMOTE_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS_ARG REMOTE_PREFILL_BENCH=$REMOTE_PREFILL_BENCH_ARG REMOTE_PREFILL_BENCH_LOWER=$REMOTE_PREFILL_BENCH_LOWER_ARG PREFILL_PROMPT=$PREFILL_PROMPT_ARG PREFILL_TOKENS=$PREFILL_TOKENS_ARG PREFILL_TEMP=$PREFILL_TEMP_ARG PREFILL_BATCHES=$PREFILL_BATCHES_ARG bash" << 'EOF'
+  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE PI_TARGET_DIR=$REMOTE_PI_TARGET_DIR PI_REPO=$REMOTE_PI_REPO REMOTE_SMOKE_ENABLED=$REMOTE_SMOKE_ENABLED_ARG REMOTE_SMOKE_ENABLED_LOWER=$REMOTE_SMOKE_ENABLED_LOWER_ARG REMOTE_SMOKE_GGUF=$REMOTE_SMOKE_GGUF_ARG REMOTE_SMOKE_KIND=$REMOTE_SMOKE_KIND_ARG SMOKE_PROMPT=$REMOTE_SMOKE_PROMPT_ARG SMOKE_TOKENS=$REMOTE_SMOKE_TOKENS_ARG READY_CHAT=$READY_CHAT_ARG READY_PROMPT=$READY_PROMPT_ARG READY_TOKENS=$READY_TOKENS_ARG READY_TEMP=$READY_TEMP_ARG REMOTE_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT_ARG REMOTE_CONTEXT_PACKS=$REMOTE_CONTEXT_PACKS_ARG REMOTE_PREFILL_BENCH=$REMOTE_PREFILL_BENCH_ARG REMOTE_PREFILL_BENCH_LOWER=$REMOTE_PREFILL_BENCH_LOWER_ARG REMOTE_EVIDENCE=$REMOTE_EVIDENCE_ARG REMOTE_EVIDENCE_LOWER=$REMOTE_EVIDENCE_LOWER_ARG PREFILL_PROMPT=$PREFILL_PROMPT_ARG PREFILL_TOKENS=$PREFILL_TOKENS_ARG PREFILL_TEMP=$PREFILL_TEMP_ARG PREFILL_BATCHES=$PREFILL_BATCHES_ARG bash" << 'EOF'
   # Export Cargo path to make sure cargo commands work in non-interactive shells
   export PATH="$HOME/.cargo/bin:$PATH"
   if [ -f "$HOME/.cargo/env" ]; then
@@ -473,8 +525,40 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
     fi
   }
 
+  run_evidence_bundle() {
+    env_args=(
+      "NANOCAMELID_WORKSPACE=$PI_WORKSPACE"
+      "NANOCAMELID_REPO=$PI_REPO"
+      "NANOCAMELID_SMOKE_KIND=$REMOTE_SMOKE_KIND"
+      "NANOCAMELID_SMOKE_PROMPT=$SMOKE_PROMPT"
+      "NANOCAMELID_SMOKE_TOKENS=$SMOKE_TOKENS"
+      "NANOCAMELID_CONTEXT_PACKS=${REMOTE_CONTEXT_PACKS:-512,1024,2048,4096,8192}"
+      "NANOCAMELID_PREFILL_PROMPT=$PREFILL_PROMPT"
+      "NANOCAMELID_PREFILL_TOKENS=$PREFILL_TOKENS"
+      "NANOCAMELID_PREFILL_TEMP=$PREFILL_TEMP"
+      "NANOCAMELID_PREFILL_BATCHES=$PREFILL_BATCHES"
+    )
+    if [ -n "$REMOTE_CONTEXT_LIMIT" ]; then
+      env_args+=("NANOCAMELID_CONTEXT_LIMIT=$REMOTE_CONTEXT_LIMIT")
+    fi
+
+    if [ $# -gt 0 ]; then
+      env "${env_args[@]}" ./scripts/pi/evidence-1b.sh "$1"
+    else
+      env "${env_args[@]}" ./scripts/pi/evidence-1b.sh
+    fi
+  }
+
   if [ "$REMOTE_SMOKE_ENABLED_LOWER" = "0" ] || [ "$REMOTE_SMOKE_ENABLED_LOWER" = "false" ] || [ "$REMOTE_SMOKE_ENABLED_LOWER" = "no" ]; then
     echo "==> Skipping model-backed 1B readiness; NANOCAMELID_REMOTE_SMOKE=$REMOTE_SMOKE_ENABLED"
+  elif [ "$REMOTE_EVIDENCE_LOWER" != "0" ] && [ "$REMOTE_EVIDENCE_LOWER" != "false" ] && [ "$REMOTE_EVIDENCE_LOWER" != "no" ] && [ -n "$REMOTE_SMOKE_GGUF" ]; then
+    echo "==> Running explicit 1B evidence bundle: $REMOTE_SMOKE_KIND"
+    run_evidence_bundle "$REMOTE_SMOKE_GGUF"
+  elif [ "$REMOTE_EVIDENCE_LOWER" != "0" ] && [ "$REMOTE_EVIDENCE_LOWER" != "false" ] && [ "$REMOTE_EVIDENCE_LOWER" != "no" ] && { [ -n "${NANOCAMELID_MODEL_GGUF:-}" ] || [ -f "$default_q4_model" ] || [ -f "$default_q8_model" ]; }; then
+    echo "==> Running default Pi-local 1B evidence bundle: $REMOTE_SMOKE_KIND"
+    run_evidence_bundle
+  elif [ "$REMOTE_EVIDENCE_LOWER" != "0" ] && [ "$REMOTE_EVIDENCE_LOWER" != "false" ] && [ "$REMOTE_EVIDENCE_LOWER" != "no" ]; then
+    echo "==> Skipping model-backed 1B evidence bundle; no explicit GGUF path was set and no default Pi-local 1B model was found."
   elif [ -n "$REMOTE_SMOKE_GGUF" ]; then
     echo "==> Running explicit 1B readiness gate: $REMOTE_SMOKE_KIND"
     run_ready_1b "$REMOTE_SMOKE_GGUF"

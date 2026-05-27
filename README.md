@@ -383,6 +383,11 @@ Remote Pi validation can also cap the single readiness pass without changing
 context-pack sweeps. Set `NANOCAMELID_REMOTE_CONTEXT_LIMIT=512` when
 `remote_build.sh` should pass `NANOCAMELID_CONTEXT_LIMIT` into the default 1B
 readiness gate and the optional `NANOCAMELID_REMOTE_PREFILL_BENCH=1` sweep.
+Set `NANOCAMELID_REMOTE_EVIDENCE=1` when the remote build should delegate the
+model-backed 1B portion to `./scripts/pi/evidence-1b.sh` after format, tests,
+clippy, release build, probe, and Q8 benchmark complete. The evidence mode uses
+the same redacted dry-run output and the same model override variables as the
+individual remote readiness path.
 
 For the standard local validation gate, use:
 
