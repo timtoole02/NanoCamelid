@@ -4014,6 +4014,15 @@ fn print_smoke_dry_run(
                 prefill_batch,
             )
         );
+        println!(
+            "model_command: {}",
+            shell_command(&[
+                "nanocamelid",
+                "model",
+                "1b",
+                &model_path.display().to_string()
+            ])
+        );
     }
     println!(
         "smoke_command: {}",

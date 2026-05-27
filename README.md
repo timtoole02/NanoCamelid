@@ -69,7 +69,8 @@ success markers automation should expect. Without `--dry-run`, it runs the same
 strict shape audit as the Rust `model 1b` command.
 `smoke 1b` now runs the strict Llama 3.2 1B shape audit before the
 scalar-vs-selected smoke validation; dry runs print `shape_audit: enabled` so
-automation can confirm the guard is in the plan without opening the GGUF.
+automation can confirm the guard is in the plan without opening the GGUF, plus
+the exact `model_command` that will run before the smoke gate.
 Successful 1B smoke runs end with `smoke_1b_status: ok` and a compact `json:`
 status row that records the selected model, context cap, strict shape-audit
 marker, smoke kind, smoke token count, and prefill batch; dry runs print the

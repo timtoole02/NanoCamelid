@@ -207,6 +207,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "prefill_batch: $(prefill_batch_plan_value)"
   echo "status_on_success: smoke_1b_status: ok"
   echo "json_on_success: $(smoke_status_json)"
+  printf 'model_command: '
+  shell_command nanocamelid model 1b "$MODEL"
   printf 'smoke_command: '
   context_env_prefix
   shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
