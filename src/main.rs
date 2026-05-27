@@ -764,7 +764,9 @@ fn print_inspect_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid inspect <model.gguf> [--dry-run]");
-    println!("  nanocamelid inspect 1b [--dry-run]         inspect the default Llama 3.2 1B path");
+    println!(
+        "  nanocamelid inspect 1b [--dry-run]         inspect and strictly gate the Llama 3.2 1B path"
+    );
     println!("  nanocamelid inspect 3b [--dry-run]         inspect the default Llama 3.2 3B path");
     println!("  nanocamelid inspect                        with NANOCAMELID_MODEL_GGUF set");
     println!();
@@ -3455,6 +3457,10 @@ fn run_inspect(parsed: InspectArgs) -> ExitCode {
         println!("selected_source: {}", parsed.model_source);
         println!("model: {}", model_path.display());
         println!("model_exists: {}", model_path.is_file());
+        if parsed.target == Some(InspectTarget::Llama32_1B) {
+            println!("shape_audit: enabled");
+            println!("status_on_success: inspect_1b_status: ok");
+        }
         println!(
             "inspect_command: {}",
             shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
@@ -3471,11 +3477,11 @@ fn run_inspect(parsed: InspectArgs) -> ExitCode {
             eprintln!("{}", llama32_3b_model_not_found_message(model_path));
             ExitCode::from(2)
         }
-        _ => inspect_gguf(model_path),
+        _ => inspect_gguf(model_path, parsed.target == Some(InspectTarget::Llama32_1B)),
     }
 }
 
-fn inspect_gguf(path: &Path) -> ExitCode {
+fn inspect_gguf(path: &Path, strict_llama32_1b_shape: bool) -> ExitCode {
     match gguf::read_file(path) {
         Ok(file) => {
             let summary = gguf::summarize(&file);
@@ -3640,6 +3646,16 @@ fn inspect_gguf(path: &Path) -> ExitCode {
                 }
             }
 
+            if strict_llama32_1b_shape && !shape.ready {
+                eprintln!(
+                    "inspect 1b failed strict shape audit: {}",
+                    shape.mismatches.join("; ")
+                );
+                return ExitCode::from(2);
+            }
+            if strict_llama32_1b_shape {
+                println!("inspect_1b_status: ok");
+            }
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -4228,7 +4244,7 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         return model_audit_code;
     }
     println!("==> Inspecting 1B model: {}", model_path.display());
-    let inspect_code = inspect_gguf(model_path);
+    let inspect_code = inspect_gguf(model_path, false);
     if inspect_code != ExitCode::SUCCESS {
         return inspect_code;
     }
