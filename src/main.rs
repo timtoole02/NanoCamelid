@@ -2871,7 +2871,6 @@ fn prefill_bench_1b_batch_command(
 ) -> String {
     let model = Path::new(&parsed.model_path).display().to_string();
     let max_tokens = parsed.max_tokens.to_string();
-    let batch = batch.to_string();
     let args = [
         "nanocamelid",
         "chat",
@@ -2880,26 +2879,23 @@ fn prefill_bench_1b_batch_command(
         &parsed.temp,
         &max_tokens,
     ];
+    let env = prefill_bench_1b_batch_env(batch, context_limit);
 
-    match context_limit {
-        Some(context_limit) => shell_command_with_env(
-            &args,
-            &[
-                (CONTEXT_LIMIT_ENV, context_limit),
-                ("NANOCAMELID_Q8_DOT_SDOT", "1"),
-                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot"),
-                (PREFILL_BATCH_ENV, &batch),
-            ],
-        ),
-        None => shell_command_with_env(
-            &args,
-            &[
-                ("NANOCAMELID_Q8_DOT_SDOT", "1"),
-                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot"),
-                (PREFILL_BATCH_ENV, &batch),
-            ],
-        ),
+    shell_command_with_owned_env(&args, &env)
+}
+
+fn prefill_bench_1b_batch_env(
+    batch: usize,
+    context_limit: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut env = Vec::with_capacity(4);
+    if let Some(context_limit) = context_limit {
+        env.push((CONTEXT_LIMIT_ENV, context_limit.to_owned()));
     }
+    env.push(("NANOCAMELID_Q8_DOT_SDOT", "1".to_owned()));
+    env.push(("NANOCAMELID_Q8_DOT_KERNEL", "sdot".to_owned()));
+    env.push((PREFILL_BATCH_ENV, batch.to_string()));
+    env
 }
 
 fn prefill_bench_1b_status_json(parsed: &Bench1BArgs, context_limit: &str) -> String {
@@ -3046,15 +3042,17 @@ fn run_prefill_bench_1b_batch(
 ) -> Result<(i32, String, PrefillBenchBatchMetrics), String> {
     let current_exe =
         env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
-    let output = Command::new(current_exe)
+    let mut command = Command::new(current_exe);
+    command
         .arg("chat")
         .arg(&parsed.model_path)
         .arg(&parsed.prompt)
         .arg(&parsed.temp)
-        .arg(parsed.max_tokens.to_string())
-        .env("NANOCAMELID_Q8_DOT_SDOT", "1")
-        .env("NANOCAMELID_Q8_DOT_KERNEL", "sdot")
-        .env(PREFILL_BATCH_ENV, batch.to_string())
+        .arg(parsed.max_tokens.to_string());
+    for (key, value) in prefill_bench_1b_batch_env(batch, context_limit_env_value().as_deref()) {
+        command.env(key, value);
+    }
+    let output = command
         .output()
         .map_err(|err| format!("failed to run 1B prefill batch {batch}: {err}"))?;
     io::stderr().write_all(&output.stderr).ok();
@@ -4384,6 +4382,15 @@ fn shell_command(args: &[&str]) -> String {
 }
 
 fn shell_command_with_env(args: &[&str], env: &[(&str, &str)]) -> String {
+    let mut parts = env
+        .iter()
+        .map(|(key, value)| format!("{key}={}", shell_quote_arg(value)))
+        .collect::<Vec<_>>();
+    parts.push(shell_command(args));
+    parts.join(" ")
+}
+
+fn shell_command_with_owned_env(args: &[&str], env: &[(&str, String)]) -> String {
     let mut parts = env
         .iter()
         .map(|(key, value)| format!("{key}={}", shell_quote_arg(value)))
@@ -6058,14 +6065,14 @@ mod tests {
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
         parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
         parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
-        prefill_bench_1b_result_json, prefill_bench_1b_status_json, prefill_prompt_tokens_per_sec,
-        print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_from_env_value,
-        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
-        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
-        resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
-        shared_token_prefix_len, shell_command, shell_command_with_env, smoke_1b_status_json,
-        smoke_defaults_from_values, smoke_plan_command_with_context, trim_tui_history,
-        tui_prompt_history, validate_generation_budget,
+        prefill_bench_1b_batch_env, prefill_bench_1b_result_json, prefill_bench_1b_status_json,
+        prefill_prompt_tokens_per_sec, print_runtime_trace_summary, ready_1b_status_json,
+        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
+        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
+        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
+        runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
+        smoke_1b_status_json, smoke_defaults_from_values, smoke_plan_command_with_context,
+        trim_tui_history, tui_prompt_history, validate_generation_budget,
     };
 
     #[test]
@@ -7595,6 +7602,27 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             command,
             "NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Say hello' 0.0 2"
+        );
+    }
+
+    #[test]
+    fn prefill_bench_1b_batch_env_applies_context_limit_to_actual_batch_runs() {
+        assert_eq!(
+            prefill_bench_1b_batch_env(16, Some("512")),
+            vec![
+                ("NANOCAMELID_CONTEXT_LIMIT", "512".to_owned()),
+                ("NANOCAMELID_Q8_DOT_SDOT", "1".to_owned()),
+                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot".to_owned()),
+                ("NANOCAMELID_PREFILL_BATCH", "16".to_owned()),
+            ]
+        );
+        assert_eq!(
+            prefill_bench_1b_batch_env(32, None),
+            vec![
+                ("NANOCAMELID_Q8_DOT_SDOT", "1".to_owned()),
+                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot".to_owned()),
+                ("NANOCAMELID_PREFILL_BATCH", "32".to_owned()),
+            ]
         );
     }
 
