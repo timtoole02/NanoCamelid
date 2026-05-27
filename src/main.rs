@@ -1723,6 +1723,10 @@ fn parse_ready_1b_args_inner(
             _ => smoke_args.push(arg.clone()),
         }
     }
+    reject_path_like_non_gguf_first_arg(
+        &smoke_args,
+        "ready 1B model argument must be a .gguf path",
+    )?;
 
     let first_looks_like_model = smoke_args
         .first()
@@ -1857,6 +1861,10 @@ fn parse_smoke_1b_args_with_env_and_defaults(
             _ => positionals.push(arg.clone()),
         }
     }
+    reject_path_like_non_gguf_first_arg(
+        &positionals,
+        "1B smoke model argument must be a .gguf path",
+    )?;
 
     let first_looks_like_model = positionals
         .first()
@@ -1983,6 +1991,10 @@ fn parse_smoke_3b_args_with_env_and_defaults(
             _ => positionals.push(arg.clone()),
         }
     }
+    reject_path_like_non_gguf_first_arg(
+        &positionals,
+        "3B smoke model argument must be a .gguf path",
+    )?;
 
     let first_looks_like_model = positionals
         .first()
@@ -2219,6 +2231,10 @@ fn parse_bench_1b_args_with_env(
             _ => positionals.push(arg.clone()),
         }
     }
+    reject_path_like_non_gguf_first_arg(
+        &positionals,
+        "1B prefill benchmark model argument must be a .gguf path",
+    )?;
 
     let first_looks_like_model = positionals
         .first()
@@ -2327,6 +2343,26 @@ fn looks_like_gguf_path(value: &str) -> bool {
         .trim_end_matches('/')
         .to_ascii_lowercase()
         .ends_with(".gguf")
+}
+
+fn reject_path_like_non_gguf_first_arg(
+    args: &[String],
+    error: &'static str,
+) -> Result<(), &'static str> {
+    if args
+        .first()
+        .is_some_and(|value| looks_like_non_gguf_model_path(value))
+    {
+        Err(error)
+    } else {
+        Ok(())
+    }
+}
+
+fn looks_like_non_gguf_model_path(value: &str) -> bool {
+    let value = value.trim_end_matches('/');
+    !looks_like_gguf_path(value)
+        && (value.contains('/') || value.contains('\\') || value.starts_with('~'))
 }
 
 fn is_llama32_1b_alias(value: &str) -> bool {
@@ -6310,12 +6346,12 @@ mod tests {
         help_topic_named, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
         json_string, llama32_1b_model_not_found_message, llama32_1b_quantization_for_path,
         llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
-        model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
-        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
-        parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_prefill_batches,
-        parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
-        parse_ready_1b_args_with_env_and_smoke_defaults,
+        looks_like_non_gguf_model_path, model_1b_status_json, parse_bench_1b_args_with_env,
+        parse_bench_1b_args_with_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
+        parse_bench_q8_dot_args, parse_cpu_list, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
+        parse_model_1b_args_with_path, parse_prefill_batches, parse_prefill_bench_1b_batch_metrics,
+        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
@@ -6881,6 +6917,16 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(
             parse_bench_1b_args_with_path(
+                &["/models/not-a-gguf".to_owned(), "--dry-run".to_owned()],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("path-like non-GGUF benchmark arg should fail"),
+            "1B prefill benchmark model argument must be a .gguf path"
+        );
+        assert_eq!(
+            parse_bench_1b_args_with_path(
                 &["not-a-model".to_owned(), "0".to_owned()],
                 None,
                 "/mnt/nanocamelid",
@@ -6937,6 +6983,9 @@ flags\t\t: sse4_2 avx2
         assert!(!looks_like_gguf_path(
             "/models/Llama-3.2-1B-Instruct.gguf.tmp"
         ));
+        assert!(looks_like_non_gguf_model_path("/models/not-a-gguf"));
+        assert!(looks_like_non_gguf_model_path("models/not-a-gguf.bin"));
+        assert!(!looks_like_non_gguf_model_path("Say hello"));
     }
 
     #[test]
@@ -7818,6 +7867,19 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn smoke_1b_args_reject_path_like_non_gguf_model_arg() {
+        let err = parse_smoke_1b_args_with_env(
+            &["/models/not-a-gguf".to_owned(), "--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("path-like non-GGUF smoke arg should fail");
+
+        assert_eq!(err, "1B smoke model argument must be a .gguf path");
+    }
+
+    #[test]
     fn smoke_1b_args_accept_dry_run_without_consuming_positionals() {
         let parsed = parse_smoke_1b_args_with_env(
             &[
@@ -8369,6 +8431,19 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn ready_1b_args_reject_path_like_non_gguf_model_arg() {
+        let err = parse_ready_1b_args_with_env(
+            &["/models/not-a-gguf".to_owned(), "--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("path-like non-GGUF ready arg should fail");
+
+        assert_eq!(err, "ready 1B model argument must be a .gguf path");
+    }
+
+    #[test]
     fn ready_1b_args_leave_chat_default_without_flag() {
         let parsed = parse_ready_1b_args_with_env(&[], None, "/mnt/nanocamelid", true)
             .expect("default ready args should parse");
@@ -8558,6 +8633,18 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(parsed.prompt, "Hello");
         assert_eq!(parsed.max_tokens, DEFAULT_1B_SMOKE_TOKENS);
+    }
+
+    #[test]
+    fn smoke_3b_args_reject_path_like_non_gguf_model_arg() {
+        let err = parse_smoke_3b_args_with_env(
+            &["models/not-a-gguf.bin".to_owned(), "--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+        )
+        .expect_err("path-like non-GGUF 3B smoke arg should fail");
+
+        assert_eq!(err, "3B smoke model argument must be a .gguf path");
     }
 
     #[test]

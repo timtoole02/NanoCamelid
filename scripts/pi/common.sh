@@ -85,6 +85,20 @@ looks_like_gguf_path() {
   esac
 }
 
+looks_like_non_gguf_model_path() {
+  local value="${1:-}"
+  value="${value%/}"
+
+  if looks_like_gguf_path "$value"; then
+    return 1
+  fi
+
+  case "$value" in
+    */* | *\\* | "~"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 require_gguf_model_path() {
   local label="$1"
   local path="$2"
