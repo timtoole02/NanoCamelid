@@ -705,6 +705,10 @@ expect_failure_output "context-pack-1b duplicate context cap" "Duplicate context
 echo "==> Checking 1B Pi evidence bundle dry run..."
 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b help documents context packs" "NANOCAMELID_CONTEXT_PACKS" ./scripts/pi/evidence-1b.sh --help
+expect_output "evidence-1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b q4 existence check" "q4_exists: " ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b q8 existence check" "q8_exists: " ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b success marker dry run" "status_on_success: evidence_1b_status: ok" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/evidence-1b.sh --dry-run
