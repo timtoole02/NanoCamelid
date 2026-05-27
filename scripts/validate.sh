@@ -264,6 +264,8 @@ cargo run -- generate 1b --dry-run
 expect_output "generate 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- generate 1b --dry-run
 expect_output "generate 1b placeholder prompt" "prompt: <prompt>" cargo run -- generate 1b --dry-run
 expect_output "generate 1b command" "generate_command: nanocamelid generate /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- generate 1b --dry-run
+expect_output "generate 1b shape audit dry run" "shape_audit: enabled" cargo run -- generate 1b --dry-run
+expect_output "generate 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- generate 1b --dry-run
 expect_output "generate 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- generate 1b --dry-run
 expect_output "generate 1b context-limited command" "generate_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid generate /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- generate 1b --dry-run
 expect_output "generate 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- generate 1b --dry-run
@@ -275,6 +277,8 @@ cargo run -- chat 1b --dry-run
 expect_output "chat 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- chat 1b --dry-run
 expect_output "chat 1b placeholder prompt" "prompt: <prompt>" cargo run -- chat 1b --dry-run
 expect_output "chat 1b command" "chat_command: nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" cargo run -- chat 1b --dry-run
+expect_output "chat 1b shape audit dry run" "shape_audit: enabled" cargo run -- chat 1b --dry-run
+expect_output "chat 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- chat 1b --dry-run
 expect_output "chat 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- chat 1b --dry-run
 expect_output "chat 1b context-limited command" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf '<prompt>' 0 128" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- chat 1b --dry-run
 expect_output "chat 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- chat 1b --dry-run
@@ -333,6 +337,8 @@ env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 cargo run -- ready 1b 
 echo "==> Checking 1B TUI CLI dry run..."
 cargo run -- tui 1b --dry-run
 expect_output "tui 1b dry-run command" "tui_command: nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0 128" cargo run -- tui 1b --dry-run
+expect_output "tui 1b shape audit dry run" "shape_audit: enabled" cargo run -- tui 1b --dry-run
+expect_output "tui 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- tui 1b --dry-run
 expect_output "tui 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- tui 1b --dry-run
 expect_output "tui 1b context-limited command" "tui_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0 128" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- tui 1b --dry-run
 expect_output "tui 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_PREFILL_BATCH=32 cargo run -- tui 1b --dry-run

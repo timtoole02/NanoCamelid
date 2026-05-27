@@ -132,12 +132,14 @@ fn main() -> ExitCode {
                     if parsed.dry_run {
                         print_generation_dry_run("generate", &parsed)
                     } else {
-                        run_generation(
-                            Path::new(&parsed.model_path),
-                            &parsed.prompt,
-                            parsed.temp,
-                            parsed.max_tokens,
-                        )
+                        run_generation_command(&parsed, |parsed| {
+                            run_generation(
+                                Path::new(&parsed.model_path),
+                                &parsed.prompt,
+                                parsed.temp,
+                                parsed.max_tokens,
+                            )
+                        })
                     }
                 }
                 Err(err) => {
@@ -158,12 +160,14 @@ fn main() -> ExitCode {
                     if parsed.dry_run {
                         print_generation_dry_run("chat", &parsed)
                     } else {
-                        run_chat(
-                            Path::new(&parsed.model_path),
-                            &parsed.prompt,
-                            parsed.temp,
-                            parsed.max_tokens,
-                        )
+                        run_generation_command(&parsed, |parsed| {
+                            run_chat(
+                                Path::new(&parsed.model_path),
+                                &parsed.prompt,
+                                parsed.temp,
+                                parsed.max_tokens,
+                            )
+                        })
                     }
                 }
                 Err(err) => {
@@ -184,11 +188,7 @@ fn main() -> ExitCode {
                     if parsed.dry_run {
                         print_tui_dry_run(&parsed)
                     } else {
-                        run_chat_tui(
-                            Path::new(&parsed.model_path),
-                            parsed.temp,
-                            parsed.max_tokens,
-                        )
+                        run_tui_command(&parsed)
                     }
                 }
                 Err(err) => {
@@ -1138,6 +1138,7 @@ struct GenerateArgs {
     temp: f32,
     max_tokens: usize,
     dry_run: bool,
+    audit_1b_shape: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1146,6 +1147,7 @@ struct TuiArgs {
     temp: f32,
     max_tokens: usize,
     dry_run: bool,
+    audit_1b_shape: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1393,7 +1395,7 @@ fn parse_tui_args_with_env_and_workspace(
         }
     }
 
-    let (model_path, option_idx) = parse_model_path_position(
+    let (model_path, option_idx, audit_1b_shape) = parse_model_path_position(
         &positionals,
         env_model_path,
         workspace,
@@ -1422,6 +1424,7 @@ fn parse_tui_args_with_env_and_workspace(
         temp,
         max_tokens,
         dry_run,
+        audit_1b_shape,
     })
 }
 
@@ -1448,7 +1451,7 @@ fn parse_generate_args_with_env_and_workspace(
         }
     }
 
-    let (model_path, prompt_idx) = parse_model_path_position(
+    let (model_path, prompt_idx, audit_1b_shape) = parse_model_path_position(
         &positionals,
         env_model_path,
         workspace,
@@ -1487,6 +1490,7 @@ fn parse_generate_args_with_env_and_workspace(
         temp,
         max_tokens,
         dry_run,
+        audit_1b_shape,
     })
 }
 
@@ -1496,7 +1500,7 @@ fn parse_model_path_position(
     workspace: &str,
     q4_exists: bool,
     missing_error: &'static str,
-) -> Result<(String, usize), &'static str> {
+) -> Result<(String, usize, bool), &'static str> {
     let first_looks_like_model = args
         .first()
         .is_some_and(|value| looks_like_gguf_path(value));
@@ -1504,17 +1508,19 @@ fn parse_model_path_position(
     let first_is_3b_alias = args.first().is_some_and(|value| is_llama32_3b_alias(value));
 
     match (args.first(), env_model_path) {
-        (Some(path), _) if first_looks_like_model => Ok((path.clone(), 1)),
+        (Some(path), _) if first_looks_like_model => Ok((path.clone(), 1, false)),
         (Some(_), env_model_path) if first_is_1b_alias => Ok((
             resolve_llama32_1b_model_path_with_workspace(env_model_path, workspace, q4_exists),
             1,
+            true,
         )),
         (Some(_), env_model_path) if first_is_3b_alias => Ok((
             resolve_llama32_3b_model_path_with_workspace(env_model_path, workspace),
             1,
+            false,
         )),
-        (Some(path), None) => Ok((path.clone(), 1)),
-        (_, Some(path)) => Ok((path, 0)),
+        (Some(path), None) => Ok((path.clone(), 1, false)),
+        (_, Some(path)) => Ok((path, 0, false)),
         (None, None) => Err(missing_error),
     }
 }
@@ -3334,6 +3340,7 @@ fn print_tui_dry_run(parsed: &TuiArgs) -> ExitCode {
     println!("max_tokens: {}", parsed.max_tokens);
     println!("context_limit: {}", context_limit_plan_value());
     println!("prefill_batch: {prefill_batch}");
+    print_direct_1b_audit_plan(model_path, parsed.audit_1b_shape);
     println!(
         "tui_command: {}",
         context_limited_shell_command(&[
@@ -3369,6 +3376,7 @@ fn print_generation_dry_run(command: &str, parsed: &GenerateArgs) -> ExitCode {
     println!("max_tokens: {}", parsed.max_tokens);
     println!("context_limit: {}", context_limit_plan_value());
     println!("prefill_batch: {prefill_batch}");
+    print_direct_1b_audit_plan(model_path, parsed.audit_1b_shape);
     println!(
         "{command}_command: {}",
         context_limited_shell_command(&[
@@ -3381,6 +3389,23 @@ fn print_generation_dry_run(command: &str, parsed: &GenerateArgs) -> ExitCode {
         ])
     );
     ExitCode::SUCCESS
+}
+
+fn print_direct_1b_audit_plan(model_path: &Path, audit_1b_shape: bool) {
+    if audit_1b_shape {
+        println!("shape_audit: enabled");
+        println!(
+            "model_command: {}",
+            shell_command(&[
+                "nanocamelid",
+                "model",
+                "1b",
+                &model_path.display().to_string(),
+            ])
+        );
+    } else {
+        println!("shape_audit: not_applicable");
+    }
 }
 
 fn run_inspect(parsed: InspectArgs) -> ExitCode {
@@ -4783,6 +4808,43 @@ struct GenerationPromptPlan {
     parse_special: bool,
     renderer: Option<&'static str>,
     template_format: Option<&'static str>,
+}
+
+fn run_generation_command<F>(parsed: &GenerateArgs, run: F) -> ExitCode
+where
+    F: FnOnce(&GenerateArgs) -> ExitCode,
+{
+    if let Some(exit_code) = audit_direct_1b_launch(&parsed.model_path, parsed.audit_1b_shape) {
+        return exit_code;
+    }
+    run(parsed)
+}
+
+fn run_tui_command(parsed: &TuiArgs) -> ExitCode {
+    if let Some(exit_code) = audit_direct_1b_launch(&parsed.model_path, parsed.audit_1b_shape) {
+        return exit_code;
+    }
+    run_chat_tui(
+        Path::new(&parsed.model_path),
+        parsed.temp,
+        parsed.max_tokens,
+    )
+}
+
+fn audit_direct_1b_launch(model_path: &str, audit_1b_shape: bool) -> Option<ExitCode> {
+    if !audit_1b_shape {
+        return None;
+    }
+
+    let model_path = Path::new(model_path);
+    if !model_path.is_file() {
+        eprintln!("{}", llama32_1b_model_not_found_message(model_path));
+        return Some(ExitCode::from(2));
+    }
+
+    println!("==> Auditing 1B model shape: {}", model_path.display());
+    let audit_code = audit_llama32_1b_model_shape(model_path);
+    (audit_code != ExitCode::SUCCESS).then_some(audit_code)
 }
 
 fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
@@ -6735,6 +6797,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.prompt, "Say hello");
         assert_eq!(parsed.temp, 0.0);
         assert_eq!(parsed.max_tokens, 8);
+        assert!(parsed.audit_1b_shape);
     }
 
     #[test]
@@ -6753,6 +6816,7 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(parsed.prompt, "<prompt>");
         assert!(parsed.dry_run);
+        assert!(parsed.audit_1b_shape);
     }
 
     #[test]
@@ -6774,6 +6838,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.prompt, "Say hello");
         assert_eq!(parsed.temp, 0.0);
         assert_eq!(parsed.max_tokens, 8);
+        assert!(parsed.audit_1b_shape);
         assert!(parsed.dry_run);
     }
 
@@ -6813,6 +6878,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(parsed.model_path, "/models/custom-1b.gguf");
         assert_eq!(parsed.prompt, "Say hello");
+        assert!(parsed.audit_1b_shape);
     }
 
     #[test]
@@ -6827,6 +6893,7 @@ flags\t\t: sse4_2 avx2
 
         assert_eq!(parsed.model_path, "/models/custom-3b.gguf");
         assert_eq!(parsed.prompt, "Say hello");
+        assert!(!parsed.audit_1b_shape);
     }
 
     #[test]
@@ -6931,6 +6998,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
         assert!(!parsed.dry_run);
+        assert!(parsed.audit_1b_shape);
     }
 
     #[test]
@@ -6950,6 +7018,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
         assert!(!parsed.dry_run);
+        assert!(!parsed.audit_1b_shape);
     }
 
     #[test]
@@ -6974,6 +7043,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.temp, 0.1);
         assert_eq!(parsed.max_tokens, 64);
         assert!(parsed.dry_run);
+        assert!(parsed.audit_1b_shape);
     }
 
     #[test]
