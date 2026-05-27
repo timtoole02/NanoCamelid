@@ -3097,6 +3097,9 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
             "{}",
             llama32_1b_model_not_found_message(Path::new(&parsed.model_path))
         );
+        eprintln!(
+            "Run `nanocamelid bench 1b --dry-run` to print the resolved preflight and batch commands without loading a model."
+        );
         return ExitCode::from(2);
     }
 

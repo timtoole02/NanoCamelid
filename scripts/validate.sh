@@ -203,6 +203,28 @@ expect_failure() {
   fi
 }
 
+expect_failure_output() {
+  local description="$1"
+  local expected="$2"
+  shift 2
+  local output
+  local status
+
+  set +e
+  output="$("$@" 2>&1)"
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
+    echo "Expected failure but command passed: $description" >&2
+    exit 1
+  fi
+  if ! grep -F "$expected" <<<"$output" >/dev/null; then
+    echo "Expected failure output missing for $description: $expected" >&2
+    exit 1
+  fi
+}
+
 expect_output_order() {
   local description="$1"
   local first="$2"
@@ -434,7 +456,7 @@ expect_output_order "bench 1b smoke before batch" "smoke_command: NANOCAMELID_Q8
 expect_output "bench 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- bench 1b --dry-run
 expect_output "bench 1b context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- bench 1b --dry-run
 expect_output "bench 1b context-limited batch command" "batch_16_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 0.0 2" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- bench 1b --dry-run
-expect_failure "bench 1b requires dry run" cargo run -- bench 1b
+expect_failure_output "bench 1b missing model dry-run hint" "nanocamelid bench 1b --dry-run" cargo run -- bench 1b
 expect_failure "bench 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- bench 1b --dry-run
 expect_failure "bench 1b invalid token count" cargo run -- bench 1b prompt 0 --dry-run
 expect_failure "bench 1b invalid temp" cargo run -- bench 1b prompt 1 bad --dry-run
