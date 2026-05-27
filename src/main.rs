@@ -2906,6 +2906,10 @@ fn print_bench_1b_dry_run(parsed: &Bench1BArgs) -> ExitCode {
             &model_path.display().to_string()
         ])
     );
+    println!(
+        "inspect_command: {}",
+        shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
+    );
     for batch in &parsed.batches {
         println!(
             "batch_{batch}_command: {}",
@@ -3043,6 +3047,12 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
     });
     if audit_code != ExitCode::SUCCESS {
         return audit_code;
+    }
+
+    println!("==> Inspecting 1B model: {}", parsed.model_path);
+    let inspect_code = inspect_gguf(Path::new(&parsed.model_path), true);
+    if inspect_code != ExitCode::SUCCESS {
+        return inspect_code;
     }
 
     let mut best_prefill: Option<(usize, f64)> = None;

@@ -381,6 +381,7 @@ expect_output "bench 1b json success marker dry run" "\"benchmark\":\"llama32-1b
 expect_output "bench 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- bench 1b --dry-run
 expect_output "bench 1b default batches dry run" "batches: 1 16 32 64" cargo run -- bench 1b --dry-run
 expect_output "bench 1b batch command" "batch_16_command: NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 0.0 2" cargo run -- bench 1b --dry-run
+expect_output "bench 1b inspect command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- bench 1b --dry-run
 expect_output "bench 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- bench 1b --dry-run
 expect_output "bench 1b context-limited batch command" "batch_16_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 0.0 2" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- bench 1b --dry-run
 expect_failure "bench 1b requires dry run" cargo run -- bench 1b
@@ -495,6 +496,7 @@ expect_output "bench-1b-prefill smoke env model" "model: /models/smoke.gguf" env
 expect_output "bench-1b-prefill context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill shape audit dry run" "shape_audit: enabled" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output "bench-1b-prefill inspect command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill context-limited batch command" "batch_16_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. 0.0 2" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill success marker dry run" "status_on_success: prefill_bench_1b_status: ok" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill json success marker dry run" "\"benchmark\":\"llama32-1b-prefill\",\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/bench-1b-prefill.sh --dry-run

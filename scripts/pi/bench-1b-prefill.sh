@@ -350,6 +350,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "json_on_success: $(prefill_summary_json "" "" "" "")"
   printf 'model_command: '
   shell_command nanocamelid model 1b "$MODEL"
+  printf 'inspect_command: '
+  shell_command nanocamelid inspect "$MODEL"
   for batch in "${BATCHES[@]}"; do
     printf 'batch_%s_command: ' "$batch"
     context_env_prefix
@@ -390,6 +392,9 @@ echo "batches: ${BATCHES[*]}"
 
 echo "==> Auditing 1B model shape: $MODEL"
 run_nanocamelid model 1b "$MODEL"
+
+echo "==> Inspecting 1B model: $MODEL"
+run_nanocamelid inspect "$MODEL"
 
 EXIT_STATUS=0
 RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-prefill.XXXXXX")"
