@@ -4057,7 +4057,7 @@ struct GenerationPromptPlan {
 }
 
 fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
-    run_generation_with_prompt_builder(model_path, temp, max_tokens, |_tokenizer| {
+    run_generation_with_prompt_builder("generate", model_path, temp, max_tokens, |_tokenizer| {
         Ok(GenerationPromptPlan {
             text: prompt.to_owned(),
             add_special: true,
@@ -4069,7 +4069,7 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
 }
 
 fn run_chat(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
-    run_generation_with_prompt_builder(model_path, temp, max_tokens, |tokenizer| {
+    run_generation_with_prompt_builder("chat", model_path, temp, max_tokens, |tokenizer| {
         let rendered = tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
             role: "user",
             content: prompt,
@@ -4707,6 +4707,7 @@ fn shared_token_prefix_len(lhs: &[u32], rhs: &[u32]) -> usize {
 }
 
 fn run_generation_with_prompt_builder<F>(
+    command: &str,
     model_path: &Path,
     temp: f32,
     max_tokens: usize,
@@ -4842,10 +4843,11 @@ where
         );
         pos += 1;
     }
+    let prefill_batch = batch_ws.max_batch;
+    let prefill_sec = started_prefill.elapsed().as_secs_f64();
     println!(
         "Prompt ingested in {:.2}s with prefill batch {}",
-        started_prefill.elapsed().as_secs_f64(),
-        batch_ws.max_batch
+        prefill_sec, prefill_batch
     );
 
     // Now generate the next tokens
@@ -4896,9 +4898,74 @@ where
         elapsed,
         generated_tokens.len() as f64 / elapsed
     );
+    println!("generation_status: ok");
+    println!(
+        "json: {}",
+        generation_status_json(GenerationStatusJson {
+            command,
+            model_path,
+            architecture: &config.architecture,
+            renderer: prompt_plan.renderer,
+            template_format: prompt_plan.template_format,
+            prompt_tokens: prompt_tokens.len(),
+            generated_tokens: generated_tokens.len(),
+            prefill_batch,
+            prefill_sec,
+            generation_sec: elapsed,
+        })
+    );
     print_runtime_trace_summary();
 
     ExitCode::SUCCESS
+}
+
+struct GenerationStatusJson<'a> {
+    command: &'a str,
+    model_path: &'a Path,
+    architecture: &'a str,
+    renderer: Option<&'a str>,
+    template_format: Option<&'a str>,
+    prompt_tokens: usize,
+    generated_tokens: usize,
+    prefill_batch: usize,
+    prefill_sec: f64,
+    generation_sec: f64,
+}
+
+fn generation_status_json(status: GenerationStatusJson<'_>) -> String {
+    let tokens_per_sec = if status.generation_sec > 0.0 {
+        Some(status.generated_tokens as f64 / status.generation_sec)
+    } else {
+        None
+    };
+    format!(
+        "{{\"command\":{},\"status\":\"ok\",\"model\":{},\"architecture\":{},\"renderer\":{},\"template_format\":{},\"prompt_tokens\":{},\"generated_tokens\":{},\"prefill_batch\":{},\"prefill_sec\":{},\"generation_sec\":{},\"tokens_per_sec\":{}}}",
+        json_string(status.command),
+        json_string(&status.model_path.display().to_string()),
+        json_string(status.architecture),
+        json_string_or_null(status.renderer),
+        json_string_or_null(status.template_format),
+        status.prompt_tokens,
+        status.generated_tokens,
+        status.prefill_batch,
+        json_f64(status.prefill_sec),
+        json_f64(status.generation_sec),
+        tokens_per_sec
+            .map(json_f64)
+            .unwrap_or_else(|| "null".to_owned())
+    )
+}
+
+fn json_string_or_null(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".to_owned())
+}
+
+fn json_f64(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.6}")
+    } else {
+        "null".to_owned()
+    }
 }
 
 fn runtime_options_from_gguf(
@@ -5247,17 +5314,18 @@ mod tests {
 
     use super::{
         ChatTurn, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_Q4_PREFILL_BATCH,
-        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, HelpTopic, InspectTarget,
-        LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
+        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, GenerationStatusJson, HelpTopic,
+        InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
         PERFORMANCE_GOVERNOR_COMMAND, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind,
         TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
-        help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
-        is_help_flag, json_string, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
-        llama32_3b_model_not_found_message, looks_like_gguf_path, model_1b_status_json,
-        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
-        parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_ready_1b_args_with_env,
+        generation_status_json, help_topic_for_args, help_topic_named, inspect_runtime_summary,
+        is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
+        llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
+        model_1b_status_json, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
+        parse_bench_q8_dot_args, parse_cpu_list, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
+        parse_model_1b_args_with_path, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
@@ -6706,6 +6774,44 @@ flags\t\t: sse4_2 avx2
         assert_eq!(json_string("plain"), "\"plain\"");
         assert_eq!(json_string("can't \"skip\"\n"), "\"can't \\\"skip\\\"\\n\"");
         assert_eq!(json_string("back\\slash"), "\"back\\\\slash\"");
+    }
+
+    #[test]
+    fn generation_status_json_records_machine_readable_timing() {
+        assert_eq!(
+            generation_status_json(GenerationStatusJson {
+                command: "chat",
+                model_path: Path::new("/models/Llama-3.2-1B-Instruct-Q4_0.gguf"),
+                architecture: "llama",
+                renderer: Some("llama3_instruct"),
+                template_format: Some("llama3"),
+                prompt_tokens: 19,
+                generated_tokens: 2,
+                prefill_batch: 16,
+                prefill_sec: 0.5,
+                generation_sec: 0.25,
+            }),
+            "{\"command\":\"chat\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"architecture\":\"llama\",\"renderer\":\"llama3_instruct\",\"template_format\":\"llama3\",\"prompt_tokens\":19,\"generated_tokens\":2,\"prefill_batch\":16,\"prefill_sec\":0.500000,\"generation_sec\":0.250000,\"tokens_per_sec\":8.000000}"
+        );
+    }
+
+    #[test]
+    fn generation_status_json_uses_null_for_plain_generation_renderer() {
+        assert_eq!(
+            generation_status_json(GenerationStatusJson {
+                command: "generate",
+                model_path: Path::new("/models/model.gguf"),
+                architecture: "llama",
+                renderer: None,
+                template_format: None,
+                prompt_tokens: 1,
+                generated_tokens: 0,
+                prefill_batch: 16,
+                prefill_sec: f64::INFINITY,
+                generation_sec: 0.0,
+            }),
+            "{\"command\":\"generate\",\"status\":\"ok\",\"model\":\"/models/model.gguf\",\"architecture\":\"llama\",\"renderer\":null,\"template_format\":null,\"prompt_tokens\":1,\"generated_tokens\":0,\"prefill_batch\":16,\"prefill_sec\":null,\"generation_sec\":0.000000,\"tokens_per_sec\":null}"
+        );
     }
 
     #[test]

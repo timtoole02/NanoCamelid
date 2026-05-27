@@ -375,6 +375,12 @@ NANOCAMELID_MODEL_GGUF=/path/to/model.gguf \
   cargo run --release -- chat "Say hello in one sentence." 0.0 32
 ```
 
+Successful `generate` and `chat` runs end with `generation_status: ok` and a
+`json: {"command":"chat",...}` line that records prompt tokens, generated
+tokens, prefill batch, prefill seconds, generation seconds, tokens/sec, and the
+selected chat renderer when one is used. This gives Pi smoke logs and prefill
+sweeps a stable machine-readable timing record.
+
 `tui` opens an interactive terminal chat that keeps the model loaded, shows the
 connected model path/name, selected Q8 kernel, chat renderer, and per-turn plus
 session token-in/token-out counters, TTFT, and throughput. The prompt surface is
