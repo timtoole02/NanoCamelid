@@ -3299,6 +3299,11 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
     if parsed.dry_run {
         let model_arg = model_path.display().to_string();
         let smoke_tokens = DEFAULT_1B_SMOKE_TOKENS.to_string();
+        println!("status_on_success: model_1b_status: ok");
+        println!(
+            "json_on_success: {}",
+            model_1b_status_json(model_path, parsed.model_source)
+        );
         println!(
             "inspect_command: {}",
             shell_command(&["nanocamelid", "inspect", &model_arg])
@@ -3327,7 +3332,15 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    audit_llama32_1b_model_shape(model_path)
+    let audit_code = audit_llama32_1b_model_shape(model_path);
+    if audit_code == ExitCode::SUCCESS {
+        println!("model_1b_status: ok");
+        println!(
+            "json: {}",
+            model_1b_status_json(model_path, parsed.model_source)
+        );
+    }
+    audit_code
 }
 
 fn audit_llama32_1b_model_shape(model_path: &Path) -> ExitCode {
@@ -3550,6 +3563,14 @@ fn ready_1b_status_json(
         smoke.max_tokens,
         direct_chat,
         chat_tokens
+    )
+}
+
+fn model_1b_status_json(model_path: &Path, model_source: &str) -> String {
+    format!(
+        "{{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"shape\":\"llama32_1b\",\"shape_ready\":true}}",
+        json_string(&model_path.display().to_string()),
+        json_string(model_source),
     )
 }
 
@@ -5196,9 +5217,9 @@ mod tests {
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         help_topic_for_args, help_topic_named, inspect_runtime_summary, is_generation_stop_token,
         is_help_flag, json_string, llama32_1b_model_not_found_message, llama32_1b_shape_audit,
-        llama32_3b_model_not_found_message, looks_like_gguf_path, parse_bench_q4_layout_args,
-        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_cpu_list,
-        parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
+        llama32_3b_model_not_found_message, looks_like_gguf_path, model_1b_status_json,
+        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
+        parse_cpu_list, parse_generate_args_with_env, parse_generate_args_with_env_and_workspace,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
@@ -6586,6 +6607,17 @@ flags\t\t: sse4_2 avx2
         assert_eq!(json_string("plain"), "\"plain\"");
         assert_eq!(json_string("can't \"skip\"\n"), "\"can't \\\"skip\\\"\\n\"");
         assert_eq!(json_string("back\\slash"), "\"back\\\\slash\"");
+    }
+
+    #[test]
+    fn model_1b_status_json_records_shape_audit_success() {
+        assert_eq!(
+            model_1b_status_json(
+                Path::new("/models/Llama-3.2-1B-Instruct-Q4_0.gguf"),
+                "workspace Q4_0 default"
+            ),
+            "{\"target\":\"llama32-1b\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"workspace Q4_0 default\",\"shape\":\"llama32_1b\",\"shape_ready\":true}"
+        );
     }
 
     #[test]

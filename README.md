@@ -54,7 +54,9 @@ first, then the Pi-local `Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback
 under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
 `model 1b --dry-run` prints the same selected source, Q4_0/Q8_0 default paths,
 existence checks, and the exact follow-up `inspect`, `smoke`, and `ready`
-commands from the Rust CLI before the heavier gates.
+commands from the Rust CLI before the heavier gates. Successful `model 1b`
+shape-audit runs end with `model_1b_status: ok` and a compact `json:` status
+row; dry runs print the same row as `json_on_success:`.
 `inspect 1b --dry-run` prints the resolved inspect command and model existence
 checks without opening the GGUF, so it is safe before the model has been copied.
 `./scripts/pi/model-1b.sh --dry-run` prints the same 1B model resolution plan
