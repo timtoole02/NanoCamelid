@@ -4463,6 +4463,8 @@ fn runtime_supports_tensor_type(tensor_type: gguf::GgufTensorType) -> bool {
             | gguf::GgufTensorType::Q4K
             | gguf::GgufTensorType::Q5K
             | gguf::GgufTensorType::Q6K
+            | gguf::GgufTensorType::Q8K
+            | gguf::GgufTensorType::IQ4NL
     )
 }
 
@@ -9796,6 +9798,32 @@ flags\t\t: sse4_2 avx2
         assert!(summary.unsupported_tensor_types.is_empty());
         assert!(summary.supported_tensor_types.contains(&"Q2_K".to_owned()));
         assert!(summary.supported_tensor_types.contains(&"Q3_K".to_owned()));
+    }
+
+    #[test]
+    fn inspect_runtime_summary_accepts_q8_k_and_iq4_nl_tensor_types() {
+        let mut fixture = inspect_fixture(false);
+        fixture.tensors.push(tensor_desc(
+            "q8_k.weight",
+            vec![256, 1],
+            GgufTensorType::Q8K,
+            292,
+        ));
+        fixture.tensors.push(tensor_desc(
+            "iq4_nl.weight",
+            vec![32, 1],
+            GgufTensorType::IQ4NL,
+            18,
+        ));
+
+        let summary = inspect_runtime_summary(&fixture);
+        assert!(summary.unsupported_tensor_types.is_empty());
+        assert!(summary.supported_tensor_types.contains(&"Q8_K".to_owned()));
+        assert!(
+            summary
+                .supported_tensor_types
+                .contains(&"IQ4_NL".to_owned())
+        );
     }
 
     #[test]
