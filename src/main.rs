@@ -4249,6 +4249,13 @@ fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
             &[embedding, vocab],
         );
         check_tensor_dimensions(&mut mismatches, gguf, "output_norm.weight", &[embedding]);
+        check_optional_tensor_matrix_dimensions(
+            &mut mismatches,
+            gguf,
+            "output.weight",
+            embedding,
+            vocab,
+        );
         check_llama32_1b_block_tensors(&mut mismatches, gguf, config);
     }
     match tokenizer::Tokenizer::from_gguf(gguf) {
@@ -4349,6 +4356,26 @@ fn check_tensor_dimensions(
             expected, tensor.dimensions
         )),
         None => mismatches.push(format!("{name} missing")),
+    }
+}
+
+fn check_optional_tensor_matrix_dimensions(
+    mismatches: &mut Vec<String>,
+    gguf: &gguf::GgufFile,
+    name: &str,
+    input_width: u64,
+    output_width: u64,
+) {
+    let Some(tensor) = gguf.tensors.iter().find(|tensor| tensor.name == name) else {
+        return;
+    };
+    let direct = [input_width, output_width];
+    let transposed = [output_width, input_width];
+    if tensor.dimensions != direct && tensor.dimensions != transposed {
+        mismatches.push(format!(
+            "{name} dims expected {:?} or {:?} got {:?}",
+            direct, transposed, tensor.dimensions
+        ));
     }
 }
 
@@ -9784,6 +9811,44 @@ flags\t\t: sse4_2 avx2
         assert!(audit.mismatches.contains(
             &"token_embd.weight dims expected [2048, 128256] got [2048, 128000]".to_owned()
         ));
+    }
+
+    #[test]
+    fn llama32_1b_shape_audit_accepts_output_projection_when_present() {
+        let mut fixture = llama32_1b_shape_fixture();
+        fixture.tensors.push(tensor_desc(
+            "output.weight",
+            vec![128_256, 2_048],
+            GgufTensorType::Q8_0,
+            q8_bytes(2_048, 128_256),
+        ));
+        fixture.tensor_count = fixture.tensors.len() as u64;
+
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert!(audit.ready, "{:?}", audit.mismatches);
+    }
+
+    #[test]
+    fn llama32_1b_shape_audit_reports_output_projection_mismatches() {
+        let mut fixture = llama32_1b_shape_fixture();
+        fixture.tensors.push(tensor_desc(
+            "output.weight",
+            vec![128_000, 2_048],
+            GgufTensorType::Q8_0,
+            q8_bytes(2_048, 128_000),
+        ));
+        fixture.tensor_count = fixture.tensors.len() as u64;
+
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert!(!audit.ready);
+        assert!(
+            audit.mismatches.contains(
+                &"output.weight dims expected [2048, 128256] or [128256, 2048] got [128000, 2048]"
+                    .to_owned()
+            )
+        );
     }
 
     #[test]
