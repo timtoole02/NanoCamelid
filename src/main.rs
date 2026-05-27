@@ -2930,6 +2930,7 @@ fn print_bench_1b_dry_run(parsed: &Bench1BArgs) -> ExitCode {
     println!("temp: {}", parsed.temp);
     println!("context_limit: {}", context_limit_plan_value());
     println!("shape_audit: enabled");
+    println!("smoke_gate: enabled");
     println!("batches: {batches}");
     println!("status_on_success: prefill_bench_1b_status: ok");
     println!(
@@ -2948,6 +2949,10 @@ fn print_bench_1b_dry_run(parsed: &Bench1BArgs) -> ExitCode {
     println!(
         "inspect_command: {}",
         shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
+    );
+    println!(
+        "smoke_command: {}",
+        prefill_bench_1b_smoke_command(parsed, context_limit_env_value().as_deref())
     );
     for batch in &parsed.batches {
         println!(
@@ -2976,6 +2981,33 @@ fn prefill_bench_1b_batch_command(
     let env = prefill_bench_1b_batch_env(batch, context_limit);
 
     shell_command_with_owned_env(&args, &env)
+}
+
+fn prefill_bench_1b_smoke_command(parsed: &Bench1BArgs, context_limit: Option<&str>) -> String {
+    let model = Path::new(&parsed.model_path).display().to_string();
+    let max_tokens = parsed.max_tokens.to_string();
+    let args = [
+        "nanocamelid",
+        "smoke",
+        "1b",
+        &model,
+        "chat",
+        &parsed.prompt,
+        &max_tokens,
+    ];
+    let env = prefill_bench_1b_smoke_env(context_limit);
+
+    shell_command_with_owned_env(&args, &env)
+}
+
+fn prefill_bench_1b_smoke_env(context_limit: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut env = Vec::with_capacity(3);
+    if let Some(context_limit) = context_limit {
+        env.push((CONTEXT_LIMIT_ENV, context_limit.to_owned()));
+    }
+    env.push(("NANOCAMELID_Q8_DOT_SDOT", "1".to_owned()));
+    env.push(("NANOCAMELID_Q8_DOT_KERNEL", "sdot".to_owned()));
+    env
 }
 
 fn prefill_bench_1b_batch_env(
@@ -3067,6 +3099,7 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
     println!("temp: {}", parsed.temp);
     println!("context_limit: {}", context_limit_plan_value());
     println!("shape_audit: enabled");
+    println!("smoke_gate: enabled");
     println!(
         "batches: {}",
         parsed
@@ -3094,6 +3127,16 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
     let inspect_code = inspect_gguf(Path::new(&parsed.model_path), true);
     if inspect_code != ExitCode::SUCCESS {
         return inspect_code;
+    }
+
+    println!("==> Running 1B chat smoke gate");
+    match run_prefill_bench_1b_smoke(&parsed) {
+        Ok(0) => {}
+        Ok(status) => return ExitCode::from(status as u8),
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
     }
 
     let mut best_prefill: Option<(usize, f64)> = None;
@@ -3142,6 +3185,28 @@ fn run_bench_1b_prefill(parsed: Bench1BArgs) -> ExitCode {
         )
     );
     ExitCode::SUCCESS
+}
+
+fn run_prefill_bench_1b_smoke(parsed: &Bench1BArgs) -> Result<i32, String> {
+    let current_exe =
+        env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let mut command = Command::new(current_exe);
+    command
+        .arg("smoke")
+        .arg("1b")
+        .arg(&parsed.model_path)
+        .arg("chat")
+        .arg(&parsed.prompt)
+        .arg(parsed.max_tokens.to_string());
+    for (key, value) in prefill_bench_1b_smoke_env(context_limit_env_value().as_deref()) {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .map_err(|err| format!("failed to run 1B prefill smoke gate: {err}"))?;
+    io::stderr().write_all(&output.stderr).ok();
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(output.status.code().unwrap_or(1))
 }
 
 fn run_prefill_bench_1b_batch(
@@ -6372,15 +6437,15 @@ mod tests {
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
         parse_smoke_args_with_env, parse_tui_args_with_env, parse_tui_args_with_env_and_workspace,
         parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
-        prefill_bench_1b_batch_env, prefill_bench_1b_result_json, prefill_bench_1b_status_json,
-        prefill_prompt_tokens_per_sec, print_runtime_trace_summary, ready_1b_status_json,
-        ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
-        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
-        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
-        smoke_1b_status_json, smoke_defaults_from_values, smoke_plan_command_with_context,
-        smoke_plan_command_with_env, trim_tui_history, tui_prompt_history,
-        validate_generation_budget,
+        prefill_bench_1b_batch_env, prefill_bench_1b_result_json, prefill_bench_1b_smoke_command,
+        prefill_bench_1b_smoke_env, prefill_bench_1b_status_json, prefill_prompt_tokens_per_sec,
+        print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_from_env_value,
+        ready_chat_prompt_from_env_value, ready_chat_temp_from_env_value,
+        ready_chat_tokens_from_env_value, resolve_llama32_1b_model_path_with_workspace,
+        resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
+        shared_token_prefix_len, shell_command, shell_command_with_env, smoke_1b_status_json,
+        smoke_defaults_from_values, smoke_plan_command_with_context, smoke_plan_command_with_env,
+        trim_tui_history, tui_prompt_history, validate_generation_budget,
     };
 
     #[test]
@@ -8008,6 +8073,31 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn prefill_bench_1b_smoke_command_records_kernel_preflight() {
+        let parsed = parse_bench_1b_args_with_path(
+            &[
+                "/models/Llama-3.2-1B-Instruct-Q8_0.gguf".to_owned(),
+                "Say hello".to_owned(),
+                "2".to_owned(),
+                "0.0".to_owned(),
+                "16".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("1B prefill benchmark plan should parse");
+
+        let command = prefill_bench_1b_smoke_command(&parsed, Some("512"));
+
+        assert_eq!(
+            command,
+            "NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot nanocamelid smoke 1b /models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello' 2"
+        );
+    }
+
+    #[test]
     fn prefill_bench_1b_batch_env_applies_context_limit_to_actual_batch_runs() {
         assert_eq!(
             prefill_bench_1b_batch_env(16, Some("512")),
@@ -8024,6 +8114,25 @@ flags\t\t: sse4_2 avx2
                 ("NANOCAMELID_Q8_DOT_SDOT", "1".to_owned()),
                 ("NANOCAMELID_Q8_DOT_KERNEL", "sdot".to_owned()),
                 ("NANOCAMELID_PREFILL_BATCH", "32".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn prefill_bench_1b_smoke_env_applies_context_limit_to_preflight() {
+        assert_eq!(
+            prefill_bench_1b_smoke_env(Some("512")),
+            vec![
+                ("NANOCAMELID_CONTEXT_LIMIT", "512".to_owned()),
+                ("NANOCAMELID_Q8_DOT_SDOT", "1".to_owned()),
+                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot".to_owned()),
+            ]
+        );
+        assert_eq!(
+            prefill_bench_1b_smoke_env(None),
+            vec![
+                ("NANOCAMELID_Q8_DOT_SDOT", "1".to_owned()),
+                ("NANOCAMELID_Q8_DOT_KERNEL", "sdot".to_owned()),
             ]
         );
     }

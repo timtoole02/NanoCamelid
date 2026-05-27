@@ -105,21 +105,20 @@ Successful context-pack runs end with `context_pack_1b_status: ok` and a compact
 smoke kind, token count, prefill batch, and validated context caps; dry runs
 also print `shape_audit: enabled` and the same row as `json_on_success:`.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
-preflight, inspect preflight, and real prefill batch sweep plan, honors the same
-`NANOCAMELID_SMOKE_GGUF` then `NANOCAMELID_MODEL_GGUF` override order as the
-smoke gate, and validates any
+preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
+prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
+`NANOCAMELID_MODEL_GGUF` override order as the smoke gate, and validates any
 `NANOCAMELID_CONTEXT_LIMIT` cap before the model is loaded. Successful sweeps
 end with `prefill_bench_1b_status: ok` and a compact `json:` summary row for
 log collectors that includes the strict `llama32_1b` shape marker.
 `cargo run -- bench 1b` runs the same model-backed prefill sweep from the Rust
 CLI when the selected 1B GGUF is present. It audits the strict 1B shape first,
-runs an inspect preflight, runs each `NANOCAMELID_PREFILL_BATCH`, emits
+runs inspect and smoke preflights, runs each `NANOCAMELID_PREFILL_BATCH`, emits
 per-batch `json:` rows, and ends with `prefill_bench_1b_status: ok` plus the
 best observed prefill/decode batches and the best prefill prompt tokens/sec.
 `cargo run -- bench 1b --dry-run` prints the selected 1B GGUF, strict
-shape-audit preflight, inspect command, batch commands, context cap, and
-`json_on_success` row before the Pi-local GGUF is
-present.
+shape-audit preflight, inspect command, smoke command, batch commands, context
+cap, and `json_on_success` row before the Pi-local GGUF is present.
 The `inspect 3b`, `generate 3b`, `chat 3b`, `tui 3b`, and `smoke 3b` aliases
 resolve the Pi-local `Llama-3.2-3B-Instruct-Q4_0.gguf` row.
 
@@ -610,9 +609,9 @@ Each cargo benchmark prints human-readable timing plus a JSON summary line.
 `bench q4-prefill` reports both milliseconds per prompt token and prompt
 tokens/sec so Pi prefill sweeps can be compared without manual conversion.
 Treat results as specific to the exact Pi, model, build, and environment used.
-The 1B prefill sweep runs the strict 1B shape audit and inspect preflight, then
-reports NanoCamelid's normal prompt ingestion and generation timing for each
-selected batch size and emits a
+The 1B prefill sweep runs the strict 1B shape audit, inspect preflight, and
+chat smoke gate before reporting NanoCamelid's normal prompt ingestion and
+generation timing for each selected batch size. It emits a
 `json: {"benchmark":"llama32-1b-prefill",...}` line for each batch. Successful
 sweeps also end with `prefill_bench_1b_status: ok` and a final JSON summary
 including the selected model, strict 1B shape marker, context cap, planned

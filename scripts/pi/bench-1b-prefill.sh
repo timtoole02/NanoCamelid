@@ -93,6 +93,12 @@ context_env_prefix() {
   fi
 }
 
+kernel_env_prefix() {
+  printf 'NANOCAMELID_Q8_DOT_SDOT=%s NANOCAMELID_Q8_DOT_KERNEL=%s ' \
+    "$(shell_quote "$NANOCAMELID_Q8_DOT_SDOT")" \
+    "$(shell_quote "$NANOCAMELID_Q8_DOT_KERNEL")"
+}
+
 json_number_or_null() {
   if [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     printf '%s' "$1"
@@ -350,6 +356,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "temp: $TEMP"
   echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
   echo "shape_audit: enabled"
+  echo "smoke_gate: enabled"
   echo "batches: ${BATCHES[*]}"
   echo "status_on_success: prefill_bench_1b_status: ok"
   echo "json_on_success: $(prefill_summary_json "" "" "" "" "")"
@@ -357,12 +364,15 @@ if [[ "$DRY_RUN" == "1" ]]; then
   shell_command nanocamelid model 1b "$MODEL"
   printf 'inspect_command: '
   shell_command nanocamelid inspect "$MODEL"
+  printf 'smoke_command: '
+  context_env_prefix
+  kernel_env_prefix
+  shell_command nanocamelid smoke 1b "$MODEL" chat "$PROMPT" "$MAX_TOKENS"
   for batch in "${BATCHES[@]}"; do
     printf 'batch_%s_command: ' "$batch"
     context_env_prefix
-    printf 'NANOCAMELID_Q8_DOT_SDOT=%s NANOCAMELID_Q8_DOT_KERNEL=%s NANOCAMELID_PREFILL_BATCH=%s nanocamelid chat %s %s %s %s\n' \
-      "$(shell_quote "$NANOCAMELID_Q8_DOT_SDOT")" \
-      "$(shell_quote "$NANOCAMELID_Q8_DOT_KERNEL")" \
+    kernel_env_prefix
+    printf 'NANOCAMELID_PREFILL_BATCH=%s nanocamelid chat %s %s %s %s\n' \
       "$(shell_quote "$batch")" \
       "$(shell_quote "$MODEL")" \
       "$(shell_quote "$PROMPT")" \
@@ -393,6 +403,7 @@ echo "max_tokens: $MAX_TOKENS"
 echo "temp: $TEMP"
 echo "context_limit: ${NANOCAMELID_CONTEXT_LIMIT:-unset}"
 echo "shape_audit: enabled"
+echo "smoke_gate: enabled"
 echo "batches: ${BATCHES[*]}"
 
 echo "==> Auditing 1B model shape: $MODEL"
@@ -400,6 +411,9 @@ run_nanocamelid model 1b "$MODEL"
 
 echo "==> Inspecting 1B model: $MODEL"
 run_nanocamelid inspect "$MODEL"
+
+echo "==> Running 1B chat smoke gate"
+run_nanocamelid smoke 1b "$MODEL" chat "$PROMPT" "$MAX_TOKENS"
 
 EXIT_STATUS=0
 RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-prefill.XXXXXX")"
