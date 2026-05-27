@@ -18,6 +18,8 @@ Model resolution:
 Useful env:
   NANOCAMELID_WORKSPACE     Pi workspace, default /mnt/nanocamelid
   CARGO_TARGET_DIR          Cargo output dir, default /mnt/nanocamelid/target
+  NANOCAMELID_PREFILL_BATCH Prefill prompt token batch size, default 16
+  NANOCAMELID_CONTEXT_LIMIT Optional runtime context cap
   NANOCAMELID_SMOKE_KIND    Default smoke kind, default chat
   NANOCAMELID_SMOKE_PROMPT  Default prompt
   NANOCAMELID_SMOKE_TOKENS  Default generated token count

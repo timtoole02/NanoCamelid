@@ -21,6 +21,7 @@ Useful env:
   NANOCAMELID_SMOKE_KIND      Default smoke kind, default chat
   NANOCAMELID_SMOKE_PROMPT    Default prompt
   NANOCAMELID_SMOKE_TOKENS    Default generated token count
+  NANOCAMELID_PREFILL_BATCH   Prefill prompt token batch size, default 16
   NANOCAMELID_CONTEXT_PACKS   Comma-separated context caps, default 512,1024,2048,4096,8192
   --dry-run                   Print the resolved context-pack plan without loading the model
 USAGE

@@ -21,6 +21,8 @@ Useful env:
   CARGO_TARGET_DIR               Cargo output dir, default /mnt/nanocamelid/target
   NANOCAMELID_SMOKE_GGUF         Smoke/chat-specific 1B GGUF override
   NANOCAMELID_MODEL_GGUF         Shared 1B GGUF override
+  NANOCAMELID_PREFILL_BATCH      Prefill prompt token batch size, default 16
+  NANOCAMELID_CONTEXT_LIMIT      Optional runtime context cap
   NANOCAMELID_CHAT_SMOKE=0       Skip the pre-chat smoke gate; false/no are also accepted
   NANOCAMELID_CHAT_SMOKE_KIND    Smoke kind: chat, model, q8-chat, or q8-model; default chat
   NANOCAMELID_TEMP               Chat temperature, default 0.0

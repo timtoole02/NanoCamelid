@@ -965,6 +965,9 @@ fn print_ready_usage() {
     println!(
         "  {CONTEXT_LIMIT_ENV:<38} Optional runtime context cap for short long-context smoke runs"
     );
+    println!(
+        "  {PREFILL_BATCH_ENV:<38} Prefill prompt token batch size; default {DEFAULT_Q4_PREFILL_BATCH}"
+    );
     println!("  {READY_SMOKE_KIND_ENV:<38} Smoke kind, default chat");
     println!("  {READY_SMOKE_PROMPT_ENV:<38} Smoke prompt");
     println!("  {READY_SMOKE_TOKENS_ENV:<38} Smoke generated token count");

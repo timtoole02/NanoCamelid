@@ -358,6 +358,7 @@ expect_failure "smoke 1b invalid token count" cargo run -- smoke 1b chat "Say he
 
 echo "==> Checking 1B readiness CLI dry run..."
 cargo run -- ready 1b --dry-run
+expect_output "ready 1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" cargo run -- ready 1b --help
 expect_output "ready 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" cargo run -- ready 1b --dry-run
 expect_output "ready 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- ready 1b --dry-run
 expect_output "ready 1b shape audit dry run" "shape_audit: enabled" cargo run -- ready 1b --dry-run
@@ -454,6 +455,7 @@ expect_failure "model-1b repo-local target dir" bash -c 'tmp="$(mktemp "${TMPDIR
 
 echo "==> Checking 1B Pi smoke launcher dry run..."
 ./scripts/pi/smoke-1b.sh --dry-run
+expect_output "smoke-1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" ./scripts/pi/smoke-1b.sh --help
 expect_output "smoke-1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b selected source" "selected_source: " ./scripts/pi/smoke-1b.sh --dry-run
@@ -481,6 +483,7 @@ expect_failure "smoke-1b repo-local target dir" env CARGO_TARGET_DIR=target ./sc
 
 echo "==> Checking 1B Pi readiness launcher dry run..."
 ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" ./scripts/pi/ready-1b.sh --help
 expect_output_count "ready-1b smoke prompt printed once" "smoke_prompt:" 1 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
@@ -513,6 +516,7 @@ expect_failure "ready-1b repo-local target dir" env CARGO_TARGET_DIR=target ./sc
 
 echo "==> Checking 1B Pi chat launcher dry run..."
 ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" ./scripts/pi/chat-1b.sh --help
 expect_output "chat-1b selected source" "selected_source: " ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b smoke env override" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/chat-1b.sh --dry-run
@@ -573,6 +577,7 @@ expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BAT
 
 echo "==> Checking 1B Pi context-pack launcher dry run..."
 ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" ./scripts/pi/context-pack-1b.sh --help
 expect_output "context-pack-1b selected source" "selected_source: " ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b selected quantization" "quantization: q8_0" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/context-pack-1b.sh --dry-run
