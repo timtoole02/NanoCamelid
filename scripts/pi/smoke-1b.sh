@@ -148,6 +148,12 @@ shell_command() {
   printf '\n'
 }
 
+context_env_prefix() {
+  if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
+    printf 'NANOCAMELID_CONTEXT_LIMIT=%q ' "$NANOCAMELID_CONTEXT_LIMIT"
+  fi
+}
+
 json_string() {
   local value="$1"
   local out='"'
@@ -199,6 +205,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "status_on_success: smoke_1b_status: ok"
   echo "json_on_success: $(smoke_status_json)"
   printf 'smoke_command: '
+  context_env_prefix
   shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   exit 0
 fi

@@ -202,6 +202,12 @@ shell_command() {
   printf '\n'
 }
 
+context_env_prefix() {
+  if [[ -n "${NANOCAMELID_CONTEXT_LIMIT:-}" ]]; then
+    printf 'NANOCAMELID_CONTEXT_LIMIT=%q ' "$NANOCAMELID_CONTEXT_LIMIT"
+  fi
+}
+
 json_string() {
   local value="$1"
   local out='"'
@@ -286,6 +292,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   printf 'inspect_command: '
   shell_command nanocamelid inspect "$MODEL"
   printf 'smoke_command: '
+  context_env_prefix
   shell_command nanocamelid smoke 1b "$MODEL" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   case "$CHAT_ENABLED_LOWER" in
     0 | false | no)
@@ -296,6 +303,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
       echo "chat_temp: $CHAT_TEMP"
       echo "chat_tokens: $CHAT_TOKENS"
       printf 'chat_command: '
+      context_env_prefix
       shell_command nanocamelid chat "$MODEL" "$CHAT_PROMPT" "$CHAT_TEMP" "$CHAT_TOKENS"
       ;;
   esac
