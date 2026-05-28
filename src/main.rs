@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use nanocamelid::{gguf, inference, model, q8, tokenizer};
+use nanocamelid::{gguf, inference, model, q8, speculative, tokenizer};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
 const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
@@ -6015,6 +6015,7 @@ struct ChatGenerationEnv<'a> {
     weights: &'a model::LlamaWeights,
     tokenizer: &'a tokenizer::Tokenizer,
     runtime_options: inference::LlamaRuntimeOptions,
+    draft: Option<&'a mut speculative::SpeculativeContext>,
 }
 
 struct TuiLoadedModel {
@@ -6026,6 +6027,7 @@ struct TuiLoadedModel {
     model_name: String,
     renderer: String,
     load_secs: f64,
+    draft: Option<speculative::SpeculativeContext>,
 }
 
 fn load_tui_model(
@@ -6057,6 +6059,26 @@ fn load_tui_model(
         })
         .unwrap_or_else(|| model_path.display().to_string());
     let renderer = tokenizer.render_chat_prompt(&[]).renderer.to_owned();
+
+    let draft = if let Ok(draft_path_str) = std::env::var("NANOCAMELID_DRAFT_GGUF") {
+        if !draft_path_str.is_empty() {
+            let draft_path = Path::new(&draft_path_str);
+            println!("Loading draft GGUF file: {}...", draft_path.display());
+            let draft_ctx = speculative::SpeculativeContext::load(draft_path, runtime_options)?;
+            if draft_ctx.config.vocab_size != config.vocab_size {
+                return Err(format!(
+                    "Vocabulary size mismatch: Target has {}, Draft has {}",
+                    config.vocab_size, draft_ctx.config.vocab_size
+                ));
+            }
+            Some(draft_ctx)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     Ok(TuiLoadedModel {
         model_path: model_path.to_path_buf(),
         config,
@@ -6066,6 +6088,7 @@ fn load_tui_model(
         model_name,
         renderer,
         load_secs: started_load.elapsed().as_secs_f64(),
+        draft,
     })
 }
 
@@ -6316,6 +6339,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
                 weights: &loaded.weights,
                 tokenizer: &loaded.tokenizer,
                 runtime_options: loaded.runtime_options,
+                draft: loaded.draft.as_mut(),
             },
             settings.temp,
             settings.max_tokens,
@@ -6359,7 +6383,7 @@ fn run_chat_tui(model_path: &Path, temp: f32, max_tokens: usize) -> ExitCode {
 fn generate_chat_turn(
     history: &[ChatTurn],
     session: &mut ChatSession,
-    env: ChatGenerationEnv<'_>,
+    mut env: ChatGenerationEnv<'_>,
     temp: f32,
     max_tokens: usize,
 ) -> Result<(String, ChatTurnReport), String> {
@@ -6387,6 +6411,38 @@ fn generate_chat_turn(
     let input_tokens = prompt_tokens.len().saturating_sub(shared_prefix);
     let new_prompt_tokens = &prompt_tokens[shared_prefix..];
     let started_turn = std::time::Instant::now();
+
+    let mut draft_pos = session.pos;
+    if let Some(ref mut draft_ctx) = env.draft {
+        if let Some((&last_token, prefix_tokens)) = new_prompt_tokens.split_last() {
+            let mut dummy_context = Vec::new();
+            let mut d_pos = shared_prefix;
+            prefill_tokens(
+                prefix_tokens,
+                &draft_ctx.config,
+                &draft_ctx.weights,
+                PrefillTokenState {
+                    cache: &mut draft_ctx.cache,
+                    ws: &mut draft_ctx.ws,
+                    batch_ws: Some(&mut draft_ctx.batch_ws),
+                    context_tokens: &mut dummy_context,
+                    pos: &mut d_pos,
+                },
+                env.runtime_options,
+            );
+            inference::forward_pass(
+                last_token as usize,
+                d_pos,
+                &draft_ctx.config,
+                &draft_ctx.weights,
+                &mut draft_ctx.cache,
+                &mut draft_ctx.ws,
+                env.runtime_options,
+            );
+            draft_pos = d_pos + 1;
+        }
+    }
+
     if let Some((&last_token, prefix_tokens)) = new_prompt_tokens.split_last() {
         prefill_tokens(
             prefix_tokens,
@@ -6417,29 +6473,128 @@ fn generate_chat_turn(
     let mut generated_tokens = Vec::new();
     let mut last_printed_len = 0usize;
     let mut ttft_secs = None;
-    loop {
-        let next_token = inference::sample_logits(&session.ws.logits, temp);
-        if is_generation_stop_token(&env.tokenizer.special, next_token as u32)
-            || session.pos >= env.config.context_length
-            || generated_tokens.len() >= max_tokens
-        {
-            break;
+
+    if let Some(ref mut draft_ctx) = env.draft {
+        let draft_k = std::env::var("NANOCAMELID_DRAFT_K")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(4);
+        let mut total_drafted = 0;
+        let mut total_accepted = 0;
+
+        loop {
+            if session.pos >= env.config.context_length || generated_tokens.len() >= max_tokens {
+                break;
+            }
+
+            let current_len = generated_tokens.len();
+            let step_budget = max_tokens - current_len;
+            let current_k = draft_k.min(step_budget);
+
+            let is_stop = |token: u32| is_generation_stop_token(&env.tokenizer.special, token);
+
+            let (step_tokens, step_stats) = speculative::speculative_decoding_step(
+                &mut speculative::SpeculativeTarget {
+                    config: env.config,
+                    weights: env.weights,
+                    cache: &mut session.cache,
+                    ws: &mut session.ws,
+                    batch_ws: &mut session.batch_ws,
+                    pos: &mut session.pos,
+                    context_tokens: &mut session.context_tokens,
+                    runtime_options: env.runtime_options,
+                },
+                draft_ctx,
+                &mut draft_pos,
+                temp,
+                current_k,
+                is_stop,
+            )?;
+
+            total_drafted += step_stats.drafted;
+            total_accepted += step_stats.accepted;
+
+            if step_tokens.is_empty() {
+                break;
+            }
+
+            for &token in &step_tokens {
+                generated_tokens.push(token);
+                ttft_secs.get_or_insert_with(|| started_turn.elapsed().as_secs_f64());
+                if is_generation_stop_token(&env.tokenizer.special, token) {
+                    break;
+                }
+            }
+
+            if let Ok(full_text) = env.tokenizer.decode(&generated_tokens, true)
+                && full_text.len() > last_printed_len
+            {
+                print!("{}", &full_text[last_printed_len..]);
+                io::stdout()
+                    .flush()
+                    .map_err(|err| format!("failed to flush stdout: {err}"))?;
+                last_printed_len = full_text.len();
+            }
+
+            if generated_tokens
+                .iter()
+                .any(|&t| is_generation_stop_token(&env.tokenizer.special, t))
+            {
+                break;
+            }
         }
 
-        generated_tokens.push(next_token as u32);
-        ttft_secs.get_or_insert_with(|| started_turn.elapsed().as_secs_f64());
-        if let Ok(full_text) = env.tokenizer.decode(&generated_tokens, true)
-            && full_text.len() > last_printed_len
-        {
-            print!("{}", &full_text[last_printed_len..]);
-            io::stdout()
-                .flush()
-                .map_err(|err| format!("failed to flush stdout: {err}"))?;
-            last_printed_len = full_text.len();
-        }
+        println!();
+        println!(
+            "{}Speculation: {:.1}% acceptance rate ({}/{} tokens accepted/drafted){}",
+            ansi::DIM,
+            if total_drafted > 0 {
+                (total_accepted as f32 / total_drafted as f32) * 100.0
+            } else {
+                0.0
+            },
+            total_accepted,
+            total_drafted,
+            ansi::RESET
+        );
+    } else {
+        loop {
+            let next_token = inference::sample_logits(&session.ws.logits, temp);
+            if is_generation_stop_token(&env.tokenizer.special, next_token as u32)
+                || session.pos >= env.config.context_length
+                || generated_tokens.len() >= max_tokens
+            {
+                break;
+            }
 
-        if generated_tokens.len() >= max_tokens {
-            inference::prefill_pass(
+            generated_tokens.push(next_token as u32);
+            ttft_secs.get_or_insert_with(|| started_turn.elapsed().as_secs_f64());
+            if let Ok(full_text) = env.tokenizer.decode(&generated_tokens, true)
+                && full_text.len() > last_printed_len
+            {
+                print!("{}", &full_text[last_printed_len..]);
+                io::stdout()
+                    .flush()
+                    .map_err(|err| format!("failed to flush stdout: {err}"))?;
+                last_printed_len = full_text.len();
+            }
+
+            if generated_tokens.len() >= max_tokens {
+                inference::prefill_pass(
+                    next_token,
+                    session.pos,
+                    env.config,
+                    env.weights,
+                    &mut session.cache,
+                    &mut session.ws,
+                    env.runtime_options,
+                );
+                session.context_tokens.push(next_token as u32);
+                session.pos += 1;
+                break;
+            }
+
+            inference::forward_pass(
                 next_token,
                 session.pos,
                 env.config,
@@ -6450,20 +6605,7 @@ fn generate_chat_turn(
             );
             session.context_tokens.push(next_token as u32);
             session.pos += 1;
-            break;
         }
-
-        inference::forward_pass(
-            next_token,
-            session.pos,
-            env.config,
-            env.weights,
-            &mut session.cache,
-            &mut session.ws,
-            env.runtime_options,
-        );
-        session.context_tokens.push(next_token as u32);
-        session.pos += 1;
     }
 
     let assistant_text = env.tokenizer.decode(&generated_tokens, true)?;
@@ -6673,6 +6815,34 @@ where
     let mut batch_ws = inference::LlamaBatchWorkspace::new(&config, prefill_batch_size());
     let selector = q8::Q8DotKernelSelector::from_env();
     let runtime_options = runtime_options_from_gguf(&gguf, selector);
+
+    let mut draft = if let Ok(draft_path_str) = std::env::var("NANOCAMELID_DRAFT_GGUF") {
+        if !draft_path_str.is_empty() {
+            let draft_path = Path::new(&draft_path_str);
+            println!("Loading draft GGUF file: {}...", draft_path.display());
+            let draft_ctx = match speculative::SpeculativeContext::load(draft_path, runtime_options)
+            {
+                Ok(ctx) => ctx,
+                Err(err) => {
+                    eprintln!("failed to load draft GGUF: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if draft_ctx.config.vocab_size != config.vocab_size {
+                eprintln!(
+                    "Vocabulary size mismatch: Target has {}, Draft has {}",
+                    config.vocab_size, draft_ctx.config.vocab_size
+                );
+                return ExitCode::FAILURE;
+            }
+            Some(draft_ctx)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     inference::trace_reset();
 
     println!("Selected dot-product kernel: {}", selector.selected.name());
@@ -6680,6 +6850,37 @@ where
 
     let mut pos = 0;
     let started_prefill = std::time::Instant::now();
+
+    // Prefill draft model if active
+    let mut draft_pos = 0;
+    if let Some(ref mut draft_ctx) = draft {
+        if let Some((&last_token, prefix_tokens)) = prompt_tokens.split_last() {
+            let mut dummy_context = Vec::new();
+            prefill_tokens(
+                prefix_tokens,
+                &draft_ctx.config,
+                &draft_ctx.weights,
+                PrefillTokenState {
+                    cache: &mut draft_ctx.cache,
+                    ws: &mut draft_ctx.ws,
+                    batch_ws: Some(&mut draft_ctx.batch_ws),
+                    context_tokens: &mut dummy_context,
+                    pos: &mut draft_pos,
+                },
+                runtime_options,
+            );
+            inference::forward_pass(
+                last_token as usize,
+                draft_pos,
+                &draft_ctx.config,
+                &draft_ctx.weights,
+                &mut draft_ctx.cache,
+                &mut draft_ctx.ws,
+                runtime_options,
+            );
+            draft_pos += 1;
+        }
+    }
 
     // Decode prompt tokens (prefill path)
     if let Some((&last_token, prefix_tokens)) = prompt_tokens.split_last() {
@@ -6720,49 +6921,145 @@ where
     let mut last_printed_len = 0;
     let start_gen = std::time::Instant::now();
 
-    loop {
-        let next_token = inference::sample_logits(&ws.logits, temp);
+    if let Some(ref mut draft_ctx) = draft {
+        let draft_k = std::env::var("NANOCAMELID_DRAFT_K")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(4);
+        let mut total_drafted = 0;
+        let mut total_accepted = 0;
+        let mut context_tokens = prompt_tokens.clone();
 
-        if is_generation_stop_token(&tokenizer.special, next_token as u32)
-            || pos >= config.context_length
-            || generated_tokens.len() >= max_tokens
-        {
-            break;
+        loop {
+            if pos >= config.context_length || generated_tokens.len() >= max_tokens {
+                break;
+            }
+
+            let current_len = generated_tokens.len();
+            let step_budget = max_tokens - current_len;
+            let current_k = draft_k.min(step_budget);
+
+            let is_stop = |token: u32| is_generation_stop_token(&tokenizer.special, token);
+
+            let (step_tokens, step_stats) = match speculative::speculative_decoding_step(
+                &mut speculative::SpeculativeTarget {
+                    config: &config,
+                    weights: &weights,
+                    cache: &mut cache,
+                    ws: &mut ws,
+                    batch_ws: &mut batch_ws,
+                    pos: &mut pos,
+                    context_tokens: &mut context_tokens,
+                    runtime_options,
+                },
+                draft_ctx,
+                &mut draft_pos,
+                temp,
+                current_k,
+                is_stop,
+            ) {
+                Ok(result) => result,
+                Err(err) => {
+                    eprintln!("speculative decoding failed: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            total_drafted += step_stats.drafted;
+            total_accepted += step_stats.accepted;
+
+            if step_tokens.is_empty() {
+                break;
+            }
+
+            for &token in &step_tokens {
+                generated_tokens.push(token);
+                if is_generation_stop_token(&tokenizer.special, token) {
+                    break;
+                }
+            }
+
+            if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
+                && full_text.len() > last_printed_len
+            {
+                print!("{}", &full_text[last_printed_len..]);
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                last_printed_len = full_text.len();
+            }
+
+            if generated_tokens
+                .iter()
+                .any(|&t| is_generation_stop_token(&tokenizer.special, t))
+            {
+                break;
+            }
         }
 
-        generated_tokens.push(next_token as u32);
-        if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
-            && full_text.len() > last_printed_len
-        {
-            print!("{}", &full_text[last_printed_len..]);
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
-            last_printed_len = full_text.len();
-        }
-
-        if generated_tokens.len() >= max_tokens {
-            break;
-        }
-
-        inference::forward_pass(
-            next_token,
-            pos,
-            &config,
-            &weights,
-            &mut cache,
-            &mut ws,
-            runtime_options,
+        let elapsed = start_gen.elapsed().as_secs_f64();
+        println!(
+            "\n\nGenerated {} tokens in {:.2}s ({:.2} tokens/sec)",
+            generated_tokens.len(),
+            elapsed,
+            generated_tokens.len() as f64 / elapsed
         );
+        println!(
+            "{}Speculation: {:.1}% acceptance rate ({}/{} tokens accepted/drafted){}",
+            ansi::DIM,
+            if total_drafted > 0 {
+                (total_accepted as f32 / total_drafted as f32) * 100.0
+            } else {
+                0.0
+            },
+            total_accepted,
+            total_drafted,
+            ansi::RESET
+        );
+    } else {
+        loop {
+            let next_token = inference::sample_logits(&ws.logits, temp);
 
-        pos += 1;
+            if is_generation_stop_token(&tokenizer.special, next_token as u32)
+                || pos >= config.context_length
+                || generated_tokens.len() >= max_tokens
+            {
+                break;
+            }
+
+            generated_tokens.push(next_token as u32);
+            if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
+                && full_text.len() > last_printed_len
+            {
+                print!("{}", &full_text[last_printed_len..]);
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                last_printed_len = full_text.len();
+            }
+
+            if generated_tokens.len() >= max_tokens {
+                break;
+            }
+
+            inference::forward_pass(
+                next_token,
+                pos,
+                &config,
+                &weights,
+                &mut cache,
+                &mut ws,
+                runtime_options,
+            );
+
+            pos += 1;
+        }
+
+        let elapsed = start_gen.elapsed().as_secs_f64();
+        println!(
+            "\n\nGenerated {} tokens in {:.2}s ({:.2} tokens/sec)",
+            generated_tokens.len(),
+            elapsed,
+            generated_tokens.len() as f64 / elapsed
+        );
     }
-
     let elapsed = start_gen.elapsed().as_secs_f64();
-    println!(
-        "\n\nGenerated {} tokens in {:.2}s ({:.2} tokens/sec)",
-        generated_tokens.len(),
-        elapsed,
-        generated_tokens.len() as f64 / elapsed
-    );
     println!("generation_status: ok");
     println!(
         "json: {}",
