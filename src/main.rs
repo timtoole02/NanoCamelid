@@ -6413,34 +6413,34 @@ fn generate_chat_turn(
     let started_turn = std::time::Instant::now();
 
     let mut draft_pos = session.pos;
-    if let Some(ref mut draft_ctx) = env.draft {
-        if let Some((&last_token, prefix_tokens)) = new_prompt_tokens.split_last() {
-            let mut dummy_context = Vec::new();
-            let mut d_pos = shared_prefix;
-            prefill_tokens(
-                prefix_tokens,
-                &draft_ctx.config,
-                &draft_ctx.weights,
-                PrefillTokenState {
-                    cache: &mut draft_ctx.cache,
-                    ws: &mut draft_ctx.ws,
-                    batch_ws: Some(&mut draft_ctx.batch_ws),
-                    context_tokens: &mut dummy_context,
-                    pos: &mut d_pos,
-                },
-                env.runtime_options,
-            );
-            inference::forward_pass(
-                last_token as usize,
-                d_pos,
-                &draft_ctx.config,
-                &draft_ctx.weights,
-                &mut draft_ctx.cache,
-                &mut draft_ctx.ws,
-                env.runtime_options,
-            );
-            draft_pos = d_pos + 1;
-        }
+    if let Some(ref mut draft_ctx) = env.draft
+        && let Some((&last_token, prefix_tokens)) = new_prompt_tokens.split_last()
+    {
+        let mut dummy_context = Vec::new();
+        let mut d_pos = shared_prefix;
+        prefill_tokens(
+            prefix_tokens,
+            &draft_ctx.config,
+            &draft_ctx.weights,
+            PrefillTokenState {
+                cache: &mut draft_ctx.cache,
+                ws: &mut draft_ctx.ws,
+                batch_ws: Some(&mut draft_ctx.batch_ws),
+                context_tokens: &mut dummy_context,
+                pos: &mut d_pos,
+            },
+            env.runtime_options,
+        );
+        inference::forward_pass(
+            last_token as usize,
+            d_pos,
+            &draft_ctx.config,
+            &draft_ctx.weights,
+            &mut draft_ctx.cache,
+            &mut draft_ctx.ws,
+            env.runtime_options,
+        );
+        draft_pos = d_pos + 1;
     }
 
     if let Some((&last_token, prefix_tokens)) = new_prompt_tokens.split_last() {
@@ -6853,33 +6853,33 @@ where
 
     // Prefill draft model if active
     let mut draft_pos = 0;
-    if let Some(ref mut draft_ctx) = draft {
-        if let Some((&last_token, prefix_tokens)) = prompt_tokens.split_last() {
-            let mut dummy_context = Vec::new();
-            prefill_tokens(
-                prefix_tokens,
-                &draft_ctx.config,
-                &draft_ctx.weights,
-                PrefillTokenState {
-                    cache: &mut draft_ctx.cache,
-                    ws: &mut draft_ctx.ws,
-                    batch_ws: Some(&mut draft_ctx.batch_ws),
-                    context_tokens: &mut dummy_context,
-                    pos: &mut draft_pos,
-                },
-                runtime_options,
-            );
-            inference::forward_pass(
-                last_token as usize,
-                draft_pos,
-                &draft_ctx.config,
-                &draft_ctx.weights,
-                &mut draft_ctx.cache,
-                &mut draft_ctx.ws,
-                runtime_options,
-            );
-            draft_pos += 1;
-        }
+    if let Some(ref mut draft_ctx) = draft
+        && let Some((&last_token, prefix_tokens)) = prompt_tokens.split_last()
+    {
+        let mut dummy_context = Vec::new();
+        prefill_tokens(
+            prefix_tokens,
+            &draft_ctx.config,
+            &draft_ctx.weights,
+            PrefillTokenState {
+                cache: &mut draft_ctx.cache,
+                ws: &mut draft_ctx.ws,
+                batch_ws: Some(&mut draft_ctx.batch_ws),
+                context_tokens: &mut dummy_context,
+                pos: &mut draft_pos,
+            },
+            runtime_options,
+        );
+        inference::forward_pass(
+            last_token as usize,
+            draft_pos,
+            &draft_ctx.config,
+            &draft_ctx.weights,
+            &mut draft_ctx.cache,
+            &mut draft_ctx.ws,
+            runtime_options,
+        );
+        draft_pos += 1;
     }
 
     // Decode prompt tokens (prefill path)
