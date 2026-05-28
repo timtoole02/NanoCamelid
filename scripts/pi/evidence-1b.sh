@@ -27,6 +27,7 @@ Useful env:
   NANOCAMELID_SMOKE_TOKENS       Smoke generated token count
   NANOCAMELID_CONTEXT_LIMIT      Optional runtime context cap for readiness and sweeps
   NANOCAMELID_CONTEXT_PACKS      Context caps for context-pack-1b.sh
+  NANOCAMELID_PREFILL_BATCH      Prefill prompt token batch size, default 16
   NANOCAMELID_PREFILL_PROMPT     Prompt for bench-1b-prefill.sh
   NANOCAMELID_PREFILL_TOKENS     Generated token count for bench-1b-prefill.sh
   NANOCAMELID_PREFILL_TEMP       Temperature for bench-1b-prefill.sh
@@ -156,6 +157,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
 require_optional_context_limit
+require_optional_prefill_batch
 
 MODEL_ARGS=()
 if [[ $# -gt 1 ]]; then

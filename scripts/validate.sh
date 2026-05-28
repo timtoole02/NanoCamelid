@@ -728,6 +728,7 @@ expect_output "evidence-1b json records quantization" "\"quantization\":\"q8_0\"
 expect_output "evidence-1b json records smoke prompt" "\"smoke_prompt\":\"Say hello in one sentence.\"" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records prefill batch" "\"prefill_batch\":16" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records prefill prompt" "\"prefill_prompt\":\"Explain one practical Raspberry Pi inference bottleneck in two short sentences.\"" ./scripts/pi/evidence-1b.sh --dry-run
+expect_output "evidence-1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" ./scripts/pi/evidence-1b.sh --help
 expect_output "evidence-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records context limit" "\"context_limit\":\"512\"" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json records context caps" "\"context_pack_caps\":[512,1024,2048,4096,8192]" ./scripts/pi/evidence-1b.sh --dry-run
@@ -747,6 +748,7 @@ expect_failure "evidence-1b invalid explicit model path" ./scripts/pi/evidence-1
 expect_failure "evidence-1b invalid smoke kind" env NANOCAMELID_SMOKE_KIND=bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=0 ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure_output "evidence-1b invalid prefill batch" "NANOCAMELID_PREFILL_BATCH must be a positive integer: bad" env NANOCAMELID_PREFILL_BATCH=bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid context caps" env NANOCAMELID_CONTEXT_PACKS=512,bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid prefill batches" env NANOCAMELID_PREFILL_BATCHES=1,bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure_output "evidence-1b duplicate context cap" "Duplicate context cap: 512" env NANOCAMELID_CONTEXT_PACKS=512,1024,512 ./scripts/pi/evidence-1b.sh --dry-run
