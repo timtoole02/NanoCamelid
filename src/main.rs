@@ -140,6 +140,8 @@ fn main() -> ExitCode {
                                 &parsed.prompt,
                                 parsed.temp,
                                 parsed.max_tokens,
+                                parsed.model_source,
+                                parsed.audit_1b_shape,
                             )
                         })
                     }
@@ -168,6 +170,8 @@ fn main() -> ExitCode {
                                 &parsed.prompt,
                                 parsed.temp,
                                 parsed.max_tokens,
+                                parsed.model_source,
+                                parsed.audit_1b_shape,
                             )
                         })
                     }
@@ -4926,6 +4930,8 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         &chat_prompt,
         chat_temp.expect("chat temp should be parsed when chat is on"),
         chat_tokens.expect("chat tokens should be parsed when chat is on"),
+        smoke.model_source,
+        true,
     );
     if chat_code == ExitCode::SUCCESS {
         println!("ready_1b_status: ok");
@@ -5915,32 +5921,62 @@ fn audit_direct_1b_launch(model_path: &str, audit_1b_shape: bool) -> Option<Exit
     (audit_code != ExitCode::SUCCESS).then_some(audit_code)
 }
 
-fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
-    run_generation_with_prompt_builder("generate", model_path, temp, max_tokens, |_tokenizer| {
-        Ok(GenerationPromptPlan {
-            text: prompt.to_owned(),
-            add_special: true,
-            parse_special: true,
-            renderer: None,
-            template_format: None,
-        })
-    })
+fn run_generation(
+    model_path: &Path,
+    prompt: &str,
+    temp: f32,
+    max_tokens: usize,
+    model_source: &str,
+    audit_1b_shape: bool,
+) -> ExitCode {
+    run_generation_with_prompt_builder(
+        "generate",
+        model_path,
+        temp,
+        max_tokens,
+        |_tokenizer| {
+            Ok(GenerationPromptPlan {
+                text: prompt.to_owned(),
+                add_special: true,
+                parse_special: true,
+                renderer: None,
+                template_format: None,
+            })
+        },
+        model_source,
+        audit_1b_shape,
+    )
 }
 
-fn run_chat(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
-    run_generation_with_prompt_builder("chat", model_path, temp, max_tokens, |tokenizer| {
-        let rendered = tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
-            role: "user",
-            content: prompt,
-        }]);
-        Ok(GenerationPromptPlan {
-            text: rendered.text,
-            add_special: rendered.add_special,
-            parse_special: rendered.parse_special,
-            renderer: Some(rendered.renderer),
-            template_format: tokenizer.chat_template_format(),
-        })
-    })
+fn run_chat(
+    model_path: &Path,
+    prompt: &str,
+    temp: f32,
+    max_tokens: usize,
+    model_source: &str,
+    audit_1b_shape: bool,
+) -> ExitCode {
+    run_generation_with_prompt_builder(
+        "chat",
+        model_path,
+        temp,
+        max_tokens,
+        |tokenizer| {
+            let rendered = tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
+                role: "user",
+                content: prompt,
+            }]);
+            Ok(GenerationPromptPlan {
+                text: rendered.text,
+                add_special: rendered.add_special,
+                parse_special: rendered.parse_special,
+                renderer: Some(rendered.renderer),
+                template_format: tokenizer.chat_template_format(),
+            })
+        },
+        model_source,
+        audit_1b_shape,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -6718,6 +6754,8 @@ fn run_generation_with_prompt_builder<F>(
     temp: f32,
     max_tokens: usize,
     prompt_builder: F,
+    model_source: &str,
+    audit_1b_shape: bool,
 ) -> ExitCode
 where
     F: FnOnce(&tokenizer::Tokenizer) -> Result<GenerationPromptPlan, String>,
@@ -7070,6 +7108,8 @@ where
         generation_status_json(GenerationStatusJson {
             command,
             model_path,
+            model_source,
+            audit_1b_shape,
             architecture: &config.architecture,
             renderer: prompt_plan.renderer,
             template_format: prompt_plan.template_format,
@@ -7088,6 +7128,8 @@ where
 struct GenerationStatusJson<'a> {
     command: &'a str,
     model_path: &'a Path,
+    model_source: &'a str,
+    audit_1b_shape: bool,
     architecture: &'a str,
     renderer: Option<&'a str>,
     template_format: Option<&'a str>,
@@ -7104,10 +7146,29 @@ fn generation_status_json(status: GenerationStatusJson<'_>) -> String {
     } else {
         None
     };
+    let target = if status.audit_1b_shape {
+        json_string("llama32-1b")
+    } else {
+        "null".to_owned()
+    };
+    let shape = if status.audit_1b_shape {
+        json_string("llama32_1b")
+    } else {
+        "null".to_owned()
+    };
+    let shape_ready = if status.audit_1b_shape {
+        "true"
+    } else {
+        "null"
+    };
     format!(
-        "{{\"command\":{},\"status\":\"ok\",\"model\":{},\"architecture\":{},\"renderer\":{},\"template_format\":{},\"prompt_tokens\":{},\"generated_tokens\":{},\"prefill_batch\":{},\"prefill_sec\":{},\"generation_sec\":{},\"tokens_per_sec\":{}}}",
+        "{{\"command\":{},\"status\":\"ok\",\"model\":{},\"selected_source\":{},\"target\":{},\"shape\":{},\"shape_ready\":{},\"architecture\":{},\"renderer\":{},\"template_format\":{},\"prompt_tokens\":{},\"generated_tokens\":{},\"prefill_batch\":{},\"prefill_sec\":{},\"generation_sec\":{},\"tokens_per_sec\":{}}}",
         json_string(status.command),
         json_string(&status.model_path.display().to_string()),
+        json_string(status.model_source),
+        target,
+        shape,
+        shape_ready,
         json_string(status.architecture),
         json_string_or_null(status.renderer),
         json_string_or_null(status.template_format),
@@ -9545,6 +9606,8 @@ flags\t\t: sse4_2 avx2
             generation_status_json(GenerationStatusJson {
                 command: "chat",
                 model_path: Path::new("/models/Llama-3.2-1B-Instruct-Q4_0.gguf"),
+                model_source: "workspace Q4_0 default",
+                audit_1b_shape: true,
                 architecture: "llama",
                 renderer: Some("llama3_instruct"),
                 template_format: Some("llama3"),
@@ -9554,7 +9617,7 @@ flags\t\t: sse4_2 avx2
                 prefill_sec: 0.5,
                 generation_sec: 0.25,
             }),
-            "{\"command\":\"chat\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"architecture\":\"llama\",\"renderer\":\"llama3_instruct\",\"template_format\":\"llama3\",\"prompt_tokens\":19,\"generated_tokens\":2,\"prefill_batch\":16,\"prefill_sec\":0.500000,\"generation_sec\":0.250000,\"tokens_per_sec\":8.000000}"
+            "{\"command\":\"chat\",\"status\":\"ok\",\"model\":\"/models/Llama-3.2-1B-Instruct-Q4_0.gguf\",\"selected_source\":\"workspace Q4_0 default\",\"target\":\"llama32-1b\",\"shape\":\"llama32_1b\",\"shape_ready\":true,\"architecture\":\"llama\",\"renderer\":\"llama3_instruct\",\"template_format\":\"llama3\",\"prompt_tokens\":19,\"generated_tokens\":2,\"prefill_batch\":16,\"prefill_sec\":0.500000,\"generation_sec\":0.250000,\"tokens_per_sec\":8.000000}"
         );
     }
 
@@ -9564,6 +9627,8 @@ flags\t\t: sse4_2 avx2
             generation_status_json(GenerationStatusJson {
                 command: "generate",
                 model_path: Path::new("/models/model.gguf"),
+                model_source: "explicit argument",
+                audit_1b_shape: false,
                 architecture: "llama",
                 renderer: None,
                 template_format: None,
@@ -9573,7 +9638,7 @@ flags\t\t: sse4_2 avx2
                 prefill_sec: f64::INFINITY,
                 generation_sec: 0.0,
             }),
-            "{\"command\":\"generate\",\"status\":\"ok\",\"model\":\"/models/model.gguf\",\"architecture\":\"llama\",\"renderer\":null,\"template_format\":null,\"prompt_tokens\":1,\"generated_tokens\":0,\"prefill_batch\":16,\"prefill_sec\":null,\"generation_sec\":0.000000,\"tokens_per_sec\":null}"
+            "{\"command\":\"generate\",\"status\":\"ok\",\"model\":\"/models/model.gguf\",\"selected_source\":\"explicit argument\",\"target\":null,\"shape\":null,\"shape_ready\":null,\"architecture\":\"llama\",\"renderer\":null,\"template_format\":null,\"prompt_tokens\":1,\"generated_tokens\":0,\"prefill_batch\":16,\"prefill_sec\":null,\"generation_sec\":0.000000,\"tokens_per_sec\":null}"
         );
     }
 
