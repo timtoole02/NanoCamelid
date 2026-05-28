@@ -150,6 +150,11 @@ parse_unique_positive_integer_list() {
   local parsed=()
   local seen=" "
 
+  if [[ "$value" =~ (^|,)[[:space:]]*(,|$) ]]; then
+    echo "Invalid $label: empty value" >&2
+    exit 2
+  fi
+
   for item in ${value//,/ }; do
     if [[ ! "$item" =~ ^[1-9][0-9]*$ ]]; then
       echo "Invalid $label: $item" >&2

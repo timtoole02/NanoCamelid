@@ -309,26 +309,7 @@ BINARY="${NANOCAMELID_BIN:-$TARGET_DIR/release/nanocamelid}"
 export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
 
-BATCHES=()
-SEEN_BATCHES=" "
-for batch in ${BATCHES_RAW//,/ }; do
-  if [[ ! "$batch" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Invalid prefill batch size: $batch" >&2
-    exit 2
-  fi
-  case "$SEEN_BATCHES" in
-    *" $batch "*)
-      echo "Duplicate prefill batch size: $batch" >&2
-      exit 2
-      ;;
-  esac
-  BATCHES+=("$batch")
-  SEEN_BATCHES+="$batch "
-done
-if [[ ${#BATCHES[@]} -eq 0 ]]; then
-  echo "No prefill batch sizes were provided." >&2
-  exit 2
-fi
+BATCHES=($(parse_unique_positive_integer_list "prefill batch size" "$BATCHES_RAW"))
 
 if [[ -x "$BINARY" ]]; then
   launcher_mode="binary"

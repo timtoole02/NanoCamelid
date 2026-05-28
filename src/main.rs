@@ -2658,8 +2658,17 @@ fn parse_bench_1b_args_with_env(
 fn parse_prefill_batches(value: &str) -> Result<Vec<usize>, &'static str> {
     let batches = value
         .split(',')
+        .map(|part| part.trim())
+        .map(|part| {
+            if part.is_empty() {
+                Err("1B prefill benchmark batches must be positive integers")
+            } else {
+                Ok(part)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .flat_map(|part| part.split_whitespace())
-        .filter(|part| !part.is_empty())
         .map(|part| {
             part.parse::<usize>()
                 .ok()
@@ -2680,8 +2689,17 @@ fn parse_prefill_batches(value: &str) -> Result<Vec<usize>, &'static str> {
 fn parse_context_packs(value: &str) -> Result<Vec<usize>, &'static str> {
     let packs = value
         .split(',')
+        .map(|part| part.trim())
+        .map(|part| {
+            if part.is_empty() {
+                Err("1B evidence context packs must be positive integers")
+            } else {
+                Ok(part)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .flat_map(|part| part.split_whitespace())
-        .filter(|part| !part.is_empty())
         .map(|part| {
             part.parse::<usize>()
                 .ok()
@@ -8206,6 +8224,14 @@ flags\t\t: sse4_2 avx2
             "1B prefill benchmark batches must be positive integers"
         );
         assert_eq!(
+            parse_prefill_batches("1,,16").expect_err("empty batch should fail"),
+            "1B prefill benchmark batches must be positive integers"
+        );
+        assert_eq!(
+            parse_prefill_batches("1, ,16").expect_err("blank batch should fail"),
+            "1B prefill benchmark batches must be positive integers"
+        );
+        assert_eq!(
             parse_prefill_batches("16, 32 16").expect_err("duplicate batch should fail"),
             "1B prefill benchmark batches must be unique"
         );
@@ -8307,6 +8333,14 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(
             parse_context_packs("512,0").expect_err("zero context pack should fail"),
+            "1B evidence context packs must be positive integers"
+        );
+        assert_eq!(
+            parse_context_packs("512,,1024").expect_err("empty context pack should fail"),
+            "1B evidence context packs must be positive integers"
+        );
+        assert_eq!(
+            parse_context_packs("512, ,1024").expect_err("blank context pack should fail"),
             "1B evidence context packs must be positive integers"
         );
         assert_eq!(

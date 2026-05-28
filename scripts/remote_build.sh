@@ -171,6 +171,11 @@ require_context_caps() {
   local cap_count=0
   local seen_caps=" "
 
+  if [[ "$raw_caps" =~ (^|,)[[:space:]]*(,|$) ]]; then
+    echo "Context cap must be a positive integer: empty value" >&2
+    exit 2
+  fi
+
   for cap in ${raw_caps//,/ }; do
     cap_count=$((cap_count + 1))
     if [[ ! "$cap" =~ ^[1-9][0-9]*$ ]]; then
@@ -196,6 +201,11 @@ require_prefill_batches() {
   local batch
   local batch_count=0
   local seen_batches=" "
+
+  if [[ "$raw_batches" =~ (^|,)[[:space:]]*(,|$) ]]; then
+    echo "Prefill batch size must be a positive integer: empty value" >&2
+    exit 2
+  fi
 
   for batch in ${raw_batches//,/ }; do
     batch_count=$((batch_count + 1))

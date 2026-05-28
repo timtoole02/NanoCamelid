@@ -473,8 +473,10 @@ expect_failure "evidence 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH
 expect_failure "evidence 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- evidence 1b --dry-run
 expect_failure "evidence 1b invalid explicit model path" cargo run -- evidence 1b /models/not-a-gguf --dry-run
 expect_failure "evidence 1b invalid context pack" env NANOCAMELID_CONTEXT_PACKS=512,bad cargo run -- evidence 1b --dry-run
+expect_failure "evidence 1b empty context pack" env NANOCAMELID_CONTEXT_PACKS=512,,1024 cargo run -- evidence 1b --dry-run
 expect_failure "evidence 1b duplicate context pack" env NANOCAMELID_CONTEXT_PACKS=512,512 cargo run -- evidence 1b --dry-run
 expect_failure "evidence 1b invalid prefill batches" env NANOCAMELID_PREFILL_BATCHES=1,bad cargo run -- evidence 1b --dry-run
+expect_failure "evidence 1b empty prefill batch" env NANOCAMELID_PREFILL_BATCHES=1,,16 cargo run -- evidence 1b --dry-run
 
 echo "==> Checking 1B TUI CLI dry run..."
 cargo run -- tui 1b --dry-run
@@ -692,6 +694,7 @@ expect_failure "bench-1b-prefill invalid temperature" env NANOCAMELID_PREFILL_TE
 
 echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid batch size..."
 expect_failure "bench-1b-prefill invalid batch size" env NANOCAMELID_PREFILL_BATCHES=1,bad,32 ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_failure_output "bench-1b-prefill empty batch size" "Invalid prefill batch size: empty value" env NANOCAMELID_PREFILL_BATCHES=1,,32 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill duplicate batch size" env NANOCAMELID_PREFILL_BATCHES=16,32,16 ./scripts/pi/bench-1b-prefill.sh --dry-run
 
 echo "==> Checking 1B Pi context-pack launcher dry run..."
@@ -719,6 +722,7 @@ expect_failure "context-pack-1b repo-local target dir" env CARGO_TARGET_DIR=targ
 
 echo "==> Checking 1B Pi context-pack launcher rejects invalid context cap..."
 expect_failure "context-pack-1b invalid context cap" env NANOCAMELID_CONTEXT_PACKS=512,bad,2048 ./scripts/pi/context-pack-1b.sh --dry-run
+expect_failure_output "context-pack-1b empty context cap" "Invalid context cap: empty value" env NANOCAMELID_CONTEXT_PACKS=512,,2048 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_failure_output "context-pack-1b duplicate context cap" "Duplicate context cap: 512" env NANOCAMELID_CONTEXT_PACKS=512,512 ./scripts/pi/context-pack-1b.sh --dry-run
 
 echo "==> Checking 1B Pi evidence bundle dry run..."
@@ -758,6 +762,8 @@ expect_failure "evidence-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT
 expect_failure_output "evidence-1b invalid prefill batch" "NANOCAMELID_PREFILL_BATCH must be a positive integer: bad" env NANOCAMELID_PREFILL_BATCH=bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid context caps" env NANOCAMELID_CONTEXT_PACKS=512,bad ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b invalid prefill batches" env NANOCAMELID_PREFILL_BATCHES=1,bad ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure_output "evidence-1b empty context cap" "Invalid context cap: empty value" env NANOCAMELID_CONTEXT_PACKS=512,,1024 ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure_output "evidence-1b empty prefill batch" "Invalid prefill batch size: empty value" env NANOCAMELID_PREFILL_BATCHES=1,,16 ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure_output "evidence-1b duplicate context cap" "Duplicate context cap: 512" env NANOCAMELID_CONTEXT_PACKS=512,1024,512 ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure_output "evidence-1b duplicate prefill batch" "Duplicate prefill batch size: 16" env NANOCAMELID_PREFILL_BATCHES=1,16,16 ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure "evidence-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/evidence-1b.sh
@@ -826,6 +832,7 @@ expect_output "remote_build context-pack command carries prefill batch" "context
 
 echo "==> Checking remote Pi build launcher rejects invalid context packs..."
 expect_failure "remote_build invalid context cap" env NANOCAMELID_REMOTE_CONTEXT_PACKS=512,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure_output "remote_build empty context cap" "Context cap must be a positive integer: empty value" env NANOCAMELID_REMOTE_CONTEXT_PACKS=512,,1024 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build duplicate context cap" env NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024,512 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher plans optional 1B prefill sweep..."
@@ -847,6 +854,7 @@ expect_output "remote_build evidence off uses readiness" "evidence_command: skip
 
 echo "==> Checking remote Pi build launcher rejects invalid prefill sweep settings..."
 expect_failure "remote_build invalid prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=1,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure_output "remote_build empty prefill batch" "Prefill batch size must be a positive integer: empty value" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=1,,16 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build duplicate prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=16,32,16 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build invalid prefill token count" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build invalid prefill temperature" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TEMP=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
