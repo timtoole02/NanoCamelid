@@ -639,11 +639,14 @@ expect_failure "chat-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scr
 
 echo "==> Checking 1B Pi chat launcher rejects invalid temperature..."
 expect_failure "chat-1b invalid temperature" env NANOCAMELID_TEMP=bad ./scripts/pi/chat-1b.sh --dry-run
+expect_failure "chat-1b invalid smoke toggle" env NANOCAMELID_CHAT_SMOKE=flase ./scripts/pi/chat-1b.sh --dry-run
 
 echo "==> Checking 1B Pi chat launcher ignores smoke env when smoke is disabled..."
 env NANOCAMELID_CHAT_SMOKE=0 NANOCAMELID_CHAT_SMOKE_KIND=bad NANOCAMELID_CHAT_SMOKE_TOKENS=bad ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b disabled smoke keeps model audit" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" env NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh --dry-run
 expect_output "chat-1b disabled smoke skips smoke command" "smoke_command: skipped" env NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b smoke off keeps model audit" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" env NANOCAMELID_CHAT_SMOKE=off ./scripts/pi/chat-1b.sh --dry-run
+expect_output "chat-1b smoke off skips smoke command" "smoke_command: skipped" env NANOCAMELID_CHAT_SMOKE=off ./scripts/pi/chat-1b.sh --dry-run
 
 echo "==> Checking 1B Pi prefill benchmark launcher dry run..."
 ./scripts/pi/bench-1b-prefill.sh --dry-run

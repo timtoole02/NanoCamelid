@@ -23,7 +23,7 @@ Useful env:
   NANOCAMELID_MODEL_GGUF         Shared 1B GGUF override
   NANOCAMELID_PREFILL_BATCH      Prefill prompt token batch size, default 16
   NANOCAMELID_CONTEXT_LIMIT      Optional runtime context cap
-  NANOCAMELID_CHAT_SMOKE=0       Skip the pre-chat smoke gate; false/no are also accepted
+  NANOCAMELID_CHAT_SMOKE=0       Skip the pre-chat smoke gate; false/no/off are also accepted
   NANOCAMELID_CHAT_SMOKE_KIND    Smoke kind: chat, model, q8-chat, or q8-model; default chat
   NANOCAMELID_TEMP               Chat temperature, default 0.0
   NANOCAMELID_MAX_TOKENS         Max tokens per assistant turn, default 64
@@ -165,7 +165,15 @@ export NANOCAMELID_Q8_DOT_SDOT="${NANOCAMELID_Q8_DOT_SDOT:-1}"
 export NANOCAMELID_Q8_DOT_KERNEL="${NANOCAMELID_Q8_DOT_KERNEL:-sdot}"
 
 case "$SMOKE_ENABLED_LOWER" in
-  0 | false | no) ;;
+  "" | 0 | 1 | false | true | no | yes | off | on) ;;
+  *)
+    echo "NANOCAMELID_CHAT_SMOKE must be 0, 1, false, true, no, yes, off, or on: $SMOKE_ENABLED" >&2
+    exit 2
+    ;;
+esac
+
+case "$SMOKE_ENABLED_LOWER" in
+  0 | false | no | off) ;;
   *)
     require_positive_integer "Smoke token count" "$SMOKE_TOKENS"
     if [[ "$SMOKE_KIND" != "model" && "$SMOKE_KIND" != "chat" && "$SMOKE_KIND" != "q8-model" && "$SMOKE_KIND" != "q8-chat" ]]; then
@@ -203,7 +211,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "smoke_prompt: $SMOKE_PROMPT"
   echo "smoke_tokens: $SMOKE_TOKENS"
   case "$SMOKE_ENABLED_LOWER" in
-    0 | false | no)
+    0 | false | no | off)
       printf 'model_command: '
       shell_command nanocamelid model 1b "$MODEL"
       echo "smoke_command: skipped"
@@ -258,7 +266,7 @@ exec_nanocamelid() {
 }
 
 case "$SMOKE_ENABLED_LOWER" in
-  0 | false | no)
+  0 | false | no | off)
     echo "Running 1B model shape audit before launching chat..."
     run_nanocamelid model 1b "$MODEL"
     ;;

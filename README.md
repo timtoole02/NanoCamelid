@@ -635,7 +635,9 @@ inspect and smoke when you only need the readiness gate:
 ./scripts/pi/ready-1b.sh --smoke-only
 ```
 
-For faster local iteration, disable the preflight smoke gate explicitly:
+For faster local iteration, disable the preflight smoke gate explicitly. The
+1B launcher also accepts `false`, `no`, and `off`, and rejects misspelled
+toggle values:
 
 ```bash
 NANOCAMELID_CHAT_SMOKE=0 ./scripts/pi/chat-1b.sh
