@@ -531,6 +531,7 @@ expect_failure "bench 1b duplicate batch" cargo run -- bench 1b prompt 1 0.0 16,
 expect_failure "bench 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- bench 1b --dry-run
 expect_failure "bench 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- bench 1b --dry-run
 expect_failure "bench 1b invalid explicit model path" cargo run -- bench 1b /models/not-a-gguf --dry-run
+expect_failure "bench 1b unknown option" cargo run -- bench 1b --oops --dry-run
 
 echo "==> Checking 1B model audit dry run..."
 ./scripts/pi/model-1b.sh --dry-run
@@ -675,6 +676,7 @@ expect_failure "bench-1b-prefill invalid context limit" env NANOCAMELID_CONTEXT_
 expect_failure "bench-1b-prefill invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid explicit model path" ./scripts/pi/bench-1b-prefill.sh /models/not-a-gguf --dry-run
+expect_failure "bench-1b-prefill unknown option" ./scripts/pi/bench-1b-prefill.sh --oops --dry-run
 expect_failure "bench-1b-prefill repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/bench-1b-prefill.sh
 
 echo "==> Checking 1B Pi prefill benchmark launcher rejects invalid generated token count..."

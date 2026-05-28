@@ -2560,6 +2560,7 @@ fn parse_bench_1b_args_with_env(
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            arg if arg.starts_with("--") => return Err("unknown 1B prefill benchmark option"),
             _ => positionals.push(arg.clone()),
         }
     }
@@ -7802,6 +7803,16 @@ flags\t\t: sse4_2 avx2
             )
             .expect_err("path-like non-GGUF benchmark arg should fail"),
             "1B prefill benchmark model argument must be a .gguf path"
+        );
+        assert_eq!(
+            parse_bench_1b_args_with_path(
+                &["--oops".to_owned(), "--dry-run".to_owned()],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("unknown long option should fail before becoming a prompt"),
+            "unknown 1B prefill benchmark option"
         );
         assert_eq!(
             parse_bench_1b_args_with_path(

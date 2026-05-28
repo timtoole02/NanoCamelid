@@ -242,6 +242,10 @@ for arg in "$@"; do
     --dry-run)
       DRY_RUN=1
       ;;
+    --*)
+      echo "Unknown prefill benchmark option: $arg" >&2
+      exit 2
+      ;;
     *)
       POSITIONAL_ARGS+=("$arg")
       ;;
