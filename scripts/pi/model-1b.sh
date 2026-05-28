@@ -181,6 +181,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   shell_command nanocamelid smoke 1b "$MODEL" chat "Say hello in one sentence." 8
   printf 'ready_command: '
   shell_command nanocamelid ready 1b "$MODEL"
+  printf 'evidence_command: '
+  shell_command nanocamelid evidence 1b "$MODEL"
   exit 0
 fi
 

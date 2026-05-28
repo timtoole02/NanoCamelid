@@ -4689,6 +4689,10 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
             "ready_command: {}",
             shell_command(&["nanocamelid", "ready", "1b", &model_arg])
         );
+        println!(
+            "evidence_command: {}",
+            shell_command(&["nanocamelid", "evidence", "1b", &model_arg])
+        );
         return ExitCode::SUCCESS;
     }
 

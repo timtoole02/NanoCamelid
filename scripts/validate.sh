@@ -314,6 +314,7 @@ expect_output "model 1b model audit command" "model_command: nanocamelid model 1
 expect_output "model 1b inspect follow-up command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
 expect_output "model 1b smoke follow-up command" "smoke_command: nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" cargo run -- model 1b --dry-run
 expect_output "model 1b ready follow-up command" "ready_command: nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
+expect_output "model 1b evidence follow-up command" "evidence_command: nanocamelid evidence 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
 
 echo "==> Checking 1B model audit CLI rejects non-GGUF model args..."
 expect_failure "model 1b invalid model arg" cargo run -- model 1b not-a-model --dry-run
@@ -545,6 +546,7 @@ expect_output "model-1b model audit command" "model_command: nanocamelid model 1
 expect_output "model-1b inspect follow-up command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b smoke follow-up command" "smoke_command: nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b ready follow-up command" "ready_command: nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
+expect_output "model-1b evidence follow-up command" "evidence_command: nanocamelid evidence 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
 
 echo "==> Checking 1B model audit rejects non-GGUF model args..."
 expect_failure "model-1b invalid model arg" ./scripts/pi/model-1b.sh not-a-model --dry-run
