@@ -5157,6 +5157,18 @@ fn evidence_context_pack_command(parsed: &Evidence1BArgs, cap: usize) -> String 
 }
 
 fn evidence_prefill_bench_command(parsed: &Evidence1BArgs, context_limit: Option<&str>) -> String {
+    evidence_prefill_bench_command_with_env(
+        parsed,
+        context_limit,
+        prefill_batch_env_value().as_deref(),
+    )
+}
+
+fn evidence_prefill_bench_command_with_env(
+    parsed: &Evidence1BArgs,
+    context_limit: Option<&str>,
+    prefill_batch: Option<&str>,
+) -> String {
     let max_tokens = parsed.prefill.max_tokens.to_string();
     let batches = join_usize_values(&parsed.prefill.batches, ",");
     let args = [
@@ -5169,7 +5181,7 @@ fn evidence_prefill_bench_command(parsed: &Evidence1BArgs, context_limit: Option
         &parsed.prefill.temp,
         &batches,
     ];
-    shell_command_with_optional_runtime_env(&args, context_limit, None)
+    shell_command_with_optional_runtime_env(&args, context_limit, prefill_batch)
 }
 
 fn evidence_1b_status_json(parsed: &Evidence1BArgs) -> String {
@@ -7174,8 +7186,9 @@ mod tests {
         TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         evidence_1b_status_json, evidence_context_pack_command, evidence_model_command,
-        evidence_prefill_bench_command, evidence_ready_no_chat_command, generation_status_json,
-        help_topic_for_args, help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
+        evidence_prefill_bench_command, evidence_prefill_bench_command_with_env,
+        evidence_ready_no_chat_command, generation_status_json, help_topic_for_args,
+        help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
         llama32_1b_quantization_for_path, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
@@ -7957,6 +7970,10 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             evidence_prefill_bench_command(&parsed, Some("512")),
             "NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid bench 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2 0.0 '1,16,32,64'"
+        );
+        assert_eq!(
+            evidence_prefill_bench_command_with_env(&parsed, Some("512"), Some("32")),
+            "NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 nanocamelid bench 1b /models/Llama-3.2-1B-Instruct-Q4_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2 0.0 '1,16,32,64'"
         );
         assert_eq!(
             evidence_1b_status_json(&parsed),
