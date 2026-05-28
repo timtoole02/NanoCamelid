@@ -766,6 +766,7 @@ expect_failure_output "evidence-1b empty context cap" "Invalid context cap: empt
 expect_failure_output "evidence-1b empty prefill batch" "Invalid prefill batch size: empty value" env NANOCAMELID_PREFILL_BATCHES=1,,16 ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure_output "evidence-1b duplicate context cap" "Duplicate context cap: 512" env NANOCAMELID_CONTEXT_PACKS=512,1024,512 ./scripts/pi/evidence-1b.sh --dry-run
 expect_failure_output "evidence-1b duplicate prefill batch" "Duplicate prefill batch size: 16" env NANOCAMELID_PREFILL_BATCHES=1,16,16 ./scripts/pi/evidence-1b.sh --dry-run
+expect_failure_output "evidence-1b actual log records context caps before model load" "context_pack_caps: 512 1024" env NANOCAMELID_CONTEXT_PACKS=512,1024 ./scripts/pi/evidence-1b.sh
 expect_failure "evidence-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/evidence-1b.sh
 
 echo "==> Checking Strand cluster launcher dry run..."
