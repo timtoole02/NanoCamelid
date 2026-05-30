@@ -762,10 +762,12 @@ fn print_usage() {
     println!(
         "                                            Run inspect, smoke, and direct chat gates for 1B"
     );
-    println!("  evidence 1b [model.gguf] [--dry-run]");
+    println!("  evidence 1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!("                                            Run the bounded 1B evidence bundle");
     println!("  bench q8-dot [iterations] [runs]          Benchmark Q8 dot product kernels");
-    println!("  bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]");
+    println!(
+        "  bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--q4|--q8] [--dry-run]"
+    );
     println!("                                            Run the Pi 1B prefill sweep");
     println!("  smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!(
@@ -1060,14 +1062,16 @@ fn print_evidence_usage() {
     println!("NanoCamelid evidence");
     println!();
     println!("Usage:");
-    println!("  nanocamelid evidence 1b [model.gguf] [--dry-run]");
-    println!("  nanocamelid evidence llama32-1b [model.gguf] [--dry-run]");
+    println!("  nanocamelid evidence 1b [model.gguf] [--q4|--q8] [--dry-run]");
+    println!("  nanocamelid evidence llama32-1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!();
     println!(
         "Run the bounded Llama 3.2 1B evidence bundle: readiness without final chat, context-pack smoke, and prefill batch sweep."
     );
     println!();
     println!("Options:");
+    println!("  --q4                                     Select the Pi-local Q4_0 default row");
+    println!("  --q8                                     Select the Pi-local Q8_0 default row");
     println!(
         "  --dry-run                                Print the resolved evidence plan without loading the model"
     );
@@ -1087,6 +1091,7 @@ fn print_evidence_usage() {
     println!("  {PREFILL_TOKENS_ENV:<38} 1B generated token count");
     println!("  {PREFILL_TEMP_ENV:<38} 1B sweep temperature");
     println!("  {PREFILL_BATCHES_ENV:<38} 1B prefill batch list");
+    println!("Explicit model paths override --q4/--q8 and env defaults.");
 }
 
 fn print_bench_usage() {
@@ -1097,7 +1102,7 @@ fn print_bench_usage() {
     println!("  nanocamelid bench q4-layout [rows] [cols] [runs]");
     println!("  nanocamelid bench q4-prefill [prompt_len] [batch_size] [runs]");
     println!(
-        "  nanocamelid bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]"
+        "  nanocamelid bench 1b [model.gguf] [prompt] [max_tokens] [temp] [batches] [--q4|--q8] [--dry-run]"
     );
     println!();
     println!("Args:");
@@ -1144,6 +1149,8 @@ fn print_bench_usage() {
     );
     println!();
     println!("Options:");
+    println!("  --q4                                     Select the Pi-local Q4_0 default row");
+    println!("  --q8                                     Select the Pi-local Q8_0 default row");
     println!(
         "  --dry-run                                Print the 1B prefill sweep plan without loading the model"
     );
@@ -2536,10 +2543,21 @@ fn parse_evidence_1b_args_with_env(
         "1B evidence env model path must be a .gguf path",
     )?;
     let mut dry_run = false;
+    let mut selected_quant = None;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--q4" => {
+                if selected_quant.replace(LLAMA32_1B_Q4_MODEL).is_some() {
+                    return Err("1B evidence accepts only one quantization selector");
+                }
+            }
+            "--q8" => {
+                if selected_quant.replace(LLAMA32_1B_Q8_MODEL).is_some() {
+                    return Err("1B evidence accepts only one quantization selector");
+                }
+            }
             arg if arg.starts_with('-') => return Err("unknown 1B evidence option"),
             _ => positionals.push(arg.clone()),
         }
@@ -2554,6 +2572,11 @@ fn parse_evidence_1b_args_with_env(
     let q8_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q8_MODEL);
     let (model_path, model_source) = if let Some(model_path) = positionals.first() {
         (model_path.clone(), "explicit argument")
+    } else if let Some(model_name) = selected_quant {
+        (
+            llama32_1b_model_path(workspace, model_name),
+            llama32_1b_requested_model_source(model_name),
+        )
     } else if let Some((model_path, source)) = env_model_path {
         (model_path, source)
     } else if q4_exists {
@@ -2651,10 +2674,21 @@ fn parse_bench_1b_args_with_env(
         "1B benchmark env model path must be a .gguf path",
     )?;
     let mut dry_run = false;
+    let mut selected_quant = None;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--q4" => {
+                if selected_quant.replace(LLAMA32_1B_Q4_MODEL).is_some() {
+                    return Err("1B prefill benchmark accepts only one quantization selector");
+                }
+            }
+            "--q8" => {
+                if selected_quant.replace(LLAMA32_1B_Q8_MODEL).is_some() {
+                    return Err("1B prefill benchmark accepts only one quantization selector");
+                }
+            }
             arg if arg.starts_with("--") => return Err("unknown 1B prefill benchmark option"),
             _ => positionals.push(arg.clone()),
         }
@@ -2671,6 +2705,14 @@ fn parse_bench_1b_args_with_env(
     let q8_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q8_MODEL);
     let (model_path, model_source, option_idx) = match (positionals.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => (path.clone(), "explicit argument", 1),
+        (_, _) if selected_quant.is_some() => {
+            let model_name = selected_quant.expect("selected quant should be present");
+            (
+                llama32_1b_model_path(workspace, model_name),
+                llama32_1b_requested_model_source(model_name),
+                0,
+            )
+        }
         (_, Some((path, source))) => (path, source, 0),
         _ if q4_exists => (q4_model_path.clone(), "workspace Q4_0 default", 0),
         _ => (q8_model_path.clone(), "workspace Q8_0 fallback", 0),
@@ -8291,6 +8333,44 @@ flags\t\t: sse4_2 avx2
         assert_eq!(smoke_env.model_path, "/models/smoke-override.gguf");
         assert_eq!(smoke_env.model_source, SMOKE_MODEL_GGUF_ENV);
 
+        let q4 = parse_bench_1b_args_with_path(
+            &["--q4".to_owned(), "--dry-run".to_owned()],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("q4 selector should parse");
+        assert_eq!(
+            q4.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(q4.model_source, "workspace Q4_0 requested");
+
+        let explicit = parse_bench_1b_args_with_path(
+            &[
+                "/models/custom.gguf".to_owned(),
+                "--q8".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit model should override quant selector");
+        assert_eq!(explicit.model_path, "/models/custom.gguf");
+        assert_eq!(explicit.model_source, "explicit argument");
+
+        assert_eq!(
+            parse_bench_1b_args_with_path(
+                &["--q4".to_owned(), "--q8".to_owned(), "--dry-run".to_owned()],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("conflicting quant selectors should fail"),
+            "1B prefill benchmark accepts only one quantization selector"
+        );
+
         assert_eq!(
             parse_bench_1b_args_with_path(
                 &["/models/not-a-gguf".to_owned(), "--dry-run".to_owned()],
@@ -8427,6 +8507,46 @@ flags\t\t: sse4_2 avx2
         .expect("smoke env 1B evidence path should parse");
         assert_eq!(smoke_env.model_path, "/models/smoke-override.gguf");
         assert_eq!(smoke_env.model_source, SMOKE_MODEL_GGUF_ENV);
+
+        let q8 = parse_evidence_1b_args_with_path(
+            &["--q8".to_owned(), "--dry-run".to_owned()],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("q8 selector should parse");
+        assert_eq!(
+            q8.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(q8.model_source, "workspace Q8_0 requested");
+        assert_eq!(q8.prefill.model_path, q8.model_path);
+        assert_eq!(q8.prefill.model_source, q8.model_source);
+
+        let explicit = parse_evidence_1b_args_with_path(
+            &[
+                "/models/custom.gguf".to_owned(),
+                "--q4".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit model should override quant selector");
+        assert_eq!(explicit.model_path, "/models/custom.gguf");
+        assert_eq!(explicit.model_source, "explicit argument");
+
+        assert_eq!(
+            parse_evidence_1b_args_with_path(
+                &["--q4".to_owned(), "--q8".to_owned(), "--dry-run".to_owned()],
+                None,
+                "/mnt/nanocamelid",
+                true,
+            )
+            .expect_err("conflicting quant selectors should fail"),
+            "1B evidence accepts only one quantization selector"
+        );
 
         assert_eq!(
             parse_evidence_1b_args_with_path(

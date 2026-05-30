@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: evidence-1b.sh [model.gguf] [--dry-run]
+Usage: evidence-1b.sh [model.gguf] [--q4|--q8] [--dry-run]
 
 Runs the bounded Pi-local evidence bundle for Llama 3.2 1B:
   1. strict 1B model shape audit
@@ -32,6 +32,7 @@ Useful env:
   NANOCAMELID_PREFILL_TOKENS     Generated token count for bench-1b-prefill.sh
   NANOCAMELID_PREFILL_TEMP       Temperature for bench-1b-prefill.sh
   NANOCAMELID_PREFILL_BATCHES    Batch list for bench-1b-prefill.sh
+  --q4, --q8                     Select the Pi-local Q4_0 or Q8_0 default row
   --dry-run                      Print the resolved bundle plan without loading the model
 USAGE
 }
@@ -42,11 +43,31 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 DRY_RUN=0
+QUANT_MODEL=""
 POSITIONAL_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --dry-run)
       DRY_RUN=1
+      ;;
+    --q4)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B evidence quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q4"
+      ;;
+    --q8)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B evidence quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q8"
+      ;;
+    --*)
+      echo "Unknown evidence option: $arg" >&2
+      usage >&2
+      exit 2
       ;;
     *)
       POSITIONAL_ARGS+=("$arg")
@@ -190,6 +211,12 @@ Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
 if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
   MODEL="${MODEL_ARGS[0]}"
   MODEL_SOURCE="explicit argument"
+elif [[ "$QUANT_MODEL" == "q4" ]]; then
+  MODEL="$Q4_MODEL"
+  MODEL_SOURCE="workspace Q4_0 requested"
+elif [[ "$QUANT_MODEL" == "q8" ]]; then
+  MODEL="$Q8_MODEL"
+  MODEL_SOURCE="workspace Q8_0 requested"
 elif [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
   require_gguf_model_path "NANOCAMELID_SMOKE_GGUF" "$NANOCAMELID_SMOKE_GGUF"
   MODEL="$NANOCAMELID_SMOKE_GGUF"
@@ -204,6 +231,13 @@ elif [[ -f "$Q4_MODEL" ]]; then
 else
   MODEL="$Q8_MODEL"
   MODEL_SOURCE="workspace Q8_0 fallback"
+fi
+
+CHILD_MODEL_ARGS=()
+if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
+  CHILD_MODEL_ARGS=("${MODEL_ARGS[@]}")
+elif [[ -n "$QUANT_MODEL" ]]; then
+  CHILD_MODEL_ARGS=("$MODEL")
 fi
 
 case "$SMOKE_KIND" in
@@ -276,23 +310,23 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "status_on_success: evidence_1b_status: ok"
   echo "json_on_success: $(evidence_1b_status_json)"
   printf 'model_command: '
-  if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-    shell_command ./scripts/pi/model-1b.sh "${MODEL_ARGS[@]}"
+  if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
+    shell_command ./scripts/pi/model-1b.sh "${CHILD_MODEL_ARGS[@]}"
   else
     shell_command ./scripts/pi/model-1b.sh
   fi
   printf 'ready_command: '
   context_env_prefix
-  if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-    shell_command ./scripts/pi/ready-1b.sh "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
+  if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
+    shell_command ./scripts/pi/ready-1b.sh "${CHILD_MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
   else
     shell_command ./scripts/pi/ready-1b.sh "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
   fi
   printf 'context_pack_command: '
   context_env_prefix
   env_prefix NANOCAMELID_CONTEXT_PACKS "$CONTEXT_PACKS_RAW"
-  if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-    shell_command ./scripts/pi/context-pack-1b.sh "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+  if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
+    shell_command ./scripts/pi/context-pack-1b.sh "${CHILD_MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   else
     shell_command ./scripts/pi/context-pack-1b.sh "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
   fi
@@ -311,8 +345,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
     NANOCAMELID_PREFILL_TOKENS "$PREFILL_TOKENS" \
     NANOCAMELID_PREFILL_TEMP "$PREFILL_TEMP" \
     NANOCAMELID_PREFILL_BATCHES "$PREFILL_BATCHES_RAW"
-  if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-    shell_command ./scripts/pi/bench-1b-prefill.sh "${MODEL_ARGS[@]}"
+  if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
+    shell_command ./scripts/pi/bench-1b-prefill.sh "${CHILD_MODEL_ARGS[@]}"
   else
     shell_command ./scripts/pi/bench-1b-prefill.sh
   fi
@@ -346,25 +380,25 @@ cd "$REPO"
 require_safe_cargo_target_dir "$TARGET_DIR" "$REPO"
 
 echo "==> Auditing selected 1B model"
-if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-  "$SCRIPT_DIR/model-1b.sh" "${MODEL_ARGS[@]}"
+if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
+  "$SCRIPT_DIR/model-1b.sh" "${CHILD_MODEL_ARGS[@]}"
 else
   "$SCRIPT_DIR/model-1b.sh"
 fi
 
 echo
 echo "==> Running readiness gate without final direct chat"
-if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
-  "$SCRIPT_DIR/ready-1b.sh" "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
+if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
+  "$SCRIPT_DIR/ready-1b.sh" "${CHILD_MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
 else
   "$SCRIPT_DIR/ready-1b.sh" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS" --no-chat
 fi
 
 echo
 echo "==> Running context-pack smoke gate"
-if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
+if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
   NANOCAMELID_CONTEXT_PACKS="$CONTEXT_PACKS_RAW" \
-    "$SCRIPT_DIR/context-pack-1b.sh" "${MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
+    "$SCRIPT_DIR/context-pack-1b.sh" "${CHILD_MODEL_ARGS[@]}" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
 else
   NANOCAMELID_CONTEXT_PACKS="$CONTEXT_PACKS_RAW" \
     "$SCRIPT_DIR/context-pack-1b.sh" "$SMOKE_KIND" "$SMOKE_PROMPT" "$SMOKE_TOKENS"
@@ -372,12 +406,12 @@ fi
 
 echo
 echo "==> Running prefill batch sweep"
-if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
+if [[ ${#CHILD_MODEL_ARGS[@]} -gt 0 ]]; then
   NANOCAMELID_PREFILL_PROMPT="$PREFILL_PROMPT" \
     NANOCAMELID_PREFILL_TOKENS="$PREFILL_TOKENS" \
     NANOCAMELID_PREFILL_TEMP="$PREFILL_TEMP" \
     NANOCAMELID_PREFILL_BATCHES="$PREFILL_BATCHES_RAW" \
-    "$SCRIPT_DIR/bench-1b-prefill.sh" "${MODEL_ARGS[@]}"
+    "$SCRIPT_DIR/bench-1b-prefill.sh" "${CHILD_MODEL_ARGS[@]}"
 else
   NANOCAMELID_PREFILL_PROMPT="$PREFILL_PROMPT" \
     NANOCAMELID_PREFILL_TOKENS="$PREFILL_TOKENS" \

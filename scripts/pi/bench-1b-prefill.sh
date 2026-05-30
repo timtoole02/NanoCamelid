@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: bench-1b-prefill.sh [model.gguf] [prompt] [max_tokens] [temp] [batches] [--dry-run]
+Usage: bench-1b-prefill.sh [model.gguf] [prompt] [max_tokens] [temp] [batches] [--q4|--q8] [--dry-run]
 
 Probes the host, runs the strict Llama 3.2 1B shape audit, then runs the
 Pi-local 1B chat path repeatedly with different NANOCAMELID_PREFILL_BATCH
@@ -30,6 +30,7 @@ Useful env:
   NANOCAMELID_PREFILL_TOKENS     Generated token count, default 2
   NANOCAMELID_PREFILL_TEMP       Temperature, default 0.0
   NANOCAMELID_CONTEXT_LIMIT      Optional runtime context cap
+  --q4, --q8                     Select the Pi-local Q4_0 or Q8_0 default row
   --dry-run                      Print the resolved sweep plan without loading the model
 USAGE
 }
@@ -236,11 +237,26 @@ prefill_summary_json() {
 }
 
 DRY_RUN=0
+QUANT_MODEL=""
 POSITIONAL_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --dry-run)
       DRY_RUN=1
+      ;;
+    --q4)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B prefill benchmark quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q4"
+      ;;
+    --q8)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B prefill benchmark quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q8"
       ;;
     --*)
       echo "Unknown prefill benchmark option: $arg" >&2
@@ -266,7 +282,13 @@ REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
-if [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
+if [[ "$QUANT_MODEL" == "q4" ]]; then
+  MODEL="$Q4_MODEL"
+  MODEL_SOURCE="workspace Q4_0 requested"
+elif [[ "$QUANT_MODEL" == "q8" ]]; then
+  MODEL="$Q8_MODEL"
+  MODEL_SOURCE="workspace Q8_0 requested"
+elif [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
   MODEL="$NANOCAMELID_SMOKE_GGUF"
   MODEL_SOURCE="NANOCAMELID_SMOKE_GGUF"
 elif [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then

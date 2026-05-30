@@ -140,6 +140,8 @@ audit, readiness no-chat, per-context smoke, and prefill sweep commands plus a
 compact `json_on_success` row before loading the model. When
 `NANOCAMELID_PREFILL_BATCH` is set, the dry-run prefill sweep command includes
 that env var so the printed plan matches the inherited smoke preflight batch.
+Both evidence entry points accept `--q4` or `--q8` to force the Pi-local
+default quantization row; explicit `.gguf` paths still take precedence.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
 preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
 prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
@@ -148,7 +150,8 @@ prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
 positive and unique, so Pi sweeps cannot spend time rerunning the same batch.
 Successful sweeps end with `prefill_bench_1b_status: ok` and a compact `json:`
 summary row for log collectors that includes the strict `llama32_1b` shape
-marker and prefill prompt.
+marker and prefill prompt. The shell and Rust prefill sweep entry points also
+accept `--q4` or `--q8` for exact-row benchmarking.
 `cargo run -- bench 1b` runs the same model-backed prefill sweep from the Rust
 CLI when the selected 1B GGUF is present. It audits the strict 1B shape first,
 runs inspect and smoke preflights, runs each `NANOCAMELID_PREFILL_BATCH`, emits
@@ -547,6 +550,9 @@ selection from shell automation.
 `ready-1b.sh` and `nanocamelid ready 1b` accept the same selectors, which is
 useful when a Pi has both default GGUFs and readiness should exercise one
 quantization row without passing an absolute model path.
+`evidence-1b.sh`, `nanocamelid evidence 1b`, `bench-1b-prefill.sh`, and
+`nanocamelid bench 1b` accept the same selectors for row-specific evidence and
+prefill sweeps.
 
 The same gate is available through the CLI when you are already using the
 release binary or Cargo directly:
@@ -557,6 +563,8 @@ nanocamelid ready 1b --no-chat
 nanocamelid ready 1b --dry-run
 nanocamelid ready 1b --q8 --dry-run
 nanocamelid evidence 1b --dry-run
+nanocamelid evidence 1b --q8 --dry-run
+nanocamelid bench 1b --q4 --dry-run
 nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ```
 
@@ -576,8 +584,10 @@ run:
 
 ```bash
 ./scripts/pi/evidence-1b.sh
+./scripts/pi/evidence-1b.sh --q8
 ./scripts/pi/evidence-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf
 nanocamelid evidence 1b
+nanocamelid evidence 1b --q8
 nanocamelid evidence 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf
 ```
 
