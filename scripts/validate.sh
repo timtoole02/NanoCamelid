@@ -315,7 +315,7 @@ expect_failure "model 1b conflicting quant selectors" cargo run -- model 1b --q4
 expect_output "model 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- model 1b --dry-run
 expect_output "model 1b shape json marker dry run" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- model 1b --dry-run
 expect_output "model 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
-expect_output "model 1b inspect follow-up command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
+expect_output "model 1b inspect follow-up command" "inspect_command: nanocamelid inspect 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
 expect_output "model 1b smoke follow-up command" "smoke_command: nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" cargo run -- model 1b --dry-run
 expect_output "model 1b ready follow-up command" "ready_command: nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
 expect_output "model 1b evidence follow-up command" "evidence_command: nanocamelid evidence 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- model 1b --dry-run
@@ -334,8 +334,14 @@ expect_output "inspect 1b success marker dry run" "status_on_success: inspect_1b
 expect_output "inspect 1b json success marker dry run" "\"target\":\"llama32-1b\",\"command\":\"inspect\",\"status\":\"ok\"" cargo run -- inspect 1b --dry-run
 expect_output "inspect 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- inspect 1b --dry-run
 expect_output "inspect 1b shape json marker dry run" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- inspect 1b --dry-run
+expect_output "inspect 1b explicit model path" "model: /models/custom.gguf" cargo run -- inspect 1b /models/custom.gguf --dry-run
+expect_output "inspect 1b explicit command" "inspect_command: nanocamelid inspect 1b /models/custom.gguf" cargo run -- inspect 1b /models/custom.gguf --dry-run
+expect_output "inspect 1b forced q4 source" "selected_source: workspace Q4_0 requested" cargo run -- inspect 1b --q4 --dry-run
+expect_output "inspect 1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" cargo run -- inspect 1b --q4 --dry-run
 expect_failure "inspect 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- inspect 1b --dry-run
-expect_failure "inspect 1b extra argument" cargo run -- inspect 1b extra --dry-run
+expect_failure "inspect 1b invalid explicit model path" cargo run -- inspect 1b /models/not-a-gguf --dry-run
+expect_failure "inspect 1b conflicting quant selectors" cargo run -- inspect 1b --q4 --q8 --dry-run
+expect_failure "inspect 1b extra argument" cargo run -- inspect 1b /models/custom.gguf extra --dry-run
 
 echo "==> Checking 1B generate CLI dry run..."
 cargo run -- generate 1b --dry-run
@@ -426,8 +432,8 @@ expect_output "ready 1b smoke command carries prefill batch" "smoke_command: NAN
 expect_output "ready 1b chat command carries prefill batch" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Say hello in one sentence.' 0 8" env NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 cargo run -- ready 1b --dry-run
 expect_output "ready 1b probe command" "probe_command: nanocamelid probe" cargo run -- ready 1b --dry-run
 expect_output "ready 1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- ready 1b --dry-run
-expect_output_order "ready 1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" cargo run -- ready 1b --dry-run
-expect_output_order "ready 1b model audit before inspect" "model_command: nanocamelid model 1b" "inspect_command: nanocamelid inspect" cargo run -- ready 1b --dry-run
+expect_output_order "ready 1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect 1b" cargo run -- ready 1b --dry-run
+expect_output_order "ready 1b model audit before inspect" "model_command: nanocamelid model 1b" "inspect_command: nanocamelid inspect 1b" cargo run -- ready 1b --dry-run
 expect_output "ready 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- ready 1b --dry-run
 expect_output "ready 1b context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- ready 1b --dry-run
 expect_output "ready 1b context-limited chat command" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Say hello in one sentence.' 0 8" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- ready 1b --dry-run
@@ -522,9 +528,9 @@ expect_output "bench 1b default batches dry run" "batches: 1 16 32 64" cargo run
 expect_output "bench 1b probe command" "probe_command: nanocamelid probe" cargo run -- bench 1b --dry-run
 expect_output "bench 1b smoke command" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2" cargo run -- bench 1b --dry-run
 expect_output "bench 1b batch command" "batch_16_command: NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 0.0 2" cargo run -- bench 1b --dry-run
-expect_output "bench 1b inspect command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- bench 1b --dry-run
+expect_output "bench 1b inspect command" "inspect_command: nanocamelid inspect 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- bench 1b --dry-run
 expect_output_order "bench 1b probe before model audit" "probe_command: nanocamelid probe" "model_command: nanocamelid model 1b" cargo run -- bench 1b --dry-run
-expect_output_order "bench 1b inspect before smoke" "inspect_command: nanocamelid inspect" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1" cargo run -- bench 1b --dry-run
+expect_output_order "bench 1b inspect before smoke" "inspect_command: nanocamelid inspect 1b" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1" cargo run -- bench 1b --dry-run
 expect_output_order "bench 1b smoke before batch" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1" "batch_16_command: NANOCAMELID_Q8_DOT_SDOT=1" cargo run -- bench 1b --dry-run
 expect_output "bench 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- bench 1b --dry-run
 expect_output "bench 1b context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Explain one practical Raspberry Pi inference bottleneck in two short sentences.' 2" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- bench 1b --dry-run
@@ -553,7 +559,7 @@ expect_failure "model-1b conflicting quant selectors" ./scripts/pi/model-1b.sh -
 expect_output "model-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b json shape marker dry run" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
-expect_output "model-1b inspect follow-up command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
+expect_output "model-1b inspect follow-up command" "inspect_command: nanocamelid inspect 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b smoke follow-up command" "smoke_command: nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Say\\ hello\\ in\\ one\\ sentence. 8" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b ready follow-up command" "ready_command: nanocamelid ready 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
 expect_output "model-1b evidence follow-up command" "evidence_command: nanocamelid evidence 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/model-1b.sh --dry-run
@@ -616,8 +622,8 @@ expect_output "ready-1b smoke command carries prefill batch" "smoke_command: NAN
 expect_output "ready-1b chat command carries prefill batch" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf Say\\ hello\\ in\\ one\\ sentence. 0.0 8" env NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b probe command" "probe_command: nanocamelid probe" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/ready-1b.sh --dry-run
-expect_output_order "ready-1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect" ./scripts/pi/ready-1b.sh --dry-run
-expect_output_order "ready-1b model audit before inspect" "model_command: nanocamelid model 1b" "inspect_command: nanocamelid inspect" ./scripts/pi/ready-1b.sh --dry-run
+expect_output_order "ready-1b probe before inspect" "probe_command: nanocamelid probe" "inspect_command: nanocamelid inspect 1b" ./scripts/pi/ready-1b.sh --dry-run
+expect_output_order "ready-1b model audit before inspect" "model_command: nanocamelid model 1b" "inspect_command: nanocamelid inspect 1b" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Say\\ hello\\ in\\ one\\ sentence. 8" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b context-limited chat command" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf Say\\ hello\\ in\\ one\\ sentence. 0.0 8" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/ready-1b.sh --dry-run
@@ -673,10 +679,10 @@ expect_output "bench-1b-prefill shape audit dry run" "shape_audit: enabled" ./sc
 expect_output "bench-1b-prefill smoke gate dry run" "smoke_gate: enabled" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill probe command" "probe_command: nanocamelid probe" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill model audit command" "model_command: nanocamelid model 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
-expect_output "bench-1b-prefill inspect command" "inspect_command: nanocamelid inspect /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output "bench-1b-prefill inspect command" "inspect_command: nanocamelid inspect 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill smoke command" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. 2" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output_order "bench-1b-prefill probe before model audit" "probe_command: nanocamelid probe" "model_command: nanocamelid model 1b" ./scripts/pi/bench-1b-prefill.sh --dry-run
-expect_output_order "bench-1b-prefill inspect before smoke" "inspect_command: nanocamelid inspect" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1" ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_output_order "bench-1b-prefill inspect before smoke" "inspect_command: nanocamelid inspect 1b" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output_order "bench-1b-prefill smoke before batch" "smoke_command: NANOCAMELID_Q8_DOT_SDOT=1" "batch_16_command: NANOCAMELID_Q8_DOT_SDOT=1" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill context-limited smoke command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. 2" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill context-limited batch command" "batch_16_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_Q8_DOT_SDOT=1 NANOCAMELID_Q8_DOT_KERNEL=sdot NANOCAMELID_PREFILL_BATCH=16 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. 0.0 2" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run

@@ -737,7 +737,8 @@ fn print_usage() {
     println!(
         "  inspect <model.gguf>                      Inspect GGUF metadata and tensor layouts"
     );
-    println!("  inspect 1b [--dry-run]                    Inspect the default Llama 3.2 1B path");
+    println!("  inspect 1b [model.gguf] [--q4|--q8] [--dry-run]");
+    println!("                                            Strictly inspect the Llama 3.2 1B path");
     println!("  inspect 3b [--dry-run]                    Inspect the default Llama 3.2 3B path");
     println!("  generate <model.gguf> <prompt> [temp] [max_tokens] [--dry-run]");
     println!("  generate 1b <prompt> [temp] [max_tokens] [--dry-run]");
@@ -829,9 +830,7 @@ fn print_inspect_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid inspect <model.gguf> [--dry-run]");
-    println!(
-        "  nanocamelid inspect 1b [--dry-run]         inspect and strictly gate the Llama 3.2 1B path"
-    );
+    println!("  nanocamelid inspect 1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!("  nanocamelid inspect 3b [--dry-run]         inspect the default Llama 3.2 3B path");
     println!("  nanocamelid inspect                        with NANOCAMELID_MODEL_GGUF set");
     println!();
@@ -839,6 +838,7 @@ fn print_inspect_usage() {
         "Inspect GGUF metadata, runtime-ready LLaMA config, tokenizer support, and the first tensor layouts."
     );
     println!("Use --dry-run to print the resolved inspect command without reading the GGUF.");
+    println!("For `inspect 1b`, explicit model paths override --q4/--q8 and env defaults.");
     println!();
     println!("Env:");
     println!(
@@ -1456,17 +1456,43 @@ fn parse_inspect_args_with_env(
     q4_exists: bool,
 ) -> Result<InspectArgs, &'static str> {
     let mut dry_run = false;
+    let mut selected_quant = None;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--q4" => {
+                if selected_quant.replace(LLAMA32_1B_Q4_MODEL).is_some() {
+                    return Err("inspect 1B accepts only one quantization selector");
+                }
+            }
+            "--q8" => {
+                if selected_quant.replace(LLAMA32_1B_Q8_MODEL).is_some() {
+                    return Err("inspect 1B accepts only one quantization selector");
+                }
+            }
             arg if arg.starts_with('-') => return Err("unknown inspect option"),
             _ => positionals.push(arg.clone()),
         }
     }
 
+    if selected_quant.is_some()
+        && positionals
+            .first()
+            .is_none_or(|value| !is_llama32_1b_alias(value))
+    {
+        return Err("inspect --q4/--q8 requires the 1B alias");
+    }
+
     if positionals.len() > 1 {
-        return Err("unexpected extra inspect argument");
+        if positionals
+            .first()
+            .is_some_and(|value| is_llama32_1b_alias(value))
+        {
+            reject_extra_positionals(&positionals[1..], 1, "unexpected extra inspect 1B argument")?;
+        } else {
+            return Err("unexpected extra inspect argument");
+        }
     }
 
     let Some(first) = positionals.first() else {
@@ -1482,8 +1508,26 @@ fn parse_inspect_args_with_env(
     };
 
     if is_llama32_1b_alias(first) {
-        let (model_path, model_source) =
-            resolve_llama32_1b_model_path_and_source(alias_env_model_path, workspace, q4_exists)?;
+        let model_arg = positionals.get(1);
+        if let Some(model_path) = model_arg
+            && !looks_like_gguf_path(model_path)
+        {
+            return Err("inspect 1B model argument must be a .gguf path");
+        }
+        let (model_path, model_source) = if let Some(model_path) = model_arg {
+            (model_path.clone(), "explicit argument")
+        } else if let Some(model_name) = selected_quant {
+            (
+                llama32_1b_model_path(workspace, model_name),
+                if model_name == LLAMA32_1B_Q4_MODEL {
+                    "workspace Q4_0 requested"
+                } else {
+                    "workspace Q8_0 requested"
+                },
+            )
+        } else {
+            resolve_llama32_1b_model_path_and_source(alias_env_model_path, workspace, q4_exists)?
+        };
         return Ok(InspectArgs {
             model_path,
             model_source,
@@ -3365,7 +3409,12 @@ fn print_bench_1b_dry_run(parsed: &Bench1BArgs) -> ExitCode {
     );
     println!(
         "inspect_command: {}",
-        shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
+        shell_command(&[
+            "nanocamelid",
+            "inspect",
+            "1b",
+            &model_path.display().to_string(),
+        ])
     );
     println!(
         "smoke_command: {}",
@@ -4045,7 +4094,15 @@ fn run_inspect(parsed: InspectArgs) -> ExitCode {
         }
         println!(
             "inspect_command: {}",
-            shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
+            match parsed.target {
+                Some(InspectTarget::Llama32_1B) => shell_command(&[
+                    "nanocamelid",
+                    "inspect",
+                    "1b",
+                    &model_path.display().to_string(),
+                ]),
+                _ => shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()]),
+            }
         );
         return ExitCode::SUCCESS;
     }
@@ -4718,7 +4775,7 @@ fn run_model_1b_audit(parsed: Model1BAuditArgs) -> ExitCode {
         );
         println!(
             "inspect_command: {}",
-            shell_command(&["nanocamelid", "inspect", &model_arg])
+            shell_command(&["nanocamelid", "inspect", "1b", &model_arg])
         );
         println!(
             "smoke_command: {}",
@@ -4889,7 +4946,12 @@ fn run_ready_1b(parsed: Ready1BArgs) -> ExitCode {
         );
         println!(
             "inspect_command: {}",
-            shell_command(&["nanocamelid", "inspect", &model_path.display().to_string()])
+            shell_command(&[
+                "nanocamelid",
+                "inspect",
+                "1b",
+                &model_path.display().to_string(),
+            ])
         );
         println!(
             "smoke_command: {}",
@@ -9102,9 +9164,52 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn inspect_1b_prefers_explicit_path_over_env_and_defaults() {
+        let parsed = parse_inspect_args_with_env(
+            &[
+                "1b".to_owned(),
+                "/models/custom.GGUF".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+            Some(("/models/env.gguf".to_owned(), SMOKE_MODEL_GGUF_ENV)),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit 1B inspect model should parse");
+
+        assert_eq!(parsed.target, Some(InspectTarget::Llama32_1B));
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.model_source, "explicit argument");
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn inspect_1b_quant_selector_forces_workspace_row() {
+        let parsed = parse_inspect_args_with_env(
+            &["1b".to_owned(), "--q4".to_owned()],
+            None,
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("q4 inspect selector should parse");
+
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.model_source, "workspace Q4_0 requested");
+    }
+
+    #[test]
     fn inspect_args_reject_extra_positionals() {
         let err = parse_inspect_args_with_env(
-            &["1b".to_owned(), "extra".to_owned()],
+            &[
+                "1b".to_owned(),
+                "/models/custom.gguf".to_owned(),
+                "extra".to_owned(),
+            ],
             None,
             None,
             "/mnt/nanocamelid",
@@ -9112,7 +9217,21 @@ flags\t\t: sse4_2 avx2
         )
         .expect_err("extra inspect arg should fail");
 
-        assert_eq!(err, "unexpected extra inspect argument");
+        assert_eq!(err, "unexpected extra inspect 1B argument");
+    }
+
+    #[test]
+    fn inspect_1b_rejects_non_gguf_model_arg() {
+        let err = parse_inspect_args_with_env(
+            &["1b".to_owned(), "/models/not-a-gguf".to_owned()],
+            None,
+            None,
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect_err("non-GGUF inspect 1B model arg should fail");
+
+        assert_eq!(err, "inspect 1B model argument must be a .gguf path");
     }
 
     #[test]

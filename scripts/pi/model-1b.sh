@@ -203,7 +203,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   printf 'model_command: '
   shell_command nanocamelid model 1b "$MODEL"
   printf 'inspect_command: '
-  shell_command nanocamelid inspect "$MODEL"
+  shell_command nanocamelid inspect 1b "$MODEL"
   printf 'smoke_command: '
   shell_command nanocamelid smoke 1b "$MODEL" chat "Say hello in one sentence." 8
   printf 'ready_command: '

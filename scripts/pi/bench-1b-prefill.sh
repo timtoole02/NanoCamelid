@@ -360,7 +360,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   printf 'model_command: '
   shell_command nanocamelid model 1b "$MODEL"
   printf 'inspect_command: '
-  shell_command nanocamelid inspect "$MODEL"
+  shell_command nanocamelid inspect 1b "$MODEL"
   printf 'smoke_command: '
   context_env_prefix
   kernel_env_prefix
@@ -411,7 +411,7 @@ echo "==> Auditing 1B model shape: $MODEL"
 run_nanocamelid model 1b "$MODEL"
 
 echo "==> Inspecting 1B model: $MODEL"
-run_nanocamelid inspect "$MODEL"
+run_nanocamelid inspect 1b "$MODEL"
 
 echo "==> Running 1B chat smoke gate"
 run_nanocamelid smoke 1b "$MODEL" chat "$PROMPT" "$MAX_TOKENS"

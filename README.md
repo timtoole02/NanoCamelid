@@ -41,6 +41,7 @@ Quick 1B readiness check on a Pi workspace:
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- model 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- model 1b --q8 --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --dry-run
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --q8 --dry-run
 ./scripts/pi/model-1b.sh --dry-run
 ./scripts/pi/model-1b.sh --q8 --dry-run
 ./scripts/pi/ready-1b.sh
@@ -54,9 +55,10 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello i
 CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
 ```
 
-`inspect 1b` resolves `NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`
-first, then the Pi-local `Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback
-under `${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
+`inspect 1b` accepts an explicit GGUF path or `--q4`/`--q8`, then resolves
+`NANOCAMELID_SMOKE_GGUF` or `NANOCAMELID_MODEL_GGUF`, then the Pi-local
+`Llama-3.2-1B-Instruct-Q4_0.gguf` or Q8_0 fallback under
+`${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}/models`.
 Non-dry-run `inspect 1b` is also a strict Llama 3.2 1B shape gate: it exits
 nonzero if the selected GGUF does not match the expected 1B architecture,
 metadata, all 16 block tensor shapes, and `llama3_instruct` chat renderer.
