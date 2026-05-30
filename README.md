@@ -45,6 +45,7 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --q8 --dry-run
 ./scripts/pi/model-1b.sh --dry-run
 ./scripts/pi/model-1b.sh --q8 --dry-run
 ./scripts/pi/ready-1b.sh
+./scripts/pi/ready-1b.sh --q8 --dry-run
 ./scripts/pi/chat-1b.sh --dry-run
 ./scripts/pi/context-pack-1b.sh --dry-run
 ./scripts/pi/evidence-1b.sh --dry-run
@@ -53,6 +54,7 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- evidence 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
 CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- ready 1b --q8 --dry-run
 ```
 
 `inspect 1b` accepts an explicit GGUF path or `--q4`/`--q8`, then resolves
@@ -542,6 +544,9 @@ quantization row and success markers automation should expect. Without
 runs the strict Llama 3.2 1B shape audit through the Rust CLI.
 Pass `--q4` or `--q8` to `model-1b.sh` for the same explicit default-row
 selection from shell automation.
+`ready-1b.sh` and `nanocamelid ready 1b` accept the same selectors, which is
+useful when a Pi has both default GGUFs and readiness should exercise one
+quantization row without passing an absolute model path.
 
 The same gate is available through the CLI when you are already using the
 release binary or Cargo directly:
@@ -550,6 +555,7 @@ release binary or Cargo directly:
 nanocamelid ready 1b
 nanocamelid ready 1b --no-chat
 nanocamelid ready 1b --dry-run
+nanocamelid ready 1b --q8 --dry-run
 nanocamelid evidence 1b --dry-run
 nanocamelid ready 1b /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ```

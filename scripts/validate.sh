@@ -419,6 +419,10 @@ expect_output "ready 1b shape audit dry run" "shape_audit: enabled" cargo run --
 expect_output "ready 1b success marker dry run" "status_on_success: ready_1b_status: ok" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" cargo run -- ready 1b --dry-run
 expect_output "ready 1b selected quantization" "quantization: q8_0" cargo run -- ready 1b --dry-run
+expect_output "ready 1b forced q4 source" "selected_source: workspace Q4_0 requested" cargo run -- ready 1b --q4 --dry-run
+expect_output "ready 1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" cargo run -- ready 1b --q4 --dry-run
+expect_output "ready 1b forced q8 source" "selected_source: workspace Q8_0 requested" cargo run -- ready 1b --q8 --dry-run
+expect_failure "ready 1b conflicting quant selectors" cargo run -- ready 1b --q4 --q8 --dry-run
 expect_output "ready 1b json records quantization" "\"quantization\":\"q8_0\"" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records probe" "\"probe\":true" cargo run -- ready 1b --dry-run
 expect_output "ready 1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" cargo run -- ready 1b --dry-run
@@ -608,6 +612,10 @@ expect_output "ready-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi
 expect_output "ready-1b success marker dry run" "status_on_success: ready_1b_status: ok" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b selected quantization" "quantization: q8_0" ./scripts/pi/ready-1b.sh --dry-run
+expect_output "ready-1b forced q4 source" "selected_source: workspace Q4_0 requested" ./scripts/pi/ready-1b.sh --q4 --dry-run
+expect_output "ready-1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/ready-1b.sh --q4 --dry-run
+expect_output "ready-1b forced q8 source" "selected_source: workspace Q8_0 requested" ./scripts/pi/ready-1b.sh --q8 --dry-run
+expect_failure "ready-1b conflicting quant selectors" ./scripts/pi/ready-1b.sh --q4 --q8 --dry-run
 expect_output "ready-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records probe" "\"probe\":true" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records shape audit" "\"shape\":\"llama32_1b\",\"shape_ready\":true" ./scripts/pi/ready-1b.sh --dry-run

@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]
+Usage: ready-1b.sh [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--no-chat|--smoke-only|--chat|--dry-run]
 
 Runs NanoCamelid's Pi-local Llama 3.2 1B readiness gate:
   1. audit the selected GGUF's Llama 3.2 1B shape
@@ -30,6 +30,7 @@ Useful env:
   NANOCAMELID_READY_PROMPT         Direct chat prompt
   NANOCAMELID_READY_TOKENS         Direct chat generated token count
   NANOCAMELID_READY_TEMP           Direct chat temperature, default 0.0
+  --q4, --q8                       Select the Pi-local Q4_0 or Q8_0 default row
   NANOCAMELID_READY_CHAT=0         Stop after audit, inspect, and smoke; also accepts false/no/off
   --no-chat, --smoke-only          Stop after audit, inspect, and smoke; positionals override the smoke prompt
   --chat                           Force the direct chat turn even when NANOCAMELID_READY_CHAT=0
@@ -79,6 +80,7 @@ require_non_negative_float() {
 
 CHAT_ENABLED_OVERRIDE=""
 DRY_RUN=0
+QUANT_MODEL=""
 POSITIONAL_ARGS=()
 for arg in "$@"; do
   case "$arg" in
@@ -90,6 +92,20 @@ for arg in "$@"; do
       ;;
     --dry-run)
       DRY_RUN=1
+      ;;
+    --q4)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B readiness quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q4"
+      ;;
+    --q8)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B readiness quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q8"
       ;;
     *)
       POSITIONAL_ARGS+=("$arg")
@@ -112,7 +128,13 @@ REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"
 Q4_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
 Q8_MODEL="$WORKSPACE/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
-if [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
+if [[ "$QUANT_MODEL" == "q4" ]]; then
+  MODEL="$Q4_MODEL"
+  MODEL_SOURCE="workspace Q4_0 requested"
+elif [[ "$QUANT_MODEL" == "q8" ]]; then
+  MODEL="$Q8_MODEL"
+  MODEL_SOURCE="workspace Q8_0 requested"
+elif [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
   MODEL="$NANOCAMELID_SMOKE_GGUF"
   MODEL_SOURCE="NANOCAMELID_SMOKE_GGUF"
 elif [[ -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then

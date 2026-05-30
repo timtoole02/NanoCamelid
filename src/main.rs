@@ -757,7 +757,7 @@ fn print_usage() {
     println!("  tui 3b [temp] [max_tokens]");
     println!("                                            Open an interactive terminal chat");
     println!(
-        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]"
+        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--no-chat|--smoke-only|--chat|--dry-run]"
     );
     println!(
         "                                            Run inspect, smoke, and direct chat gates for 1B"
@@ -1008,10 +1008,10 @@ fn print_ready_usage() {
     println!();
     println!("Usage:");
     println!(
-        "  nanocamelid ready 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]"
+        "  nanocamelid ready 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--no-chat|--smoke-only|--chat|--dry-run]"
     );
     println!(
-        "  nanocamelid ready 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--no-chat|--smoke-only|--chat|--dry-run]"
+        "  nanocamelid ready 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--no-chat|--smoke-only|--chat|--dry-run]"
     );
     println!();
     println!(
@@ -1019,6 +1019,8 @@ fn print_ready_usage() {
     );
     println!();
     println!("Options:");
+    println!("  --q4                                     Select the Pi-local Q4_0 default row");
+    println!("  --q8                                     Select the Pi-local Q8_0 default row");
     println!(
         "  --no-chat, --smoke-only                  Stop after audit, inspect, and smoke; positionals override the smoke prompt"
     );
@@ -1051,6 +1053,7 @@ fn print_ready_usage() {
     println!("  {READY_PROMPT_ENV:<38} Direct chat prompt after smoke");
     println!("  {READY_TOKENS_ENV:<38} Direct chat generated token count");
     println!("  {READY_TEMP_ENV:<38} Direct chat temperature, default 0.0");
+    println!("Explicit model paths override --q4/--q8 and env defaults.");
 }
 
 fn print_evidence_usage() {
@@ -2004,6 +2007,7 @@ fn parse_ready_1b_args_inner(
     )?;
     let mut chat_enabled_override = None;
     let mut dry_run = false;
+    let mut selected_quant = None;
     let mut smoke_args = Vec::with_capacity(args.len());
 
     for arg in args {
@@ -2011,6 +2015,16 @@ fn parse_ready_1b_args_inner(
             "--no-chat" | "--smoke-only" => chat_enabled_override = Some(false),
             "--chat" => chat_enabled_override = Some(true),
             "--dry-run" => dry_run = true,
+            "--q4" => {
+                if selected_quant.replace(LLAMA32_1B_Q4_MODEL).is_some() {
+                    return Err("ready 1B accepts only one quantization selector");
+                }
+            }
+            "--q8" => {
+                if selected_quant.replace(LLAMA32_1B_Q8_MODEL).is_some() {
+                    return Err("ready 1B accepts only one quantization selector");
+                }
+            }
             _ => smoke_args.push(arg.clone()),
         }
     }
@@ -2024,6 +2038,14 @@ fn parse_ready_1b_args_inner(
         .is_some_and(|value| looks_like_gguf_path(value));
     let (model_path, model_source, mut option_idx) = match (smoke_args.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => (path.clone(), "explicit argument", 1),
+        (_, _) if selected_quant.is_some() => {
+            let model_name = selected_quant.expect("selected quant should be present");
+            (
+                llama32_1b_model_path(workspace, model_name),
+                llama32_1b_requested_model_source(model_name),
+                0,
+            )
+        }
         (_, Some((path, source))) => (path, source, 0),
         _ => (
             default_llama32_1b_model_path(workspace, q4_exists),
@@ -2870,6 +2892,14 @@ fn default_llama32_1b_model_path(workspace: &str, q4_exists: bool) -> String {
         LLAMA32_1B_Q8_MODEL
     };
     llama32_1b_model_path(workspace, model_name)
+}
+
+fn llama32_1b_requested_model_source(model_name: &str) -> &'static str {
+    if model_name == LLAMA32_1B_Q4_MODEL {
+        "workspace Q4_0 requested"
+    } else {
+        "workspace Q8_0 requested"
+    }
 }
 
 fn resolve_llama32_3b_model_path_with_workspace(
@@ -10177,6 +10207,56 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.chat_enabled_override, Some(false));
         assert_eq!(parsed.chat_prompt_override, None);
         assert_eq!(parsed.chat_tokens_override, None);
+    }
+
+    #[test]
+    fn ready_1b_args_quant_selector_forces_workspace_row() {
+        let parsed = parse_ready_1b_args_with_env(
+            &["--q4".to_owned(), "--dry-run".to_owned()],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("q4 readiness selector should parse");
+
+        assert_eq!(
+            parsed.smoke.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.smoke.model_source, "workspace Q4_0 requested");
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn ready_1b_args_explicit_model_overrides_quant_selector() {
+        let parsed = parse_ready_1b_args_with_env(
+            &[
+                "/models/custom.GGUF".to_owned(),
+                "--q8".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit readiness model should parse");
+
+        assert_eq!(parsed.smoke.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.smoke.model_source, "explicit argument");
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn ready_1b_args_reject_conflicting_quant_selectors() {
+        let err = parse_ready_1b_args_with_env(
+            &["--q4".to_owned(), "--q8".to_owned(), "--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("conflicting readiness selectors should fail");
+
+        assert_eq!(err, "ready 1B accepts only one quantization selector");
     }
 
     #[test]
