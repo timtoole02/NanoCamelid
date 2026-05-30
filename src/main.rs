@@ -730,7 +730,7 @@ fn print_usage() {
     println!(
         "  probe                                     Print host CPU and runtime feature information"
     );
-    println!("  model 1b [model.gguf] [--dry-run]");
+    println!("  model 1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!(
         "                                            Audit the default Llama 3.2 1B model path"
     );
@@ -800,14 +800,16 @@ fn print_model_usage() {
     println!("NanoCamelid model");
     println!();
     println!("Usage:");
-    println!("  nanocamelid model 1b [model.gguf] [--dry-run]");
-    println!("  nanocamelid model llama32-1b [model.gguf] [--dry-run]");
+    println!("  nanocamelid model 1b [model.gguf] [--q4|--q8] [--dry-run]");
+    println!("  nanocamelid model llama32-1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!();
     println!(
         "Audit the Llama 3.2 1B model selection plan and verify that the selected GGUF exists."
     );
     println!();
     println!("Options:");
+    println!("  --q4                                     Select the Pi-local Q4_0 default row");
+    println!("  --q8                                     Select the Pi-local Q8_0 default row");
     println!(
         "  --dry-run                                Print the audit without failing when the selected model is missing"
     );
@@ -817,7 +819,9 @@ fn print_model_usage() {
     println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Shared default GGUF path for inspect/generate/smoke");
     println!("  {WORKSPACE_ENV:<38} Pi workspace for 1B defaults; default {DEFAULT_PI_WORKSPACE}");
     println!();
-    println!("`1b` prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then falls back to Q8_0.");
+    println!(
+        "Explicit model paths override --q4/--q8. Without a path or quant flag, `1b` prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then falls back to Q8_0."
+    );
 }
 
 fn print_inspect_usage() {
@@ -1801,11 +1805,23 @@ fn parse_model_1b_args_with_env(
         "1B model audit env path must be a .gguf path",
     )?;
     let mut dry_run = false;
+    let mut selected_quant = None;
     let mut positionals = Vec::with_capacity(args.len());
 
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--q4" => {
+                if selected_quant.replace(LLAMA32_1B_Q4_MODEL).is_some() {
+                    return Err("1B model audit accepts only one quantization selector");
+                }
+            }
+            "--q8" => {
+                if selected_quant.replace(LLAMA32_1B_Q8_MODEL).is_some() {
+                    return Err("1B model audit accepts only one quantization selector");
+                }
+            }
+            arg if arg.starts_with('-') => return Err("unknown 1B model audit option"),
             _ => positionals.push(arg.clone()),
         }
     }
@@ -1822,6 +1838,15 @@ fn parse_model_1b_args_with_env(
     let q8_model_path = llama32_1b_model_path(workspace, LLAMA32_1B_Q8_MODEL);
     let (model_path, model_source) = if let Some(model_path) = positionals.first() {
         (model_path.clone(), "explicit argument")
+    } else if let Some(model_name) = selected_quant {
+        (
+            llama32_1b_model_path(workspace, model_name),
+            if model_name == LLAMA32_1B_Q4_MODEL {
+                "workspace Q4_0 requested"
+            } else {
+                "workspace Q8_0 requested"
+            },
+        )
     } else if let Some((model_path, source)) = env_model_path {
         (model_path, source)
     } else if q4_exists {
@@ -9140,6 +9165,47 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.model_path, parsed.q8_model_path);
         assert_eq!(parsed.model_source, "workspace Q8_0 fallback");
         assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn model_1b_audit_quant_selector_forces_workspace_row() {
+        let q8 = parse_model_1b_args_with_path(
+            &["--q8".to_owned(), "--dry-run".to_owned()],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("q8 selector should parse");
+
+        assert_eq!(
+            q8.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q8_MODEL}")
+        );
+        assert_eq!(q8.model_source, "workspace Q8_0 requested");
+        assert!(q8.dry_run);
+
+        let q4 =
+            parse_model_1b_args_with_path(&["--q4".to_owned()], None, "/mnt/nanocamelid", false)
+                .expect("q4 selector should parse");
+
+        assert_eq!(
+            q4.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(q4.model_source, "workspace Q4_0 requested");
+    }
+
+    #[test]
+    fn model_1b_audit_rejects_conflicting_quant_selectors() {
+        let err = parse_model_1b_args_with_path(
+            &["--q4".to_owned(), "--q8".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("conflicting selectors should fail");
+
+        assert_eq!(err, "1B model audit accepts only one quantization selector");
     }
 
     #[test]

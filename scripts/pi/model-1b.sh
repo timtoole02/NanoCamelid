@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: model-1b.sh [model.gguf] [--dry-run]
+Usage: model-1b.sh [model.gguf] [--q4|--q8] [--dry-run]
 
 Prints the Pi-local Llama 3.2 1B model selection plan and verifies that the
 selected GGUF exists, then runs the strict Llama 3.2 1B shape audit unless
@@ -20,6 +20,7 @@ Model resolution:
 Useful env:
   NANOCAMELID_WORKSPACE     Pi workspace, default /mnt/nanocamelid
   CARGO_TARGET_DIR          Cargo output dir, default /mnt/nanocamelid/target
+  --q4, --q8                Select the Pi-local Q4_0 or Q8_0 default row
   --dry-run                 Print the model audit without failing when missing
 USAGE
 }
@@ -47,11 +48,31 @@ require_gguf_model_path() {
 }
 
 DRY_RUN=0
+QUANT_MODEL=""
 POSITIONAL_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --dry-run)
       DRY_RUN=1
+      ;;
+    --q4)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q4"
+      ;;
+    --q8)
+      if [[ -n "$QUANT_MODEL" ]]; then
+        echo "Only one 1B quantization selector may be provided." >&2
+        exit 2
+      fi
+      QUANT_MODEL="q8"
+      ;;
+    -*)
+      echo "Unknown model audit option: $arg" >&2
+      usage >&2
+      exit 2
       ;;
     *)
       POSITIONAL_ARGS+=("$arg")
@@ -89,6 +110,12 @@ MODEL_SOURCE=""
 if looks_like_gguf_path "${1:-}"; then
   MODEL="$1"
   MODEL_SOURCE="explicit argument"
+elif [[ "$QUANT_MODEL" == "q4" ]]; then
+  MODEL="$Q4_MODEL"
+  MODEL_SOURCE="workspace Q4_0 requested"
+elif [[ "$QUANT_MODEL" == "q8" ]]; then
+  MODEL="$Q8_MODEL"
+  MODEL_SOURCE="workspace Q8_0 requested"
 elif [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" ]]; then
   MODEL="$NANOCAMELID_SMOKE_GGUF"
   MODEL_SOURCE="NANOCAMELID_SMOKE_GGUF"

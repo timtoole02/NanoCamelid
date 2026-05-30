@@ -39,8 +39,10 @@ Quick 1B readiness check on a Pi workspace:
 
 ```bash
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- model 1b --dry-run
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- model 1b --q8 --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --dry-run
 ./scripts/pi/model-1b.sh --dry-run
+./scripts/pi/model-1b.sh --q8 --dry-run
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/chat-1b.sh --dry-run
 ./scripts/pi/context-pack-1b.sh --dry-run
@@ -64,6 +66,9 @@ Successful `inspect 1b` runs end with `inspect_1b_status: ok` and a compact
 existence checks, selected quantization row, and the exact follow-up `inspect`,
 `smoke`, `ready`, and `evidence` commands from the Rust CLI before the heavier
 gates.
+Use `model 1b --q4` or `model 1b --q8` when both default 1B GGUFs are present
+and the strict shape audit should target a specific quantization row without an
+absolute path; explicit GGUF paths still override the selector.
 Successful `model 1b` shape-audit runs end with `model_1b_status: ok` and a
 compact `json:` status row; dry runs print the same row as `json_on_success:`.
 `inspect 1b --dry-run` prints the resolved inspect command and model existence
@@ -533,6 +538,8 @@ has not been copied yet. It prints the exact `model`, `inspect`, `smoke`,
 quantization row and success markers automation should expect. Without
 `--dry-run`, it exits nonzero if the selected 1B GGUF is missing, otherwise it
 runs the strict Llama 3.2 1B shape audit through the Rust CLI.
+Pass `--q4` or `--q8` to `model-1b.sh` for the same explicit default-row
+selection from shell automation.
 
 The same gate is available through the CLI when you are already using the
 release binary or Cargo directly:
