@@ -173,8 +173,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "NanoCamelid install dry run"
   echo "install_mode: $install_mode"
   echo "version: $version"
-  echo "release_target: $release_target"
-  echo "release_url: $release_base_url/$version/nanocamelid-$version-$release_target.tar.gz"
+  if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
+    echo "release_target: not used"
+    echo "release_url: not used"
+  else
+    echo "release_target: $release_target"
+    echo "release_url: $release_base_url/$version/nanocamelid-$version-$release_target.tar.gz"
+  fi
   echo "repo_url: $repo_url"
   echo "repo_ref: $repo_ref"
   echo "install_dir: $install_dir"

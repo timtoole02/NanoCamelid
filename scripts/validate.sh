@@ -910,3 +910,5 @@ expect_output "top-level version" "nanocamelid 0.1.0" cargo run -- --version
 
 echo "==> Checking installer dry run target-dir safety..."
 ./scripts/install.sh --dry-run
+expect_output "installer release target override" "release_target: aarch64-unknown-linux-gnu" env NANOCAMELID_RELEASE_TARGET=aarch64-unknown-linux-gnu ./scripts/install.sh --dry-run
+expect_output "installer dev mode skips release URL" "release_url: not used" ./scripts/install.sh --dev --dry-run

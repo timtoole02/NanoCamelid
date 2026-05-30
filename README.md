@@ -378,9 +378,10 @@ Install the current versioned release from GitHub:
 curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | bash
 ```
 
-The default installer downloads the `v0.1.0` release archive, verifies it
-against `SHA256SUMS`, and installs `nanocamelid` into `~/.local/bin` without
-requiring Cargo. Choose another release tag with `--version`:
+The default installer downloads the `v0.1.0` aarch64 Linux release archive,
+verifies it against `SHA256SUMS`, and installs `nanocamelid` into
+`~/.local/bin` without requiring Cargo. Choose another release tag with
+`--version`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | \
