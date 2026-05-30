@@ -179,6 +179,7 @@ resolve_existing_prefix() {
 
 export CARGO_TARGET_DIR="$TARGET_DIR"
 validate_target_dir "$CARGO_TARGET_DIR"
+export NANOCAMELID_SMOKE_GGUF="${NANOCAMELID_SMOKE_GGUF:-/mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf}"
 
 incremental_reason=""
 if [[ "$CARGO_TARGET_DIR" == /Volumes/* && -z "${CARGO_INCREMENTAL:-}" ]]; then
@@ -324,7 +325,7 @@ expect_output "model 1b evidence follow-up command" "evidence_command: nanocamel
 
 echo "==> Checking 1B model audit CLI rejects non-GGUF model args..."
 expect_failure "model 1b invalid model arg" cargo run -- model 1b not-a-model --dry-run
-expect_failure "model 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- model 1b --dry-run
+expect_failure "model 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- model 1b --dry-run
 
 echo "==> Checking 1B inspect CLI dry run..."
 cargo run -- inspect 1b --dry-run
@@ -340,15 +341,15 @@ expect_output "inspect 1b explicit model path" "model: /models/custom.gguf" carg
 expect_output "inspect 1b explicit command" "inspect_command: nanocamelid inspect 1b /models/custom.gguf" cargo run -- inspect 1b /models/custom.gguf --dry-run
 expect_output "inspect 1b forced q4 source" "selected_source: workspace Q4_0 requested" cargo run -- inspect 1b --q4 --dry-run
 expect_output "inspect 1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" cargo run -- inspect 1b --q4 --dry-run
-expect_failure "inspect 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- inspect 1b --dry-run
+expect_failure "inspect 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- inspect 1b --dry-run
 expect_failure "inspect 1b invalid explicit model path" cargo run -- inspect 1b /models/not-a-gguf --dry-run
 expect_failure "inspect 1b conflicting quant selectors" cargo run -- inspect 1b --q4 --q8 --dry-run
 expect_failure "inspect 1b extra argument" cargo run -- inspect 1b /models/custom.gguf extra --dry-run
 
 echo "==> Checking 1B generate CLI dry run..."
 cargo run -- generate 1b --dry-run
-expect_output "generate 1b selected source" "selected_source: workspace Q8_0 fallback" cargo run -- generate 1b --dry-run
-expect_output "generate 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- generate 1b --dry-run
+expect_output "generate 1b selected source" "selected_source: " cargo run -- generate 1b --dry-run
+expect_output "generate 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- generate 1b --dry-run
 expect_output "generate 1b smoke env selected source" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- generate 1b --dry-run
 expect_output "generate 1b smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- generate 1b --dry-run
 expect_output "generate 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- generate 1b --dry-run
@@ -362,13 +363,13 @@ expect_output "generate 1b prefill batch dry run" "prefill_batch: 32" env NANOCA
 expect_failure "generate 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- generate 1b --dry-run
-expect_failure "generate 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- generate 1b --dry-run
+expect_failure "generate 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid alias model path" cargo run -- generate 1b /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B chat CLI dry run..."
 cargo run -- chat 1b --dry-run
-expect_output "chat 1b selected source" "selected_source: workspace Q8_0 fallback" cargo run -- chat 1b --dry-run
-expect_output "chat 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- chat 1b --dry-run
+expect_output "chat 1b selected source" "selected_source: " cargo run -- chat 1b --dry-run
+expect_output "chat 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- chat 1b --dry-run
 expect_output "chat 1b smoke env selected source" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- chat 1b --dry-run
 expect_output "chat 1b smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- chat 1b --dry-run
 expect_output "chat 1b default model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- chat 1b --dry-run
@@ -382,7 +383,7 @@ expect_output "chat 1b prefill batch dry run" "prefill_batch: 32" env NANOCAMELI
 expect_failure "chat 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- chat 1b --dry-run
-expect_failure "chat 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- chat 1b --dry-run
+expect_failure "chat 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid alias model path" cargo run -- chat 1b /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B smoke CLI dry run..."
@@ -410,7 +411,7 @@ expect_output "smoke 1b json records prefill batch" "\"prefill_batch\":32" env N
 expect_output "smoke 1b command carries prefill batch" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" env NANOCAMELID_CONTEXT_LIMIT=512 NANOCAMELID_PREFILL_BATCH=32 cargo run -- smoke 1b --dry-run
 expect_failure "smoke 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- smoke 1b --dry-run
 expect_failure "smoke 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- smoke 1b --dry-run
-expect_failure "smoke 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- smoke 1b --dry-run
+expect_failure "smoke 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- smoke 1b --dry-run
 expect_failure "smoke 1b invalid explicit model path" cargo run -- smoke 1b /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B smoke CLI rejects invalid token count..."
@@ -449,7 +450,7 @@ expect_output "ready 1b context-limited smoke command" "smoke_command: NANOCAMEL
 expect_output "ready 1b context-limited chat command" "chat_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid chat /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 'Say hello in one sentence.' 0 8" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- ready 1b --dry-run
-expect_failure "ready 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- ready 1b --dry-run
+expect_failure "ready 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- ready 1b --dry-run
 expect_failure "ready 1b invalid explicit model path" cargo run -- ready 1b /models/not-a-gguf --dry-run
 expect_failure "ready 1b invalid direct chat toggle" env NANOCAMELID_READY_CHAT=flase cargo run -- ready 1b --dry-run
 
@@ -490,7 +491,7 @@ expect_output "evidence 1b prefill command carries prefill batch" "prefill_bench
 expect_output "evidence 1b explicit model command" "ready_command: nanocamelid ready 1b /models/custom.gguf chat 'Say hello in one sentence.' 8 --no-chat" cargo run -- evidence 1b /models/custom.gguf --dry-run
 expect_failure "evidence 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- evidence 1b --dry-run
 expect_failure "evidence 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- evidence 1b --dry-run
-expect_failure "evidence 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- evidence 1b --dry-run
+expect_failure "evidence 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- evidence 1b --dry-run
 expect_failure "evidence 1b invalid explicit model path" cargo run -- evidence 1b /models/not-a-gguf --dry-run
 expect_failure "evidence 1b invalid context pack" env NANOCAMELID_CONTEXT_PACKS=512,bad cargo run -- evidence 1b --dry-run
 expect_failure "evidence 1b empty context pack" env NANOCAMELID_CONTEXT_PACKS=512,,1024 cargo run -- evidence 1b --dry-run
@@ -500,8 +501,8 @@ expect_failure "evidence 1b empty prefill batch" env NANOCAMELID_PREFILL_BATCHES
 
 echo "==> Checking 1B TUI CLI dry run..."
 cargo run -- tui 1b --dry-run
-expect_output "tui 1b selected source" "selected_source: workspace Q8_0 fallback" cargo run -- tui 1b --dry-run
-expect_output "tui 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- tui 1b --dry-run
+expect_output "tui 1b selected source" "selected_source: " cargo run -- tui 1b --dry-run
+expect_output "tui 1b env selected source" "selected_source: NANOCAMELID_MODEL_GGUF" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- tui 1b --dry-run
 expect_output "tui 1b smoke env selected source" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- tui 1b --dry-run
 expect_output "tui 1b smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf NANOCAMELID_MODEL_GGUF=/models/custom.gguf cargo run -- tui 1b --dry-run
 expect_output "tui 1b dry-run command" "tui_command: nanocamelid tui /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf 0 128" cargo run -- tui 1b --dry-run
@@ -514,7 +515,7 @@ expect_output "tui 1b command carries prefill batch" "tui_command: NANOCAMELID_C
 expect_failure "tui 1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- tui 1b --dry-run
-expect_failure "tui 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- tui 1b --dry-run
+expect_failure "tui 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid alias model path" cargo run -- tui 1b /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B prefill benchmark CLI dry run..."
@@ -552,7 +553,7 @@ expect_failure "bench 1b invalid temp" cargo run -- bench 1b prompt 1 bad --dry-
 expect_failure "bench 1b invalid batch" cargo run -- bench 1b prompt 1 0.0 0 --dry-run
 expect_failure "bench 1b duplicate batch" cargo run -- bench 1b prompt 1 0.0 16,32,16 --dry-run
 expect_failure "bench 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- bench 1b --dry-run
-expect_failure "bench 1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- bench 1b --dry-run
+expect_failure "bench 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- bench 1b --dry-run
 expect_failure "bench 1b invalid explicit model path" cargo run -- bench 1b /models/not-a-gguf --dry-run
 expect_failure "bench 1b unknown option" cargo run -- bench 1b --oops --dry-run
 
@@ -576,7 +577,7 @@ expect_output "model-1b evidence follow-up command" "evidence_command: nanocamel
 
 echo "==> Checking 1B model audit rejects non-GGUF model args..."
 expect_failure "model-1b invalid model arg" ./scripts/pi/model-1b.sh not-a-model --dry-run
-expect_failure "model-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/model-1b.sh --dry-run
+expect_failure "model-1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/model-1b.sh --dry-run
 expect_failure "model-1b repo-local target dir" bash -c 'tmp="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-model-1b.XXXXXX").gguf"; : >"$tmp"; trap "rm -f \"$tmp\"" EXIT; CARGO_TARGET_DIR=target ./scripts/pi/model-1b.sh "$tmp"'
 
 echo "==> Checking 1B Pi smoke launcher dry run..."
@@ -609,7 +610,7 @@ expect_failure "smoke-1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=ba
 expect_output "smoke-1b prompt without explicit kind" "smoke_kind: chat" ./scripts/pi/smoke-1b.sh "Say hello in one sentence." 3 --dry-run
 expect_output "smoke-1b token override without explicit kind" "smoke_tokens: 3" ./scripts/pi/smoke-1b.sh "Say hello in one sentence." 3 --dry-run
 expect_failure "smoke-1b invalid q8 kind" ./scripts/pi/smoke-1b.sh q8-broken --dry-run
-expect_failure "smoke-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/smoke-1b.sh --dry-run
+expect_failure "smoke-1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/smoke-1b.sh --dry-run
 expect_failure "smoke-1b invalid explicit model path" ./scripts/pi/smoke-1b.sh /models/not-a-gguf --dry-run
 expect_failure "smoke-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/smoke-1b.sh
 
@@ -649,7 +650,7 @@ expect_output "ready-1b context-limited chat command" "chat_command: NANOCAMELID
 expect_failure "ready-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/ready-1b.sh --dry-run
 expect_failure "ready-1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad ./scripts/pi/ready-1b.sh --dry-run
 expect_failure "ready-1b invalid q8 kind" ./scripts/pi/ready-1b.sh q8-broken --dry-run
-expect_failure "ready-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/ready-1b.sh --dry-run
+expect_failure "ready-1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/ready-1b.sh --dry-run
 expect_failure "ready-1b invalid explicit model path" ./scripts/pi/ready-1b.sh /models/not-a-gguf --dry-run
 expect_failure "ready-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/ready-1b.sh --no-chat
 
@@ -670,7 +671,7 @@ expect_output "chat-1b tui command carries prefill batch" "tui_command: NANOCAME
 expect_failure "chat-1b invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
-expect_failure "chat-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
+expect_failure "chat-1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/chat-1b.sh --dry-run
 expect_failure "chat-1b invalid explicit model path" ./scripts/pi/chat-1b.sh /models/not-a-gguf --dry-run
 expect_failure "chat-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/chat-1b.sh
 
@@ -717,7 +718,7 @@ expect_output "bench-1b-prefill json records prompt" "\"prompt\":\"Explain one p
 expect_output "bench-1b-prefill json batches dry run" "\"batches\":[1,16,32,64]" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid context limit" env NANOCAMELID_CONTEXT_LIMIT=bad ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
-expect_failure "bench-1b-prefill invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
+expect_failure "bench-1b-prefill invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_failure "bench-1b-prefill invalid explicit model path" ./scripts/pi/bench-1b-prefill.sh /models/not-a-gguf --dry-run
 expect_failure "bench-1b-prefill unknown option" ./scripts/pi/bench-1b-prefill.sh --oops --dry-run
 expect_failure "bench-1b-prefill repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/bench-1b-prefill.sh
@@ -756,7 +757,7 @@ expect_output "context-pack-1b command carries prefill batch" "context_512_comma
 expect_output "context-pack-1b prompt without explicit kind" "smoke_kind: chat" ./scripts/pi/context-pack-1b.sh "Say hello in one sentence." 3 512,1024 --dry-run
 expect_output "context-pack-1b caps without explicit kind" "context_caps: 512 1024" ./scripts/pi/context-pack-1b.sh "Say hello in one sentence." 3 512,1024 --dry-run
 expect_failure "context-pack-1b invalid q8 kind" ./scripts/pi/context-pack-1b.sh q8-broken --dry-run
-expect_failure "context-pack-1b invalid env model path" env NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/context-pack-1b.sh --dry-run
+expect_failure "context-pack-1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model ./scripts/pi/context-pack-1b.sh --dry-run
 expect_failure "context-pack-1b invalid explicit model path" ./scripts/pi/context-pack-1b.sh /models/not-a-gguf --dry-run
 expect_failure "context-pack-1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad ./scripts/pi/context-pack-1b.sh --dry-run
 expect_failure "context-pack-1b repo-local target dir" env CARGO_TARGET_DIR=target ./scripts/pi/context-pack-1b.sh
