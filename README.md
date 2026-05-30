@@ -44,15 +44,17 @@ CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b --q8 --dry-run
 ./scripts/pi/model-1b.sh --dry-run
 ./scripts/pi/model-1b.sh --q8 --dry-run
+./scripts/pi/smoke-1b.sh --q8 --dry-run
 ./scripts/pi/ready-1b.sh
 ./scripts/pi/ready-1b.sh --q8 --dry-run
 ./scripts/pi/chat-1b.sh --dry-run
-./scripts/pi/context-pack-1b.sh --dry-run
+./scripts/pi/context-pack-1b.sh --q8 --dry-run
 ./scripts/pi/evidence-1b.sh --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- chat 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- evidence 1b --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- inspect 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b chat "Say hello in one sentence." 8
+CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- smoke 1b --q8 --dry-run
 CARGO_TARGET_DIR=/mnt/nanocamelid/target NANOCAMELID_READY_TOKENS=8 cargo run -- ready 1b
 CARGO_TARGET_DIR=/mnt/nanocamelid/target cargo run -- ready 1b --q8 --dry-run
 ```
@@ -87,6 +89,8 @@ commands plus the success markers automation should expect. Without
 scalar-vs-selected smoke validation; dry runs print `shape_audit: enabled` so
 automation can confirm the guard is in the plan without opening the GGUF, plus
 the exact `model_command` that will run before the smoke gate.
+Use `smoke 1b --q4` or `smoke 1b --q8` to force a specific Pi-local default row
+for smoke validation; explicit GGUF paths still override the selector.
 Successful 1B smoke runs end with `smoke_1b_status: ok` and a compact `json:`
 status row that records the selected model, quantization row, context cap,
 strict shape-audit marker, smoke prompt, smoke kind, smoke token count, and
@@ -140,8 +144,9 @@ audit, readiness no-chat, per-context smoke, and prefill sweep commands plus a
 compact `json_on_success` row before loading the model. When
 `NANOCAMELID_PREFILL_BATCH` is set, the dry-run prefill sweep command includes
 that env var so the printed plan matches the inherited smoke preflight batch.
-Both evidence entry points accept `--q4` or `--q8` to force the Pi-local
-default quantization row; explicit `.gguf` paths still take precedence.
+The smoke, context-pack, and evidence shell entry points accept `--q4` or `--q8`
+to force the Pi-local default quantization row; explicit `.gguf` paths still
+take precedence.
 `./scripts/pi/bench-1b-prefill.sh --dry-run` prints the strict 1B shape-audit
 preflight, inspect preflight, scalar-vs-selected chat smoke gate, and real
 prefill batch sweep plan, honors the same `NANOCAMELID_SMOKE_GGUF` then
@@ -629,16 +634,17 @@ launch command, and context cap from the Rust CLI before loading the GGUF.
 
 `smoke-1b.sh` uses the same kernel defaults, but runs only the smoke gate and
 exits. Its model-selection precedence is a leading `.gguf` argument,
-`NANOCAMELID_SMOKE_GGUF`, `NANOCAMELID_MODEL_GGUF`, Pi-local Q4_0, then
-Pi-local Q8_0. By default it runs the real instruct prompt path with `chat`, the
-prompt `Say hello in one sentence.`, and an 8-token response budget. Optional
-arguments let you override the model path, smoke kind, prompt, and token budget
-directly. Add `--dry-run` to print the resolved smoke plan without loading the
-model:
+`--q4`/`--q8`, `NANOCAMELID_SMOKE_GGUF`, `NANOCAMELID_MODEL_GGUF`, Pi-local
+Q4_0, then Pi-local Q8_0. By default it runs the real instruct prompt path with
+`chat`, the prompt `Say hello in one sentence.`, and an 8-token response budget.
+Optional arguments let you override the model path, smoke kind, prompt, and
+token budget directly. Add `--dry-run` to print the resolved smoke plan without
+loading the model:
 
 ```bash
 ./scripts/pi/smoke-1b.sh /path/to/Llama-3.2-1B-Instruct-Q4_0.gguf chat "Say hello in one sentence." 8
 ./scripts/pi/smoke-1b.sh chat "Say hello in one sentence." 8
+./scripts/pi/smoke-1b.sh --q8 --dry-run
 ./scripts/pi/smoke-1b.sh --dry-run
 ./scripts/pi/smoke-1b.sh model "Hello" 1
 ./scripts/pi/smoke-3b.sh chat "Say hello in one sentence." 4

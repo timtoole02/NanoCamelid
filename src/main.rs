@@ -1194,7 +1194,7 @@ fn print_smoke_usage() {
     println!("  nanocamelid smoke q8-model <model.gguf> [prompt] [max_tokens]");
     println!("  nanocamelid smoke q8-chat <model.gguf> [prompt] [max_tokens]");
     println!(
-        "  nanocamelid smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
+        "  nanocamelid smoke 1b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--dry-run]"
     );
     println!(
         "  nanocamelid smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
@@ -1202,7 +1202,7 @@ fn print_smoke_usage() {
     println!("  nanocamelid smoke q8-model [prompt] [max_tokens]  with NANOCAMELID_SMOKE_GGUF set");
     println!("  nanocamelid smoke q8-chat [prompt] [max_tokens]   with NANOCAMELID_SMOKE_GGUF set");
     println!(
-        "  nanocamelid smoke 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
+        "  nanocamelid smoke 1b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--dry-run]"
     );
     println!(
         "  nanocamelid smoke 3b <model.gguf> [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]"
@@ -1246,6 +1246,8 @@ fn print_smoke_usage() {
     println!(
         "  --dry-run                                Print the resolved 1b/3b smoke plan without loading the model"
     );
+    println!("  --q4                                     Select the Pi-local 1B Q4_0 default row");
+    println!("  --q8                                     Select the Pi-local 1B Q8_0 default row");
     println!();
     println!(
         "When {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path."
@@ -1255,7 +1257,7 @@ fn print_smoke_usage() {
         "`q8-model` tokenizes the prompt directly. `q8-chat` renders a single-turn user message through the model tokenizer chat template before parity/generation."
     );
     println!(
-        "`1b` defaults to chat, prompt {DEFAULT_1B_SMOKE_PROMPT:?}, and {DEFAULT_1B_SMOKE_TOKENS} tokens. It prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then Q8_0. The legacy q8-chat and q8-model aliases are still accepted."
+        "`1b` defaults to chat, prompt {DEFAULT_1B_SMOKE_PROMPT:?}, and {DEFAULT_1B_SMOKE_TOKENS} tokens. It prefers the Pi-local Q4_0 Llama 3.2 1B GGUF, then Q8_0. Use --q4 or --q8 to force one default row. The legacy q8-chat and q8-model aliases are still accepted."
     );
     println!(
         "`3b` defaults to chat, prompt {DEFAULT_1B_SMOKE_PROMPT:?}, and {DEFAULT_1B_SMOKE_TOKENS} tokens. It expects the Pi-local Q4_0 Llama 3.2 3B GGUF."
@@ -2174,10 +2176,22 @@ fn parse_smoke_1b_args_with_env_and_defaults(
         "1B smoke env model path must be a .gguf path",
     )?;
     let mut dry_run = false;
+    let mut selected_quant = None;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--q4" => {
+                if selected_quant.replace(LLAMA32_1B_Q4_MODEL).is_some() {
+                    return Err("1B smoke accepts only one quantization selector");
+                }
+            }
+            "--q8" => {
+                if selected_quant.replace(LLAMA32_1B_Q8_MODEL).is_some() {
+                    return Err("1B smoke accepts only one quantization selector");
+                }
+            }
+            arg if arg.starts_with("--") => return Err("unknown 1B smoke option"),
             _ => positionals.push(arg.clone()),
         }
     }
@@ -2191,6 +2205,14 @@ fn parse_smoke_1b_args_with_env_and_defaults(
         .is_some_and(|value| looks_like_gguf_path(value));
     let (model_path, model_source, mut option_idx) = match (positionals.first(), env_model_path) {
         (Some(path), _) if first_looks_like_model => (path.clone(), "explicit argument", 1),
+        (_, _) if selected_quant.is_some() => {
+            let model_name = selected_quant.expect("selected quant should be present");
+            (
+                llama32_1b_model_path(workspace, model_name),
+                llama32_1b_requested_model_source(model_name),
+                0,
+            )
+        }
         (_, Some((path, source))) => (path, source, 0),
         _ => (
             default_llama32_1b_model_path(workspace, q4_exists),
@@ -10507,6 +10529,56 @@ flags\t\t: sse4_2 avx2
             err,
             "unknown 1B smoke kind; expected chat, model, q8-chat, or q8-model"
         );
+    }
+
+    #[test]
+    fn smoke_1b_args_quant_selector_forces_workspace_row() {
+        let parsed = parse_smoke_1b_args_with_env(
+            &["--q4".to_owned(), "--dry-run".to_owned()],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            false,
+        )
+        .expect("q4 smoke selector should parse");
+
+        assert_eq!(
+            parsed.model_path,
+            format!("/mnt/nanocamelid/models/{LLAMA32_1B_Q4_MODEL}")
+        );
+        assert_eq!(parsed.model_source, "workspace Q4_0 requested");
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn smoke_1b_args_explicit_model_overrides_quant_selector() {
+        let parsed = parse_smoke_1b_args_with_env(
+            &[
+                "/models/custom.GGUF".to_owned(),
+                "--q8".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            Some("/models/env.gguf".to_owned()),
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect("explicit smoke model should parse");
+
+        assert_eq!(parsed.model_path, "/models/custom.GGUF");
+        assert_eq!(parsed.model_source, "explicit argument");
+        assert!(parsed.dry_run);
+    }
+
+    #[test]
+    fn smoke_1b_args_reject_conflicting_quant_selectors() {
+        let err = parse_smoke_1b_args_with_env(
+            &["--q4".to_owned(), "--q8".to_owned(), "--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("conflicting smoke selectors should fail");
+
+        assert_eq!(err, "1B smoke accepts only one quantization selector");
     }
 
     #[test]

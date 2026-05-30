@@ -301,6 +301,7 @@ echo "==> Checking smoke CLI help defaults..."
 expect_output "smoke help q8 default prompt" "q8-* [prompt]                             Prompt text, default \"Hello\"" cargo run -- smoke --help
 expect_output "smoke help 1b default prompt" "1b/3b [prompt]                            Prompt text, default \"Say hello in one sentence.\"" cargo run -- smoke --help
 expect_output "smoke help 1b default tokens" "1b/3b [max_tokens]                        Greedy tokens to generate after parity, default 8" cargo run -- smoke --help
+expect_output "smoke help 1b quant selectors" "--q4" cargo run -- smoke --help
 
 echo "==> Checking 1B model audit CLI dry run..."
 cargo run -- model 1b --dry-run
@@ -389,6 +390,10 @@ expect_output "smoke 1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama
 expect_output "smoke 1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b selected source" "selected_source: " cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b selected quantization" "quantization: q8_0" cargo run -- smoke 1b --dry-run
+expect_output "smoke 1b forced q4 source" "selected_source: workspace Q4_0 requested" cargo run -- smoke 1b --q4 --dry-run
+expect_output "smoke 1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" cargo run -- smoke 1b --q4 --dry-run
+expect_output "smoke 1b forced q8 source" "selected_source: workspace Q8_0 requested" cargo run -- smoke 1b --q8 --dry-run
+expect_failure "smoke 1b conflicting quant selectors" cargo run -- smoke 1b --q4 --q8 --dry-run
 expect_output "smoke 1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b context-limited command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat 'Say hello in one sentence.' 8" env NANOCAMELID_CONTEXT_LIMIT=512 cargo run -- smoke 1b --dry-run
 expect_output "smoke 1b shape audit dry run" "shape_audit: enabled" cargo run -- smoke 1b --dry-run
@@ -576,10 +581,15 @@ expect_failure "model-1b repo-local target dir" bash -c 'tmp="$(mktemp "${TMPDIR
 echo "==> Checking 1B Pi smoke launcher dry run..."
 ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" ./scripts/pi/smoke-1b.sh --help
+expect_output "smoke-1b help documents quant selectors" "--q4, --q8" ./scripts/pi/smoke-1b.sh --help
 expect_output "smoke-1b q4 model audit" "q4_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b selected source" "selected_source: " ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b selected quantization" "quantization: q8_0" ./scripts/pi/smoke-1b.sh --dry-run
+expect_output "smoke-1b forced q4 source" "selected_source: workspace Q4_0 requested" ./scripts/pi/smoke-1b.sh --q4 --dry-run
+expect_output "smoke-1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/smoke-1b.sh --q4 --dry-run
+expect_output "smoke-1b forced q8 source" "selected_source: workspace Q8_0 requested" ./scripts/pi/smoke-1b.sh --q8 --dry-run
+expect_failure_output "smoke-1b conflicting quant selectors" "Only one 1B smoke quantization selector may be provided." ./scripts/pi/smoke-1b.sh --q4 --q8 --dry-run
 expect_output "smoke-1b context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b context-limited command" "smoke_command: NANOCAMELID_CONTEXT_LIMIT=512 nanocamelid smoke 1b /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf chat Say\\ hello\\ in\\ one\\ sentence. 8" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/smoke-1b.sh --dry-run
 expect_output "smoke-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/smoke-1b.sh --dry-run
@@ -725,8 +735,13 @@ expect_failure "bench-1b-prefill duplicate batch size" env NANOCAMELID_PREFILL_B
 echo "==> Checking 1B Pi context-pack launcher dry run..."
 ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b help documents prefill batch" "NANOCAMELID_PREFILL_BATCH" ./scripts/pi/context-pack-1b.sh --help
+expect_output "context-pack-1b help documents quant selectors" "--q4, --q8" ./scripts/pi/context-pack-1b.sh --help
 expect_output "context-pack-1b selected source" "selected_source: " ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b selected quantization" "quantization: q8_0" ./scripts/pi/context-pack-1b.sh --dry-run
+expect_output "context-pack-1b forced q4 source" "selected_source: workspace Q4_0 requested" ./scripts/pi/context-pack-1b.sh --q4 --dry-run
+expect_output "context-pack-1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/context-pack-1b.sh --q4 --dry-run
+expect_output "context-pack-1b forced q8 source" "selected_source: workspace Q8_0 requested" ./scripts/pi/context-pack-1b.sh --q8 --dry-run
+expect_failure_output "context-pack-1b conflicting quant selectors" "Only one 1B context-pack quantization selector may be provided." ./scripts/pi/context-pack-1b.sh --q4 --q8 --dry-run
 expect_output "context-pack-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b success marker dry run" "status_on_success: context_pack_1b_status: ok" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/context-pack-1b.sh --dry-run
