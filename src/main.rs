@@ -60,6 +60,11 @@ fn main() -> ExitCode {
 
     let args = env::args().skip(1).collect::<Vec<_>>();
 
+    if args.len() == 1 && matches!(args[0].as_str(), "-V" | "--version") {
+        println!("nanocamelid {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
     if let Some(help_topic) = help_topic_for_args(&args) {
         print_help(help_topic);
         return ExitCode::SUCCESS;
@@ -725,6 +730,7 @@ fn print_usage() {
     println!();
     println!("Usage:");
     println!("  nanocamelid <command> [args]");
+    println!("  nanocamelid --version");
     println!();
     println!("Commands:");
     println!(
@@ -784,6 +790,7 @@ fn print_usage() {
     println!("  smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]");
     println!("                                            Run the default Llama 3.2 3B smoke path");
     println!("  help [command]                            Show top-level or subcommand help");
+    println!("  --version                                 Print the NanoCamelid release version");
     println!();
     println!("Run `nanocamelid help <command>` or `nanocamelid <command> --help` for details.");
 }

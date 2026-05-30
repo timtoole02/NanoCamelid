@@ -372,25 +372,37 @@ NanoCamelid keeps the runtime small and explicit:
 
 ## Quick Start
 
-Install the latest release build from GitHub:
+Install the current versioned release from GitHub:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | bash
 ```
 
-The installer clones NanoCamelid, builds the release binary with Cargo, and
-links `nanocamelid` into `~/.local/bin`. On macOS it refuses to build unless
-`CARGO_TARGET_DIR` or `NANOCAMELID_TARGET_DIR` points at an external `/Volumes`
-path, matching the local validation guard. Override paths when needed:
+The default installer downloads the `v0.1.0` release archive, verifies it
+against `SHA256SUMS`, and installs `nanocamelid` into `~/.local/bin` without
+requiring Cargo. Choose another release tag with `--version`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | \
-  env NANOCAMELID_INSTALL_DIR=/mnt/nanocamelid/src/NanoCamelid \
-    CARGO_TARGET_DIR=/mnt/nanocamelid/target \
-    bash
+  bash -s -- --version v0.1.0
 ```
 
-On Pi workspaces mounted at `/mnt/nanocamelid`, the installer uses
+Source installs from `main` are still available, but they are explicit dev mode.
+On macOS, dev mode refuses to build unless `CARGO_TARGET_DIR` or
+`NANOCAMELID_TARGET_DIR` points at an external `/Volumes` path, matching the
+local validation guard. Override paths when needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | \
+  bash -s -- --dev
+
+curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | \
+  env NANOCAMELID_INSTALL_DIR=/mnt/nanocamelid/src/NanoCamelid \
+    CARGO_TARGET_DIR=/mnt/nanocamelid/target \
+    bash -s -- --dev
+```
+
+On Pi workspaces mounted at `/mnt/nanocamelid`, dev mode uses
 `/mnt/nanocamelid/target` by default unless `CARGO_TARGET_DIR` or
 `NANOCAMELID_TARGET_DIR` is set.
 Run `./scripts/install.sh --dry-run` from a checkout to print the resolved plan
@@ -436,7 +448,7 @@ individual remote readiness path.
 For the standard local validation gate, use:
 
 ```bash
-NANOCAMELID_TARGET_DIR="/Volumes/SSK Drive/nanocamelid-target" ./scripts/validate.sh
+NANOCAMELID_TARGET_DIR="/Volumes/External/nanocamelid-target" ./scripts/validate.sh
 ./scripts/validate.sh --dry-run
 ```
 

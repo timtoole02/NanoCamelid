@@ -33,7 +33,8 @@ Runs NanoCamelid's standard local validation gate:
   25. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
   26. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
   27. NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  28. ./scripts/install.sh --dry-run
+  28. cargo run -- --version
+  29. ./scripts/install.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -903,6 +904,9 @@ expect_failure_output "remote_build empty prefill batch" "Prefill batch size mus
 expect_failure "remote_build duplicate prefill batch" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_REMOTE_PREFILL_BATCHES=16,32,16 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build invalid prefill token count" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_failure "remote_build invalid prefill temperature" env NANOCAMELID_REMOTE_PREFILL_BENCH=1 NANOCAMELID_PREFILL_TEMP=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+
+echo "==> Checking release version output..."
+expect_output "top-level version" "nanocamelid 0.1.0" cargo run -- --version
 
 echo "==> Checking installer dry run target-dir safety..."
 ./scripts/install.sh --dry-run
