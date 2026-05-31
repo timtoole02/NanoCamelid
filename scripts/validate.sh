@@ -1155,6 +1155,7 @@ expect_output "release package target" "target_triple: aarch64-unknown-linux-gnu
 expect_output "release package explicit cargo target" "cargo_command: cargo build --release --bins --target aarch64-unknown-linux-gnu" ./scripts/package-release.sh --dry-run
 expect_output "release package target-scoped binary" "binary: " ./scripts/package-release.sh --dry-run
 expect_output "release package target-scoped binary path" "/aarch64-unknown-linux-gnu/release/nanocamelid" ./scripts/package-release.sh --dry-run
+expect_failure_output "release package rejects version mismatch" "does not match Cargo.toml version" env NANOCAMELID_VERSION=v9.9.9 ./scripts/package-release.sh --dry-run
 
 echo "==> Checking systemd user service installer dry run..."
 ./scripts/install-systemd-user-service.sh --dry-run

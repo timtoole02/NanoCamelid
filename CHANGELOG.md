@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added a release packaging guard that rejects `NANOCAMELID_VERSION` values
+  that do not match the binary version in `Cargo.toml`, preventing versioned
+  artifacts from disagreeing with `nanocamelid --version`.
 - Made release packaging build the named release target explicitly
   (`aarch64-unknown-linux-gnu` by default), stage the target-scoped binary, and
   validate that dry-run contract.

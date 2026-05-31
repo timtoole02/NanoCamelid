@@ -2,7 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-raw_version="${NANOCAMELID_VERSION:-$(grep -m1 '^version = ' "$repo_root/Cargo.toml" | sed 's/version = "\(.*\)"/\1/')}"
+cargo_version="$(grep -m1 '^version = ' "$repo_root/Cargo.toml" | sed 's/version = "\(.*\)"/\1/')"
+raw_version="${NANOCAMELID_VERSION:-$cargo_version}"
 version="${raw_version#v}"
 version_tag="v$version"
 target_triple="${NANOCAMELID_RELEASE_TARGET:-aarch64-unknown-linux-gnu}"
@@ -44,6 +45,12 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [[ "$version" != "$cargo_version" ]]; then
+  echo "Release version $version_tag does not match Cargo.toml version $cargo_version." >&2
+  echo "Update Cargo.toml before packaging, or set NANOCAMELID_VERSION=v$cargo_version." >&2
+  exit 2
+fi
 
 if [[ "$dry_run" == "1" ]]; then
   echo "NanoCamelid release package dry run"
