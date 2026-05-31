@@ -576,7 +576,15 @@ fn isolated_cpu_indices_from_sysfs() -> Option<Vec<usize>> {
 
 fn parse_cpu_list(value: &str) -> Option<Vec<usize>> {
     let mut cpus = Vec::new();
-    for part in value.trim().split(',').filter(|part| !part.is_empty()) {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    for part in value.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return None;
+        }
         if let Some((start, end)) = part.split_once('-') {
             let start = start.trim().parse::<usize>().ok()?;
             let end = end.trim().parse::<usize>().ok()?;
@@ -585,7 +593,7 @@ fn parse_cpu_list(value: &str) -> Option<Vec<usize>> {
             }
             cpus.extend(start..=end);
         } else {
-            cpus.push(part.trim().parse::<usize>().ok()?);
+            cpus.push(part.parse::<usize>().ok()?);
         }
     }
     cpus.sort_unstable();
@@ -9709,6 +9717,9 @@ mod tests {
         assert_eq!(parse_cpu_list("1-3"), Some(vec![1, 2, 3]));
         assert_eq!(parse_cpu_list("3,1-2,2"), Some(vec![1, 2, 3]));
         assert_eq!(parse_cpu_list(""), None);
+        assert_eq!(parse_cpu_list("1,,3"), None);
+        assert_eq!(parse_cpu_list("1,"), None);
+        assert_eq!(parse_cpu_list(",1"), None);
         assert_eq!(parse_cpu_list("3-1"), None);
         assert_eq!(parse_cpu_list("core1"), None);
     }
