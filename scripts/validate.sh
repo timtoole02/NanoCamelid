@@ -434,6 +434,32 @@ check_local_api_smoke() {
   expect_file_contains "completion method guard" "\"code\":\"method_not_allowed\"" "$api_smoke_body"
 
   status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer $api_key" \
+    -H "Content-Type: application/json" \
+    "$base_url/v1/completions" || true)"
+  expect_http_status "completion missing body" "400" "$status" "$api_smoke_body"
+  expect_file_contains "completion missing body" "\"code\":\"missing_body\"" "$api_smoke_body"
+
+  status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer $api_key" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"1b","prompt":"hello","max_tokens":9}' \
+    "$base_url/v1/completions" || true)"
+  expect_http_status "completion output cap" "400" "$status" "$api_smoke_body"
+  expect_file_contains "completion output cap" "\"code\":\"output_tokens_exceeded\"" "$api_smoke_body"
+
+  status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer $api_key" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"1b","messages":[{"role":"tool","content":"hello"}],"max_tokens":1}' \
+    "$base_url/v1/chat/completions" || true)"
+  expect_http_status "chat invalid role structured error" "400" "$status" "$api_smoke_body"
+  expect_file_contains "chat invalid role structured error" "\"code\":\"invalid_messages\"" "$api_smoke_body"
+
+  status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
     -H "Authorization: Bearer $api_key" "$base_url/not-found" || true)"
   expect_http_status "unknown endpoint structured error" "404" "$status" "$api_smoke_body"
   expect_file_contains "unknown endpoint structured error" "\"code\":\"not_found\"" "$api_smoke_body"

@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Promoted the local API server support matrix row to supported and expanded
+  live validation coverage for structured POST errors on completion and chat
+  endpoints, including output-cap enforcement.
 - Added standard validation coverage for the live local API server contract:
   authenticated `/health`, `/v1/models`, `/metrics`, completion method errors,
   and structured not-found JSON responses on `127.0.0.1`.
