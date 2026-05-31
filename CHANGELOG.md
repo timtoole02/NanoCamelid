@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added `docs/CLI_CONTRACT.md` and tightened the README core CLI section around
+  the stable v0.1 product commands, with compatibility commands documented
+  separately; release packages now include the linked `docs/` tree.
 - Added `scripts/install-systemd-user-service.sh`, release-package staging for
   the service installer, `docs/SERVICE_MODE.md`, and validation coverage for
   the loopback-only systemd user-service dry run.

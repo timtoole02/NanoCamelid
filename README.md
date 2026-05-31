@@ -110,20 +110,18 @@ nanocamelid probe
 nanocamelid models list
 nanocamelid models scan
 nanocamelid models inspect 1b --dry-run
-nanocamelid serve --dry-run
-nanocamelid model 1b --dry-run
-nanocamelid inspect 1b --dry-run
-nanocamelid inspect /path/to/model.gguf
-nanocamelid smoke 1b --dry-run
 nanocamelid ready 1b --dry-run
-nanocamelid evidence 1b --dry-run
-nanocamelid generate /path/to/model.gguf "Hello" 0.0 32
 nanocamelid chat /path/to/model.gguf "Say hello in one sentence." 0.0 32
 nanocamelid tui /path/to/model.gguf
+nanocamelid serve --dry-run
 ```
 
 Run `nanocamelid help` or `nanocamelid <command> --help` for command-specific
-arguments and environment controls.
+arguments and environment controls. The stable v0.1 command contract is in
+[docs/CLI_CONTRACT.md](docs/CLI_CONTRACT.md); older `inspect`, `model`,
+`generate`, `smoke`, `evidence`, and `bench` commands remain available for
+compatibility and validation workflows, but they are not the primary product
+front door.
 
 ## Documentation
 
@@ -131,6 +129,8 @@ arguments and environment controls.
   candidates.
 - [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md): v0.1 support status by
   product surface.
+- [docs/CLI_CONTRACT.md](docs/CLI_CONTRACT.md): stable v0.1 CLI commands,
+  inputs, outputs, and compatibility notes.
 - [docs/SERVICE_MODE.md](docs/SERVICE_MODE.md): systemd user-service install,
   defaults, and hardening notes.
 - [docs/PRODUCT_HISTORY.md](docs/PRODUCT_HISTORY.md): detailed prototype

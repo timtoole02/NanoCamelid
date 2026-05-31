@@ -11,9 +11,10 @@ today. Model-row evidence and promotion rules live in
 | Release installer | Supported for published aarch64 Linux releases | `scripts/install.sh` defaults to versioned GitHub release artifacts and verifies `SHA256SUMS`; dev/source mode is explicit |
 | Release package | Supported for aarch64 Linux | GitHub release workflow and `scripts/package-release.sh` package the binary, README, license, release notes, and checksums |
 | Version output | Supported | `nanocamelid --version` prints the Cargo package version and is covered by validation |
+| Stable CLI contract | Supported | `docs/CLI_CONTRACT.md` defines the v0.1 product command surface: `doctor`, `probe`, `models list`, `models scan`, `models inspect`, `ready`, `chat`, `tui`, and `serve`; compatibility commands remain available for validation and lab workflows |
 | Doctor preflight | Supported | `nanocamelid doctor` reports version, host summary, model directory, default 1B/3B paths, and next action without loading a GGUF |
 | Model discovery | Supported | `nanocamelid models list` and `nanocamelid models scan` enumerate `.gguf` files, classify filename target/quantization hints, and emit JSON summaries |
-| Model inspection | Supported | `nanocamelid inspect` and `nanocamelid models inspect` read GGUF metadata, tensor layouts, tokenizer readiness, and strict 1B shape status |
+| Model inspection | Supported | `nanocamelid models inspect` reads GGUF metadata, tensor layouts, tokenizer readiness, and strict 1B shape status through the stable namespace; top-level `inspect` remains a compatibility command |
 | Readiness gate | Supported for Llama 3.2 1B aliases | `nanocamelid ready 1b` runs probe, strict shape audit, inspect, smoke, and optional direct chat |
 | Single-turn chat | Supported for promoted catalog rows | `nanocamelid chat` renders recognized tokenizer chat templates and prints machine-readable generation status |
 | Terminal TUI | Supported for promoted catalog rows | `nanocamelid tui` keeps a model loaded for repeated local chat and exposes `/models`, `/status`, `/history`, and transcript save commands |
