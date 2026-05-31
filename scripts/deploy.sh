@@ -14,9 +14,8 @@ SSH_CONNECT_TIMEOUT="${NANOCAMELID_SSH_CONNECT_TIMEOUT:-10}"
 
 if [[ -z "$PI_HOST" ]]; then
   echo "Usage: $0 <pi-ip-or-hostname> [ssh-key-path] [pi-username] [rsync|git-ff]" >&2
-  echo "Example: $0 192.168.1.100" >&2
-  echo "         $0 pi5.local" >&2
-  echo "         NANOCAMELID_DEPLOY_MODE=git-ff $0 pi5.local" >&2
+  echo "Example: $0 <pi-host>" >&2
+  echo "         NANOCAMELID_DEPLOY_MODE=git-ff $0 <pi-host>" >&2
   exit 1
 fi
 

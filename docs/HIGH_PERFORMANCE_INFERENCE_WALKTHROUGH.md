@@ -12,7 +12,7 @@ inference throughput and run large models across inexpensive edge devices.
 ## Repository and Artifacts
 
 This public-facing walkthrough intentionally excludes private operator paths,
-local machine names, hostnames, and `file://` links. Keep reproducible benchmark
+local machine names, hostnames, and local file links. Keep reproducible benchmark
 summaries in the repository and retain raw machine-local artifacts outside
 source control.
 
@@ -134,4 +134,3 @@ graph TD
   pipeline.
 - Final worker (`worker`): processes the final layer range, computes logits,
   samples the next token, and transmits the resulting token back to the master.
-

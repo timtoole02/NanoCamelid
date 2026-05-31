@@ -6,44 +6,45 @@ usage() {
 Usage: validate.sh [--dry-run]
 
 Runs NanoCamelid's standard local validation gate:
-  1. cargo fmt -- --check
-  2. cargo test
-  3. cargo clippy --all-targets -- -D warnings
-  4. cargo run -- smoke --help
-  5. cargo run -- doctor --dry-run --json
-  6. cargo run -- serve --help
-  7. cargo run -- serve --dry-run
-  8. cargo run -- models --help
-  9. cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json
-  10. cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json
-  11. cargo run -- models inspect 1b --dry-run
-  12. cargo run -- model 1b --dry-run
-  13. cargo run -- inspect 1b --dry-run
-  14. cargo run -- generate 1b --dry-run
-  15. cargo run -- chat 1b --dry-run
-  16. cargo run -- smoke 1b --dry-run
-  17. cargo run -- ready 1b --dry-run
-  18. cargo run -- evidence 1b --dry-run
-  19. cargo run -- tui 1b --dry-run
-  20. cargo run -- bench 1b --dry-run
-  21. cargo run -- bench 1b --help
-  22. ./scripts/pi/model-1b.sh --dry-run
-  23. ./scripts/pi/smoke-1b.sh --dry-run
-  24. ./scripts/pi/ready-1b.sh --dry-run
-  25. ./scripts/pi/chat-1b.sh --dry-run
-  26. ./scripts/pi/bench-1b-prefill.sh --dry-run
-  27. ./scripts/pi/context-pack-1b.sh --dry-run
-  28. ./scripts/pi/evidence-1b.sh --dry-run
-  29. ./scripts/pi/strand-cluster.sh --dry-run
-  30. ./scripts/pi/mixtral-cluster.sh --dry-run
-  31. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  32. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  33. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  34. NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  35. NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  36. cargo run -- --version
-  37. ./scripts/install.sh --dry-run
-  38. ./scripts/install-systemd-user-service.sh --dry-run
+  1. public doc/example hygiene scan
+  2. cargo fmt -- --check
+  3. cargo test
+  4. cargo clippy --all-targets -- -D warnings
+  5. cargo run -- smoke --help
+  6. cargo run -- doctor --dry-run --json
+  7. cargo run -- serve --help
+  8. cargo run -- serve --dry-run
+  9. cargo run -- models --help
+  10. cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json
+  11. cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json
+  12. cargo run -- models inspect 1b --dry-run
+  13. cargo run -- model 1b --dry-run
+  14. cargo run -- inspect 1b --dry-run
+  15. cargo run -- generate 1b --dry-run
+  16. cargo run -- chat 1b --dry-run
+  17. cargo run -- smoke 1b --dry-run
+  18. cargo run -- ready 1b --dry-run
+  19. cargo run -- evidence 1b --dry-run
+  20. cargo run -- tui 1b --dry-run
+  21. cargo run -- bench 1b --dry-run
+  22. cargo run -- bench 1b --help
+  23. ./scripts/pi/model-1b.sh --dry-run
+  24. ./scripts/pi/smoke-1b.sh --dry-run
+  25. ./scripts/pi/ready-1b.sh --dry-run
+  26. ./scripts/pi/chat-1b.sh --dry-run
+  27. ./scripts/pi/bench-1b-prefill.sh --dry-run
+  28. ./scripts/pi/context-pack-1b.sh --dry-run
+  29. ./scripts/pi/evidence-1b.sh --dry-run
+  30. ./scripts/pi/strand-cluster.sh --dry-run
+  31. ./scripts/pi/mixtral-cluster.sh --dry-run
+  32. ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  33. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  34. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  35. NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  36. NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  37. cargo run -- --version
+  38. ./scripts/install.sh --dry-run
+  39. ./scripts/install-systemd-user-service.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -204,7 +205,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- smoke --help; cargo run -- doctor --dry-run --json; cargo run -- serve --help; cargo run -- serve --dry-run; cargo run -- models --help; cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models inspect 1b --dry-run; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run; ./scripts/install-systemd-user-service.sh --dry-run"
+  echo "steps: public doc/example hygiene scan; cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- smoke --help; cargo run -- doctor --dry-run --json; cargo run -- serve --help; cargo run -- serve --dry-run; cargo run -- models --help; cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models inspect 1b --dry-run; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run; ./scripts/install-systemd-user-service.sh --dry-run"
   exit 0
 fi
 
@@ -292,12 +293,44 @@ expect_output_count() {
   fi
 }
 
+check_public_hygiene() {
+  local public_paths=(README.md docs scripts/deploy.sh)
+  local matches
+  local status
+
+  set +e
+  matches="$(
+    rg -n \
+      -e '/Users/' \
+      -e 'file://' \
+      -e '(^|[^0-9])(10|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)' \
+      -e '(^|[^0-9])172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)' \
+      "${public_paths[@]}"
+  )"
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
+    echo "Public docs/examples contain private paths or RFC1918 IP examples:" >&2
+    echo "$matches" >&2
+    exit 1
+  fi
+  if [[ "$status" -gt 1 ]]; then
+    echo "Public hygiene scan failed." >&2
+    echo "$matches" >&2
+    exit "$status"
+  fi
+}
+
 mkdir -p "$CARGO_TARGET_DIR"
 
 echo "==> Cargo target dir: $CARGO_TARGET_DIR"
 if [[ -n "$incremental_reason" ]]; then
   echo "==> CARGO_INCREMENTAL=0 ($incremental_reason)"
 fi
+
+echo "==> Checking public docs and examples for private paths/IPs..."
+check_public_hygiene
 
 echo "==> Checking format..."
 cargo fmt -- --check
