@@ -571,6 +571,8 @@ expect_output "serve allows authenticated network bind" "listen: http://0.0.0.0:
 
 echo "==> Checking local API server HTTP smoke..."
 check_local_api_smoke
+expect_file_contains "API docs missing body error" '| `400` | `missing_body` |' docs/API.md
+expect_file_contains "API docs invalid content length error" '| `400` | `invalid_content_length` |' docs/API.md
 
 expect_output "models help lists scan" "nanocamelid models scan" cargo run -- models --help
 expect_output "models list dry-run command" "list_command: nanocamelid models list --dir /mnt/nanocamelid/models" cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json

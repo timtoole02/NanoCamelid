@@ -226,6 +226,8 @@ Common status codes and error codes:
 | Status | Code | Meaning |
 | --- | --- | --- |
 | `400` | `bad_request` | HTTP request line is missing or invalid |
+| `400` | `invalid_content_length` | `Content-Length` is not a non-negative integer |
+| `400` | `missing_body` | Completion or chat request body is empty |
 | `400` | `invalid_json` | Request body is not a supported JSON object |
 | `400` | `missing_model` | `model` is absent or empty |
 | `400` | `missing_prompt` | Completion `prompt` is absent |
