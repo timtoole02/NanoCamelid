@@ -90,6 +90,12 @@ curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts
   bash -s -- --version v0.1.0
 ```
 
+Release installs place the bundled README, `docs/`, release notes, and service
+installer under
+`$HOME/.local/share/nanocamelid/NanoCamelid/releases/v0.1.0-aarch64-unknown-linux-gnu`.
+Set `NANOCAMELID_RELEASE_INSTALL_DIR` to choose a different companion-file
+location.
+
 Source installs are explicit dev mode:
 
 ```bash

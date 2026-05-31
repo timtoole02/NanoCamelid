@@ -9,6 +9,7 @@ install_dir="${NANOCAMELID_INSTALL_DIR:-$HOME/.local/share/nanocamelid/NanoCamel
 bin_dir="${NANOCAMELID_BIN_DIR:-$HOME/.local/bin}"
 release_base_url="${NANOCAMELID_RELEASE_BASE_URL:-https://github.com/timtoole02/NanoCamelid/releases/download}"
 release_target="${NANOCAMELID_RELEASE_TARGET:-aarch64-unknown-linux-gnu}"
+release_install_dir="${NANOCAMELID_RELEASE_INSTALL_DIR:-}"
 
 usage() {
   cat <<'USAGE'
@@ -34,6 +35,7 @@ Cargo artifacts on the internal disk.
 Dev/source mode env:
   NANOCAMELID_INSTALL_MODE=source
   NANOCAMELID_REF=main
+  NANOCAMELID_RELEASE_INSTALL_DIR
 USAGE
 }
 
@@ -80,6 +82,9 @@ done
 
 version="${version#v}"
 version="v$version"
+if [[ -z "$release_install_dir" ]]; then
+  release_install_dir="$install_dir/releases/$version-$release_target"
+fi
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -155,6 +160,22 @@ validate_target_dir() {
   fi
 }
 
+validate_release_install_dir() {
+  local dir="$1"
+
+  case "$dir" in
+    ""|"/"|".")
+      echo "Refusing unsafe release install dir: $dir" >&2
+      exit 2
+      ;;
+  esac
+
+  if [[ "$dir" == "$HOME" ]]; then
+    echo "Refusing to use home directory as release install dir: $dir" >&2
+    exit 2
+  fi
+}
+
 target_dir="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-}}"
 if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
   if [[ -z "$target_dir" ]]; then
@@ -167,6 +188,7 @@ if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
   validate_target_dir "$target_dir"
 else
   target_dir="not used for release install"
+  validate_release_install_dir "$release_install_dir"
 fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -183,12 +205,17 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "repo_url: $repo_url"
   echo "repo_ref: $repo_ref"
   echo "install_dir: $install_dir"
+  if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
+    echo "release_install_dir: not used"
+  else
+    echo "release_install_dir: $release_install_dir"
+  fi
   echo "bin_dir: $bin_dir"
   echo "cargo_target_dir: $target_dir"
   if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
     echo "steps: ensure git and cargo; clone/update repo; cargo build --release; link nanocamelid"
   else
-    echo "steps: ensure curl and tar; download release tarball and SHA256SUMS; verify checksum; install nanocamelid"
+    echo "steps: ensure curl and tar; download release tarball and SHA256SUMS; verify checksum; install bundled README docs service script and nanocamelid"
   fi
   exit 0
 fi
@@ -272,8 +299,22 @@ else
     tar -xzf "$archive"
   )
 
-  extracted_binary="$(find "$tmp_dir" -type f -name nanocamelid -perm -111 | head -n 1)"
+  extracted_dir="$tmp_dir/nanocamelid-$version-$release_target"
+  if [[ ! -d "$extracted_dir" ]]; then
+    echo "Release archive did not contain expected directory nanocamelid-$version-$release_target" >&2
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$release_install_dir")"
+  rm -rf "$release_install_dir"
+  cp -R "$extracted_dir" "$release_install_dir"
+
+  extracted_binary="$release_install_dir/nanocamelid"
   if [[ -z "$extracted_binary" ]]; then
+    echo "Release archive did not contain an executable nanocamelid binary" >&2
+    exit 1
+  fi
+  if [[ ! -x "$extracted_binary" ]]; then
     echo "Release archive did not contain an executable nanocamelid binary" >&2
     exit 1
   fi
@@ -287,6 +328,7 @@ if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
   echo "  repo:   $install_dir"
 else
   echo "  release: $version"
+  echo "  files:  $release_install_dir"
 fi
 echo
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then

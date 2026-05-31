@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Made release installs persist the bundled README, docs, release notes, and
+  service installer in a versioned companion directory while still installing
+  the executable onto `PATH`.
 - Added a release packaging guard that rejects `NANOCAMELID_VERSION` values
   that do not match the binary version in `Cargo.toml`, preventing versioned
   artifacts from disagreeing with `nanocamelid --version`.

@@ -13,8 +13,15 @@ server. The default service is intentionally local-only:
 
 ## Install
 
-Install NanoCamelid first. From a checkout or release archive, inspect the
-service plan:
+Install NanoCamelid first. The release installer keeps the bundled service
+installer with the release companion files. The default v0.1.0 path is:
+
+```bash
+$HOME/.local/share/nanocamelid/NanoCamelid/releases/v0.1.0-aarch64-unknown-linux-gnu/scripts/install-systemd-user-service.sh
+```
+
+From a checkout or installed release companion directory, inspect the service
+plan:
 
 ```bash
 nanocamelid --version
