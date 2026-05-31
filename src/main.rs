@@ -696,6 +696,15 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
         {
             Some(HelpTopic::Models)
         }
+        Some("models")
+            if args.get(1).is_some_and(|value| value == "inspect")
+                && args.get(2).is_some_and(|value| {
+                    is_llama32_1b_alias(value) || is_llama32_3b_alias(value)
+                })
+                && args.get(3).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Models)
+        }
         Some("model")
             if args.get(1).is_some_and(|value| is_llama32_1b_alias(value))
                 && args.get(2).is_some_and(|value| is_help_flag(value)) =>
@@ -10050,6 +10059,15 @@ flags\t\t: sse4_2 avx2
             help_topic_for_args(&[
                 "models".to_owned(),
                 "inspect".to_owned(),
+                "--help".to_owned()
+            ]),
+            Some(HelpTopic::Models)
+        );
+        assert_eq!(
+            help_topic_for_args(&[
+                "models".to_owned(),
+                "inspect".to_owned(),
+                "1b".to_owned(),
                 "--help".to_owned()
             ]),
             Some(HelpTopic::Models)
