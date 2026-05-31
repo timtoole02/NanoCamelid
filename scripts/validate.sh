@@ -33,8 +33,9 @@ Runs NanoCamelid's standard local validation gate:
   25. NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
   26. NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
   27. NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
-  28. cargo run -- --version
-  29. ./scripts/install.sh --dry-run
+  28. NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
+  29. cargo run -- --version
+  30. ./scripts/install.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -195,7 +196,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- smoke --help; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- smoke --help; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
   exit 0
 fi
 
@@ -840,8 +841,16 @@ env NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/pi/ready-1b.
 echo "==> Checking remote Pi build launcher dry run..."
 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build help documents remote prefill batch" "NANOCAMELID_REMOTE_PREFILL_BATCH" bash -c './scripts/remote_build.sh --help 2>&1'
+expect_output "remote_build help documents remote 1b quant selector" "NANOCAMELID_REMOTE_1B_QUANT" bash -c './scripts/remote_build.sh --help 2>&1'
 expect_output "remote_build prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_REMOTE_PREFILL_BATCH=32 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build readiness command carries prefill batch" "readiness_command: NANOCAMELID_PREFILL_BATCH=32 NANOCAMELID_READY_CHAT=1" env NANOCAMELID_REMOTE_PREFILL_BATCH=32 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build q4 quant dry run" "remote_1b_quant: q4" env NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build q4 readiness selector" "./scripts/pi/ready-1b.sh --q4" env NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build q8 context selector" "context_pack_command: NANOCAMELID_CONTEXT_PACKS=512\\,1024 ./scripts/pi/context-pack-1b.sh --q8 chat Say\\ hello\\ in\\ one\\ sentence. 8" env NANOCAMELID_REMOTE_1B_QUANT=q8 NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build q8 prefill selector" "prefill_bench_command: NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/bench-1b-prefill.sh --q8" env NANOCAMELID_REMOTE_1B_QUANT=q8 NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build q4 evidence selector" "evidence_command: NANOCAMELID_SMOKE_KIND=chat NANOCAMELID_SMOKE_PROMPT=Say\\ hello\\ in\\ one\\ sentence. NANOCAMELID_SMOKE_TOKENS=8 NANOCAMELID_CONTEXT_PACKS=512\\,1024\\,2048\\,4096\\,8192 NANOCAMELID_PREFILL_PROMPT=Explain\\ one\\ practical\\ Raspberry\\ Pi\\ inference\\ bottleneck\\ in\\ two\\ short\\ sentences. NANOCAMELID_PREFILL_TOKENS=2 NANOCAMELID_PREFILL_TEMP=0.0 NANOCAMELID_PREFILL_BATCHES=1\\,16\\,32\\,64 ./scripts/pi/evidence-1b.sh --q4" env NANOCAMELID_REMOTE_1B_QUANT=q4 NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure_output "remote_build invalid remote 1b quant selector" "NANOCAMELID_REMOTE_1B_QUANT must be q4 or q8" env NANOCAMELID_REMOTE_1B_QUANT=q5 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure_output "remote_build remote 1b quant conflicts with explicit model" "NANOCAMELID_REMOTE_1B_QUANT cannot be combined with NANOCAMELID_REMOTE_SMOKE_GGUF" env NANOCAMELID_REMOTE_1B_QUANT=q4 NANOCAMELID_REMOTE_SMOKE_GGUF=/models/custom.gguf ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher rejects invalid deploy mode..."
 expect_failure "remote_build invalid deploy mode" ./scripts/remote_build.sh "<redacted-pi-host>" "" "" bad-mode --dry-run
