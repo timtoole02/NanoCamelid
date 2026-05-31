@@ -445,7 +445,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     "$(redacted_deploy_key_label)" \
     "<pi-user>" \
     "$(shell_quote "$DEPLOY_MODE")"
-  echo "remote_steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo check; cargo build --release; probe; bench q8-dot 1000 3"
+  echo "remote_steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo check; cargo build --release; probe; model 1b --dry-run; ready 1b --dry-run; bench q8-dot 1000 3"
   if remote_smoke_disabled; then
     echo "readiness_shape_audit: skipped"
     echo "readiness_command: skipped"
@@ -582,6 +582,12 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
 
   echo "==> Host CPU / feature probe:"
   cargo run -- probe
+
+  echo "==> Checking 1B model audit dry-run:"
+  cargo run -- model 1b --dry-run
+
+  echo "==> Checking 1B readiness dry-run:"
+  cargo run -- ready 1b --dry-run
 
   echo "==> Running benchmark (Q8 matrix dot product NEON/SDOT):"
   NANOCAMELID_Q8_DOT_SDOT=1 cargo run --release -- bench q8-dot 1000 3
