@@ -322,8 +322,9 @@ expect_output "serve help documents health endpoint" "GET  /health" cargo run --
 expect_output "serve dry-run status" "NanoCamelid serve dry run" cargo run -- serve --dry-run
 expect_output "serve dry-run default listen" "listen: http://127.0.0.1:8080" cargo run -- serve --dry-run
 expect_output "serve dry-run endpoint contract" "endpoints: /health /v1/models /v1/completions /v1/chat/completions /metrics" cargo run -- serve --dry-run
+expect_output "serve dry-run request byte cap" "max_request_bytes: 65536" cargo run -- serve --dry-run
 expect_output "serve dry-run caps" "max_output_tokens: 256" cargo run -- serve --dry-run
-expect_output "serve dry-run explicit command" "serve_command: nanocamelid serve --host 127.0.0.1 --port 8080 --model-dir /mnt/nanocamelid/models --max-input-tokens 2048 --max-output-tokens 256" cargo run -- serve --dry-run
+expect_output "serve dry-run explicit command" "serve_command: nanocamelid serve --host 127.0.0.1 --port 8080 --model-dir /mnt/nanocamelid/models --max-request-bytes 65536 --max-input-tokens 2048 --max-output-tokens 256" cargo run -- serve --dry-run
 expect_output "serve dry-run api key required from env" "api_key_required: true" env NANOCAMELID_API_KEY=redacted-test-key cargo run -- serve --dry-run
 expect_output "serve dry-run custom port" "listen: http://127.0.0.1:9090" cargo run -- serve --port 9090 --dry-run
 expect_failure_output "serve rejects bad port" "serve --port must be an integer from 1 to 65535" cargo run -- serve --port 0 --dry-run

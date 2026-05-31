@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added an explicit local API `--max-request-bytes` cap, corresponding
+  `NANOCAMELID_MAX_REQUEST_BYTES` env default, Prometheus metric, and
+  structured `request_too_large` JSON errors for oversized HTTP requests.
 - Added the `serve` CLI/API skeleton with default loopback binding, `/health`,
   `/v1/models`, `/metrics`, optional bearer-token auth, request/output cap
   settings, and structured JSON errors for unsupported completion endpoints.

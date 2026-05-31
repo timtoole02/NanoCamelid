@@ -33,11 +33,13 @@ const READY_PROMPT_ENV: &str = "NANOCAMELID_READY_PROMPT";
 const READY_TOKENS_ENV: &str = "NANOCAMELID_READY_TOKENS";
 const READY_TEMP_ENV: &str = "NANOCAMELID_READY_TEMP";
 const API_KEY_ENV: &str = "NANOCAMELID_API_KEY";
+const SERVE_MAX_REQUEST_BYTES_ENV: &str = "NANOCAMELID_MAX_REQUEST_BYTES";
 const SERVE_MAX_INPUT_TOKENS_ENV: &str = "NANOCAMELID_MAX_INPUT_TOKENS";
 const SERVE_MAX_OUTPUT_TOKENS_ENV: &str = "NANOCAMELID_MAX_OUTPUT_TOKENS";
 const DEFAULT_PI_WORKSPACE: &str = "/mnt/nanocamelid";
 const DEFAULT_API_HOST: &str = "127.0.0.1";
 const DEFAULT_API_PORT: u16 = 8080;
+const DEFAULT_SERVE_MAX_REQUEST_BYTES: usize = 65_536;
 const DEFAULT_SERVE_MAX_INPUT_TOKENS: usize = 2048;
 const DEFAULT_SERVE_MAX_OUTPUT_TOKENS: usize = 256;
 const LLAMA32_1B_Q4_MODEL: &str = "Llama-3.2-1B-Instruct-Q4_0.gguf";
@@ -906,7 +908,7 @@ fn print_serve_usage() {
     println!();
     println!("Usage:");
     println!(
-        "  nanocamelid serve [--host <addr>] [--port <port>] [--model-dir <path>] [--api-key <token>] [--max-input-tokens <count>] [--max-output-tokens <count>] [--dry-run]"
+        "  nanocamelid serve [--host <addr>] [--port <port>] [--model-dir <path>] [--api-key <token>] [--max-request-bytes <count>] [--max-input-tokens <count>] [--max-output-tokens <count>] [--dry-run]"
     );
     println!();
     println!(
@@ -926,6 +928,9 @@ fn print_serve_usage() {
     println!("  --model-dir <path>                       Model directory for /v1/models");
     println!("  --api-key <token>                        Require Authorization: Bearer <token>");
     println!(
+        "  --max-request-bytes <count>              HTTP request byte cap, default {DEFAULT_SERVE_MAX_REQUEST_BYTES}"
+    );
+    println!(
         "  --max-input-tokens <count>               Request input token cap, default {DEFAULT_SERVE_MAX_INPUT_TOKENS}"
     );
     println!(
@@ -939,6 +944,7 @@ fn print_serve_usage() {
     println!("  {MODEL_DIR_ENV:<38} Default model directory for /v1/models");
     println!("  {WORKSPACE_ENV:<38} Pi workspace used when {MODEL_DIR_ENV} is unset");
     println!("  {API_KEY_ENV:<38} Require bearer-token auth when set");
+    println!("  {SERVE_MAX_REQUEST_BYTES_ENV:<38} HTTP request byte cap");
     println!("  {SERVE_MAX_INPUT_TOKENS_ENV:<38} Request input token cap");
     println!("  {SERVE_MAX_OUTPUT_TOKENS_ENV:<38} Response token cap");
 }
@@ -1630,6 +1636,7 @@ struct ServeArgs {
     port: u16,
     model_dir: String,
     api_key: Option<String>,
+    max_request_bytes: usize,
     max_input_tokens: usize,
     max_output_tokens: usize,
     dry_run: bool,
@@ -1676,6 +1683,7 @@ fn parse_serve_args(args: &[String]) -> Result<ServeArgs, &'static str> {
         args,
         default_model_dir(),
         env::var(API_KEY_ENV).ok(),
+        env::var(SERVE_MAX_REQUEST_BYTES_ENV).ok(),
         env::var(SERVE_MAX_INPUT_TOKENS_ENV).ok(),
         env::var(SERVE_MAX_OUTPUT_TOKENS_ENV).ok(),
     )
@@ -1685,6 +1693,7 @@ fn parse_serve_args_with_defaults(
     args: &[String],
     default_model_dir: String,
     default_api_key: Option<String>,
+    default_max_request_bytes: Option<String>,
     default_max_input_tokens: Option<String>,
     default_max_output_tokens: Option<String>,
 ) -> Result<ServeArgs, &'static str> {
@@ -1692,6 +1701,11 @@ fn parse_serve_args_with_defaults(
     let mut port = DEFAULT_API_PORT;
     let mut model_dir = default_model_dir;
     let mut api_key = default_api_key.filter(|value| !value.is_empty());
+    let mut max_request_bytes = parse_optional_positive_usize(
+        default_max_request_bytes.as_ref(),
+        "NANOCAMELID_MAX_REQUEST_BYTES must be a positive integer",
+    )?
+    .unwrap_or(DEFAULT_SERVE_MAX_REQUEST_BYTES);
     let mut max_input_tokens = parse_optional_positive_usize(
         default_max_input_tokens.as_ref(),
         "NANOCAMELID_MAX_INPUT_TOKENS must be a positive integer",
@@ -1755,6 +1769,22 @@ fn parse_serve_args_with_defaults(
                 }
                 api_key = Some(value.to_owned());
             }
+            "--max-request-bytes" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return Err("serve --max-request-bytes requires a count");
+                };
+                max_request_bytes = parse_positive_usize(
+                    value,
+                    "serve --max-request-bytes must be a positive integer",
+                )?;
+            }
+            arg if arg.starts_with("--max-request-bytes=") => {
+                max_request_bytes = parse_positive_usize(
+                    arg.trim_start_matches("--max-request-bytes="),
+                    "serve --max-request-bytes must be a positive integer",
+                )?;
+            }
             "--max-input-tokens" => {
                 idx += 1;
                 let Some(value) = args.get(idx) else {
@@ -1802,6 +1832,7 @@ fn parse_serve_args_with_defaults(
         port,
         model_dir,
         api_key,
+        max_request_bytes,
         max_input_tokens,
         max_output_tokens,
         dry_run,
@@ -3624,6 +3655,7 @@ fn run_serve(parsed: ServeArgs) -> ExitCode {
     println!("listen: http://{addr}");
     println!("model_dir: {}", parsed.model_dir);
     println!("api_key_required: {}", parsed.api_key.is_some());
+    println!("max_request_bytes: {}", parsed.max_request_bytes);
     println!("max_input_tokens: {}", parsed.max_input_tokens);
     println!("max_output_tokens: {}", parsed.max_output_tokens);
     println!("endpoints: /health /v1/models /v1/completions /v1/chat/completions /metrics");
@@ -3655,6 +3687,7 @@ fn print_serve_dry_run(parsed: &ServeArgs) {
     println!("listen: http://{}:{}", parsed.host, parsed.port);
     println!("model_dir: {}", parsed.model_dir);
     println!("api_key_required: {}", parsed.api_key.is_some());
+    println!("max_request_bytes: {}", parsed.max_request_bytes);
     println!("max_input_tokens: {}", parsed.max_input_tokens);
     println!("max_output_tokens: {}", parsed.max_output_tokens);
     println!("endpoints: /health /v1/models /v1/completions /v1/chat/completions /metrics");
@@ -3669,6 +3702,8 @@ fn print_serve_dry_run(parsed: &ServeArgs) {
             &parsed.port.to_string(),
             "--model-dir",
             &parsed.model_dir,
+            "--max-request-bytes",
+            &parsed.max_request_bytes.to_string(),
             "--max-input-tokens",
             &parsed.max_input_tokens.to_string(),
             "--max-output-tokens",
@@ -3706,13 +3741,16 @@ fn handle_serve_connection(
     request_count: usize,
     uptime_seconds: f64,
 ) -> io::Result<()> {
-    let mut buffer = [0u8; 16 * 1024];
-    let bytes_read = stream.read(&mut buffer)?;
-    if bytes_read == 0 {
+    let Some(request_text) = read_http_request_text(stream, parsed.max_request_bytes)? else {
         return Ok(());
-    }
+    };
+    let request_text = match request_text {
+        Ok(request_text) => request_text,
+        Err(err) => {
+            return write_json_error(stream, err.status, err.error_type, err.code, err.message);
+        }
+    };
 
-    let request_text = String::from_utf8_lossy(&buffer[..bytes_read]);
     let Some(request) = parse_http_request(&request_text) else {
         return write_json_error(
             stream,
@@ -3794,6 +3832,98 @@ fn handle_serve_connection(
             "Unknown NanoCamelid API endpoint.",
         ),
     }
+}
+
+fn read_http_request_text(
+    stream: &mut TcpStream,
+    max_request_bytes: usize,
+) -> io::Result<Option<Result<String, ServeApiError>>> {
+    let mut buffer = vec![0u8; max_request_bytes.clamp(1, 16 * 1024)];
+    let bytes_read = stream.read(&mut buffer)?;
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+
+    let mut request_bytes = buffer[..bytes_read].to_vec();
+    if request_bytes.len() > max_request_bytes {
+        return Ok(Some(Err(request_too_large_error())));
+    }
+
+    let Some(header_end) = http_header_end(&request_bytes) else {
+        return Ok(Some(Ok(
+            String::from_utf8_lossy(&request_bytes).into_owned()
+        )));
+    };
+    let headers = String::from_utf8_lossy(&request_bytes[..header_end]);
+    let content_length = match parse_content_length(&headers) {
+        Ok(content_length) => content_length,
+        Err(err) => return Ok(Some(Err(err))),
+    };
+    let Some(content_length) = content_length else {
+        return Ok(Some(Ok(
+            String::from_utf8_lossy(&request_bytes).into_owned()
+        )));
+    };
+    let target_len = header_end.saturating_add(content_length);
+    if target_len > max_request_bytes {
+        return Ok(Some(Err(request_too_large_error())));
+    }
+    while request_bytes.len() < target_len {
+        let remaining = target_len - request_bytes.len();
+        let mut chunk = vec![0u8; remaining.min(16 * 1024)];
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        request_bytes.extend_from_slice(&chunk[..read]);
+    }
+    request_bytes.truncate(target_len.min(request_bytes.len()));
+    Ok(Some(Ok(
+        String::from_utf8_lossy(&request_bytes).into_owned()
+    )))
+}
+
+fn http_header_end(request_bytes: &[u8]) -> Option<usize> {
+    request_bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|idx| idx + 4)
+        .or_else(|| {
+            request_bytes
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|idx| idx + 2)
+        })
+}
+
+fn parse_content_length(headers: &str) -> Result<Option<usize>, ServeApiError> {
+    headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then_some(value.trim())
+        })
+        .map(|value| {
+            value.parse::<usize>().map_err(|_| {
+                serve_api_error(
+                    400,
+                    "invalid_request_error",
+                    "invalid_content_length",
+                    "Content-Length must be a non-negative integer.",
+                )
+            })
+        })
+        .transpose()
+}
+
+fn request_too_large_error() -> ServeApiError {
+    serve_api_error(
+        413,
+        "invalid_request_error",
+        "request_too_large",
+        "HTTP request exceeds the configured max request byte cap.",
+    )
 }
 
 fn parse_http_request(request_text: &str) -> Option<HttpRequest> {
@@ -4196,8 +4326,12 @@ fn serve_models_json(parsed: &ServeArgs) -> String {
 
 fn serve_metrics_text(request_count: usize, uptime_seconds: f64, parsed: &ServeArgs) -> String {
     format!(
-        "nanocamelid_requests_total {}\nnanocamelid_uptime_seconds {:.3}\nnanocamelid_max_input_tokens {}\nnanocamelid_max_output_tokens {}\n",
-        request_count, uptime_seconds, parsed.max_input_tokens, parsed.max_output_tokens
+        "nanocamelid_requests_total {}\nnanocamelid_uptime_seconds {:.3}\nnanocamelid_max_request_bytes {}\nnanocamelid_max_input_tokens {}\nnanocamelid_max_output_tokens {}\n",
+        request_count,
+        uptime_seconds,
+        parsed.max_request_bytes,
+        parsed.max_input_tokens,
+        parsed.max_output_tokens
     )
 }
 
@@ -4243,6 +4377,7 @@ fn http_status_text(status: u16) -> &'static str {
         200 => "OK",
         400 => "Bad Request",
         401 => "Unauthorized",
+        413 => "Payload Too Large",
         404 => "Not Found",
         405 => "Method Not Allowed",
         501 => "Not Implemented",
@@ -9121,9 +9256,9 @@ mod tests {
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
         model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
         parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_context_packs, parse_cpu_list, parse_doctor_args, parse_evidence_1b_args_with_env,
-        parse_evidence_1b_args_with_path, parse_generate_args_with_env,
-        parse_generate_args_with_env_and_alias_env_and_workspace,
+        parse_content_length, parse_context_packs, parse_cpu_list, parse_doctor_args,
+        parse_evidence_1b_args_with_env, parse_evidence_1b_args_with_path,
+        parse_generate_args_with_env, parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_http_request,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_models_args,
         parse_prefill_batches, parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
@@ -9139,7 +9274,7 @@ mod tests {
         prefill_bench_1b_smoke_env, prefill_bench_1b_status_json, prefill_prompt_tokens_per_sec,
         print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_default_for_args,
         ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
-        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
+        ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value, request_too_large_error,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
         runtime_options_from_gguf, serve_metrics_text, serve_models_json, shared_token_prefix_len,
         shell_command, shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
@@ -9620,12 +9755,14 @@ flags\t\t: sse4_2 avx2
             None,
             None,
             None,
+            None,
         )
         .expect("serve should parse");
         assert_eq!(parsed.host, "127.0.0.1");
         assert_eq!(parsed.port, 8080);
         assert_eq!(parsed.model_dir, "/mnt/nanocamelid/models");
         assert_eq!(parsed.api_key, None);
+        assert_eq!(parsed.max_request_bytes, 65_536);
         assert_eq!(parsed.max_input_tokens, 2048);
         assert_eq!(parsed.max_output_tokens, 256);
         assert!(parsed.dry_run);
@@ -9639,11 +9776,14 @@ flags\t\t: sse4_2 avx2
                 "/models".to_owned(),
                 "--api-key".to_owned(),
                 "secret".to_owned(),
+                "--max-request-bytes".to_owned(),
+                "4096".to_owned(),
                 "--max-input-tokens=1024".to_owned(),
                 "--max-output-tokens".to_owned(),
                 "64".to_owned(),
             ],
             "/unused".to_owned(),
+            None,
             None,
             None,
             None,
@@ -9656,6 +9796,7 @@ flags\t\t: sse4_2 avx2
                 port: 9090,
                 model_dir: "/models".to_owned(),
                 api_key: Some("secret".to_owned()),
+                max_request_bytes: 4096,
                 max_input_tokens: 1024,
                 max_output_tokens: 64,
                 dry_run: false,
@@ -9689,12 +9830,14 @@ flags\t\t: sse4_2 avx2
             &[],
             "/models".to_owned(),
             Some("env-secret".to_owned()),
+            Some("2048".to_owned()),
             Some("512".to_owned()),
             Some("32".to_owned()),
         )
         .expect("serve env caps should parse");
         assert_eq!(parsed.model_dir, "/models");
         assert_eq!(parsed.api_key.as_deref(), Some("env-secret"));
+        assert_eq!(parsed.max_request_bytes, 2048);
         assert_eq!(parsed.max_input_tokens, 512);
         assert_eq!(parsed.max_output_tokens, 32);
     }
@@ -9713,12 +9856,33 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn serve_content_length_parser_reports_cap_errors() {
+        assert_eq!(
+            parse_content_length("Host: 127.0.0.1\r\nContent-Length: 42\r\n")
+                .expect("content length should parse"),
+            Some(42)
+        );
+        assert_eq!(
+            parse_content_length("Host: 127.0.0.1\r\n").expect("missing content length is ok"),
+            None
+        );
+        let err = parse_content_length("Content-Length: nope\r\n")
+            .expect_err("invalid content length should fail");
+        assert_eq!(err.code, "invalid_content_length");
+
+        let err = request_too_large_error();
+        assert_eq!(err.status, 413);
+        assert_eq!(err.code, "request_too_large");
+    }
+
+    #[test]
     fn serve_completion_request_validation_enforces_openai_shape_and_caps() {
         let parsed = ServeArgs {
             host: "127.0.0.1".to_owned(),
             port: 8080,
             model_dir: "/models".to_owned(),
             api_key: None,
+            max_request_bytes: 65_536,
             max_input_tokens: 6,
             max_output_tokens: 8,
             dry_run: false,
@@ -9763,6 +9927,7 @@ flags\t\t: sse4_2 avx2
             port: 8080,
             model_dir: "/models".to_owned(),
             api_key: None,
+            max_request_bytes: 65_536,
             max_input_tokens: 16,
             max_output_tokens: 8,
             dry_run: false,
@@ -9799,6 +9964,7 @@ flags\t\t: sse4_2 avx2
             port: 8080,
             model_dir: "/definitely/missing/nanocamelid-models".to_owned(),
             api_key: None,
+            max_request_bytes: 65_536,
             max_input_tokens: 2048,
             max_output_tokens: 256,
             dry_run: false,
@@ -9816,6 +9982,7 @@ flags\t\t: sse4_2 avx2
             port: 8080,
             model_dir: "/models".to_owned(),
             api_key: None,
+            max_request_bytes: 4096,
             max_input_tokens: 1024,
             max_output_tokens: 64,
             dry_run: false,
@@ -9823,7 +9990,9 @@ flags\t\t: sse4_2 avx2
         let metrics = serve_metrics_text(3, 1.25, &parsed);
         assert!(metrics.contains("nanocamelid_requests_total 3"));
         assert!(metrics.contains("nanocamelid_uptime_seconds 1.250"));
+        assert!(metrics.contains("nanocamelid_max_request_bytes 4096"));
         assert!(metrics.contains("nanocamelid_max_input_tokens 1024"));
+        assert_eq!(http_status_text(413), "Payload Too Large");
         assert_eq!(http_status_text(501), "Not Implemented");
     }
 
