@@ -21,6 +21,7 @@ Useful env:
   NANOCAMELID_WORKSPACE     Pi workspace, default /mnt/nanocamelid
   CARGO_TARGET_DIR          Cargo output dir, default /mnt/nanocamelid/target
   --q4, --q8                Select the Pi-local Q4_0 or Q8_0 default row
+                            Do not combine with explicit model args or GGUF env overrides
   --dry-run                 Print the model audit without failing when missing
 USAGE
 }
@@ -88,6 +89,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
+require_unambiguous_1b_quant_selector "1B model audit" "$QUANT_MODEL" "${1:-}"
 
 if [[ $# -gt 1 ]]; then
   echo "Unexpected extra model audit argument: ${2}" >&2
