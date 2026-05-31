@@ -3682,6 +3682,22 @@ struct HttpRequest {
     method: String,
     path: String,
     authorization: Option<String>,
+    body: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ValidatedApiCompletionRequest {
+    model: String,
+    input_tokens: usize,
+    requested_output_tokens: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ServeApiError {
+    status: u16,
+    error_type: &'static str,
+    code: &'static str,
+    message: &'static str,
 }
 
 fn handle_serve_connection(
@@ -3738,13 +3754,31 @@ fn handle_serve_connection(
             &serve_metrics_text(request_count, uptime_seconds, parsed),
             "text/plain; charset=utf-8",
         ),
-        ("POST", "/v1/completions") | ("POST", "/v1/chat/completions") => write_json_error(
-            stream,
-            501,
-            "not_implemented_error",
-            "completion_runtime_not_wired",
-            "HTTP completion generation is not implemented yet; use nanocamelid chat or nanocamelid generate locally.",
-        ),
+        ("POST", "/v1/completions") => match validate_api_completion_request(&request.body, parsed)
+        {
+            Ok(_request) => write_json_error(
+                stream,
+                501,
+                "not_implemented_error",
+                "completion_runtime_not_wired",
+                "HTTP completion generation is not implemented yet; request JSON and caps were accepted. Use nanocamelid generate locally.",
+            ),
+            Err(err) => write_json_error(stream, err.status, err.error_type, err.code, err.message),
+        },
+        ("POST", "/v1/chat/completions") => {
+            match validate_api_chat_completion_request(&request.body, parsed) {
+                Ok(_request) => write_json_error(
+                    stream,
+                    501,
+                    "not_implemented_error",
+                    "completion_runtime_not_wired",
+                    "HTTP chat completion generation is not implemented yet; request JSON and caps were accepted. Use nanocamelid chat locally.",
+                ),
+                Err(err) => {
+                    write_json_error(stream, err.status, err.error_type, err.code, err.message)
+                }
+            }
+        }
         ("GET", "/v1/completions") | ("GET", "/v1/chat/completions") => write_json_error(
             stream,
             405,
@@ -3763,10 +3797,15 @@ fn handle_serve_connection(
 }
 
 fn parse_http_request(request_text: &str) -> Option<HttpRequest> {
-    let mut lines = request_text.lines();
+    let (headers, body) = request_text
+        .split_once("\r\n\r\n")
+        .or_else(|| request_text.split_once("\n\n"))
+        .unwrap_or((request_text, ""));
+    let mut lines = headers.lines();
     let mut request_line = lines.next()?.split_whitespace();
     let method = request_line.next()?.to_owned();
     let path = request_line.next()?.split('?').next()?.to_owned();
+    request_line.next()?;
     let authorization = lines.find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("authorization")
@@ -3777,7 +3816,351 @@ fn parse_http_request(request_text: &str) -> Option<HttpRequest> {
         method,
         path,
         authorization,
+        body: body.to_owned(),
     })
+}
+
+fn validate_api_completion_request(
+    body: &str,
+    parsed: &ServeArgs,
+) -> Result<ValidatedApiCompletionRequest, ServeApiError> {
+    if body.trim().is_empty() {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "missing_body",
+            "Request body must be a JSON object.",
+        ));
+    }
+    if !looks_like_json_object(body) {
+        return Err(invalid_json_error());
+    }
+    let model = required_json_string_field(body, "model", "missing_model")?;
+    let prompts = required_completion_prompts(body)?;
+    let input_tokens = prompts
+        .iter()
+        .map(|prompt| estimate_request_tokens(prompt))
+        .sum::<usize>();
+    let requested_output_tokens = json_usize_field(body, "max_tokens")
+        .map_err(|_| {
+            serve_api_error(
+                400,
+                "invalid_request_error",
+                "invalid_max_tokens",
+                "max_tokens must be a positive integer.",
+            )
+        })?
+        .unwrap_or(parsed.max_output_tokens);
+    validate_api_caps(input_tokens, requested_output_tokens, parsed)?;
+    Ok(ValidatedApiCompletionRequest {
+        model,
+        input_tokens,
+        requested_output_tokens,
+    })
+}
+
+fn validate_api_chat_completion_request(
+    body: &str,
+    parsed: &ServeArgs,
+) -> Result<ValidatedApiCompletionRequest, ServeApiError> {
+    if body.trim().is_empty() {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "missing_body",
+            "Request body must be a JSON object.",
+        ));
+    }
+    if !looks_like_json_object(body) {
+        return Err(invalid_json_error());
+    }
+    let model = required_json_string_field(body, "model", "missing_model")?;
+    let messages = required_chat_message_contents(body)?;
+    let input_tokens = messages
+        .iter()
+        .map(|content| estimate_request_tokens(content))
+        .sum::<usize>();
+    let requested_output_tokens = json_usize_field(body, "max_tokens")
+        .map_err(|_| {
+            serve_api_error(
+                400,
+                "invalid_request_error",
+                "invalid_max_tokens",
+                "max_tokens must be a positive integer.",
+            )
+        })?
+        .unwrap_or(parsed.max_output_tokens);
+    validate_api_caps(input_tokens, requested_output_tokens, parsed)?;
+    Ok(ValidatedApiCompletionRequest {
+        model,
+        input_tokens,
+        requested_output_tokens,
+    })
+}
+
+fn required_json_string_field(
+    body: &str,
+    field: &str,
+    missing_code: &'static str,
+) -> Result<String, ServeApiError> {
+    json_string_field(body, field)
+        .map_err(|_| invalid_json_error())?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            serve_api_error(
+                400,
+                "invalid_request_error",
+                missing_code,
+                "Request JSON is missing a required non-empty field.",
+            )
+        })
+}
+
+fn required_completion_prompts(body: &str) -> Result<Vec<String>, ServeApiError> {
+    let Some(value_start) = json_field_value_start(body, "prompt") else {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "missing_prompt",
+            "Completion requests require a non-empty prompt string or string array.",
+        ));
+    };
+    let prompts = json_string_or_string_array_at(body, value_start).ok_or_else(|| {
+        serve_api_error(
+            400,
+            "invalid_request_error",
+            "invalid_prompt",
+            "prompt must be a non-empty string or array of non-empty strings.",
+        )
+    })?;
+    if prompts.iter().any(|prompt| prompt.trim().is_empty()) {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "invalid_prompt",
+            "prompt must be a non-empty string or array of non-empty strings.",
+        ));
+    }
+    Ok(prompts)
+}
+
+fn required_chat_message_contents(body: &str) -> Result<Vec<String>, ServeApiError> {
+    let Some(messages_start) = json_field_value_start(body, "messages") else {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "missing_messages",
+            "Chat completion requests require a non-empty messages array.",
+        ));
+    };
+    if body[messages_start..].trim_start().starts_with('[') {
+        let contents = json_string_fields(body, "content").map_err(|_| {
+            serve_api_error(
+                400,
+                "invalid_request_error",
+                "invalid_messages",
+                "messages must contain objects with non-empty string content fields.",
+            )
+        })?;
+        if !contents.is_empty() && contents.iter().all(|content| !content.trim().is_empty()) {
+            return Ok(contents);
+        }
+    }
+    Err(serve_api_error(
+        400,
+        "invalid_request_error",
+        "invalid_messages",
+        "messages must contain objects with non-empty string content fields.",
+    ))
+}
+
+fn validate_api_caps(
+    input_tokens: usize,
+    requested_output_tokens: usize,
+    parsed: &ServeArgs,
+) -> Result<(), ServeApiError> {
+    if input_tokens > parsed.max_input_tokens {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "input_tokens_exceeded",
+            "Request input exceeds the configured max input token cap.",
+        ));
+    }
+    if requested_output_tokens == 0 || requested_output_tokens > parsed.max_output_tokens {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "output_tokens_exceeded",
+            "Requested max_tokens exceeds the configured max output token cap.",
+        ));
+    }
+    Ok(())
+}
+
+fn estimate_request_tokens(text: &str) -> usize {
+    let words = text.split_whitespace().count();
+    words.max(text.chars().count().div_ceil(4)).max(1)
+}
+
+fn serve_api_error(
+    status: u16,
+    error_type: &'static str,
+    code: &'static str,
+    message: &'static str,
+) -> ServeApiError {
+    ServeApiError {
+        status,
+        error_type,
+        code,
+        message,
+    }
+}
+
+fn invalid_json_error() -> ServeApiError {
+    serve_api_error(
+        400,
+        "invalid_request_error",
+        "invalid_json",
+        "Request body must be valid JSON for the supported fields.",
+    )
+}
+
+fn looks_like_json_object(body: &str) -> bool {
+    let body = body.trim();
+    body.starts_with('{') && body.ends_with('}')
+}
+
+fn json_string_field(body: &str, field: &str) -> Result<Option<String>, ()> {
+    let Some(value_start) = json_field_value_start(body, field) else {
+        return Ok(None);
+    };
+    parse_json_string_at(body, value_start)
+        .map(|(value, _)| Some(value))
+        .ok_or(())
+}
+
+fn json_string_fields(body: &str, field: &str) -> Result<Vec<String>, ()> {
+    let marker = format!("\"{field}\"");
+    let mut values = Vec::new();
+    let mut search_start = 0;
+    while let Some(relative_idx) = body[search_start..].find(&marker) {
+        let marker_idx = search_start + relative_idx;
+        let Some(value_start) = json_field_value_start_from(body, marker_idx, &marker) else {
+            return Err(());
+        };
+        let Some((value, end_idx)) = parse_json_string_at(body, value_start) else {
+            return Err(());
+        };
+        values.push(value);
+        search_start = end_idx;
+    }
+    Ok(values)
+}
+
+fn json_usize_field(body: &str, field: &str) -> Result<Option<usize>, ()> {
+    let Some(value_start) = json_field_value_start(body, field) else {
+        return Ok(None);
+    };
+    let value = body[value_start..].trim_start();
+    let end = value
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(value.len());
+    if end == 0 {
+        return Err(());
+    }
+    let parsed = value[..end].parse::<usize>().map_err(|_| ())?;
+    (parsed > 0).then_some(Some(parsed)).ok_or(())
+}
+
+fn json_string_or_string_array_at(body: &str, value_start: usize) -> Option<Vec<String>> {
+    let value = body[value_start..].trim_start();
+    if value.starts_with('"') {
+        return parse_json_string_at(value, 0).map(|(prompt, _)| vec![prompt]);
+    }
+    if !value.starts_with('[') {
+        return None;
+    }
+    let mut prompts = Vec::new();
+    let mut idx = 1;
+    loop {
+        idx += value[idx..]
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .count();
+        match value[idx..].chars().next()? {
+            ']' => return (!prompts.is_empty()).then_some(prompts),
+            '"' => {
+                let (prompt, end_idx) = parse_json_string_at(value, idx)?;
+                prompts.push(prompt);
+                idx = end_idx;
+                idx += value[idx..]
+                    .chars()
+                    .take_while(|ch| ch.is_whitespace())
+                    .count();
+                match value[idx..].chars().next()? {
+                    ',' => idx += 1,
+                    ']' => return Some(prompts),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn json_field_value_start(body: &str, field: &str) -> Option<usize> {
+    let marker = format!("\"{field}\"");
+    let marker_idx = body.find(&marker)?;
+    json_field_value_start_from(body, marker_idx, &marker)
+}
+
+fn json_field_value_start_from(body: &str, marker_idx: usize, marker: &str) -> Option<usize> {
+    let mut idx = marker_idx + marker.len();
+    idx += body[idx..]
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .count();
+    if body[idx..].chars().next()? != ':' {
+        return None;
+    }
+    idx += 1;
+    idx += body[idx..]
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .count();
+    Some(idx)
+}
+
+fn parse_json_string_at(input: &str, start_idx: usize) -> Option<(String, usize)> {
+    let mut chars = input[start_idx..].char_indices();
+    if chars.next()?.1 != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    while let Some((relative_idx, ch)) = chars.next() {
+        match ch {
+            '"' => return Some((out, start_idx + relative_idx + ch.len_utf8())),
+            '\\' => {
+                let (_, escaped) = chars.next()?;
+                match escaped {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    'b' => out.push('\u{0008}'),
+                    'f' => out.push('\u{000c}'),
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    'u' => return None,
+                    _ => return None,
+                }
+            }
+            ch if ch.is_control() => return None,
+            ch => out.push(ch),
+        }
+    }
+    None
 }
 
 fn serve_models_json(parsed: &ServeArgs) -> String {
@@ -8761,7 +9144,8 @@ mod tests {
         runtime_options_from_gguf, serve_metrics_text, serve_models_json, shared_token_prefix_len,
         shell_command, shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
         smoke_plan_command_with_context, smoke_plan_command_with_env, trim_tui_history,
-        tui_prompt_history, validate_generation_budget,
+        tui_prompt_history, validate_api_chat_completion_request, validate_api_completion_request,
+        validate_generation_budget,
     };
 
     #[test]
@@ -9318,13 +9702,94 @@ flags\t\t: sse4_2 avx2
     #[test]
     fn http_request_parser_reads_method_path_and_auth() {
         let request = parse_http_request(
-            "GET /v1/models?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\n\r\n",
+            "POST /v1/models?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\n\r\n{\"ok\":true}",
         )
         .expect("request should parse");
-        assert_eq!(request.method, "GET");
+        assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/v1/models");
         assert_eq!(request.authorization.as_deref(), Some("Bearer secret"));
+        assert_eq!(request.body, "{\"ok\":true}");
         assert_eq!(parse_http_request("bad"), None);
+    }
+
+    #[test]
+    fn serve_completion_request_validation_enforces_openai_shape_and_caps() {
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: "/models".to_owned(),
+            api_key: None,
+            max_input_tokens: 6,
+            max_output_tokens: 8,
+            dry_run: false,
+        };
+
+        let request = validate_api_completion_request(
+            r#"{"model":"tiny","prompt":["hello","small prompt"],"max_tokens":4}"#,
+            &parsed,
+        )
+        .expect("completion request should validate");
+        assert_eq!(request.model, "tiny");
+        assert_eq!(request.input_tokens, 5);
+        assert_eq!(request.requested_output_tokens, 4);
+
+        let err = validate_api_completion_request(
+            r#"{"model":"tiny","prompt":"hello","max_tokens":9}"#,
+            &parsed,
+        )
+        .expect_err("output cap should fail");
+        assert_eq!(err.code, "output_tokens_exceeded");
+
+        let err = validate_api_completion_request(
+            r#"{"model":"tiny","prompt":"one two three four five six seven","max_tokens":4}"#,
+            &parsed,
+        )
+        .expect_err("input cap should fail");
+        assert_eq!(err.code, "input_tokens_exceeded");
+
+        let err = validate_api_completion_request(r#"{"model":"tiny"}"#, &parsed)
+            .expect_err("prompt should be required");
+        assert_eq!(err.code, "missing_prompt");
+
+        let err = validate_api_completion_request(r#""model":"tiny","prompt":"hello""#, &parsed)
+            .expect_err("non-object body should fail");
+        assert_eq!(err.code, "invalid_json");
+    }
+
+    #[test]
+    fn serve_chat_completion_request_validation_reads_messages() {
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: "/models".to_owned(),
+            api_key: None,
+            max_input_tokens: 16,
+            max_output_tokens: 8,
+            dry_run: false,
+        };
+
+        let request = validate_api_chat_completion_request(
+            r#"{"model":"tiny","messages":[{"role":"system","content":"be brief"},{"role":"user","content":"say hi"}],"max_tokens":2}"#,
+            &parsed,
+        )
+        .expect("chat request should validate");
+        assert_eq!(request.model, "tiny");
+        assert_eq!(request.input_tokens, 4);
+        assert_eq!(request.requested_output_tokens, 2);
+
+        let err = validate_api_chat_completion_request(
+            r#"{"model":"tiny","messages":[{"role":"user","content":""}]}"#,
+            &parsed,
+        )
+        .expect_err("empty content should fail");
+        assert_eq!(err.code, "invalid_messages");
+
+        let err = validate_api_chat_completion_request(
+            r#"{"model":"tiny","messages":[{"role":"user","content":"hello"}],"max_tokens":0}"#,
+            &parsed,
+        )
+        .expect_err("zero max_tokens should fail");
+        assert_eq!(err.code, "invalid_max_tokens");
     }
 
     #[test]

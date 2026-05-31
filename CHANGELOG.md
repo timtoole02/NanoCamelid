@@ -7,6 +7,9 @@ All notable NanoCamelid changes are tracked here.
 - Added the `serve` CLI/API skeleton with default loopback binding, `/health`,
   `/v1/models`, `/metrics`, optional bearer-token auth, request/output cap
   settings, and structured JSON errors for unsupported completion endpoints.
+- Added OpenAI-shaped request validation for `/v1/completions` and
+  `/v1/chat/completions`, including required JSON fields and configured
+  input/output cap enforcement before the deliberate not-implemented response.
 - Added the stable non-loading `doctor` preflight and `models list`,
   `models scan`, and `models inspect` CLI namespace for model discovery and
   actionable model-directory errors.
