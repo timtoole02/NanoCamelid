@@ -4025,7 +4025,7 @@ fn validate_api_completion_request(
             )
         })?
         .unwrap_or(0.0);
-    validate_api_caps(input_tokens, requested_output_tokens, parsed)?;
+    validate_api_output_cap(requested_output_tokens, parsed)?;
     Ok(ValidatedApiCompletionRequest {
         model,
         prompts,
@@ -4076,7 +4076,7 @@ fn validate_api_chat_completion_request(
             )
         })?
         .unwrap_or(0.0);
-    validate_api_caps(input_tokens, requested_output_tokens, parsed)?;
+    validate_api_output_cap(requested_output_tokens, parsed)?;
     Ok(ValidatedApiChatCompletionRequest {
         model,
         messages,
@@ -4163,9 +4163,8 @@ fn required_chat_messages(body: &str) -> Result<Vec<ApiChatMessage>, ServeApiErr
     Ok(messages)
 }
 
-fn validate_api_caps(
+fn validate_api_input_token_cap(
     input_tokens: usize,
-    requested_output_tokens: usize,
     parsed: &ServeArgs,
 ) -> Result<(), ServeApiError> {
     if input_tokens > parsed.max_input_tokens {
@@ -4176,6 +4175,13 @@ fn validate_api_caps(
             "Request input exceeds the configured max input token cap.",
         ));
     }
+    Ok(())
+}
+
+fn validate_api_output_cap(
+    requested_output_tokens: usize,
+    parsed: &ServeArgs,
+) -> Result<(), ServeApiError> {
     if requested_output_tokens == 0 || requested_output_tokens > parsed.max_output_tokens {
         return Err(serve_api_error(
             400,
@@ -4462,20 +4468,13 @@ fn serve_completion_response_json(
     parsed: &ServeArgs,
 ) -> Result<String, ServeApiError> {
     let model_path = resolve_api_model_path(&request.model, parsed)?;
-    let choices = generate_api_completion_choices(
+    let choices = generate_api_completion_choices_with_cap(
         &model_path,
         &request.prompts,
         request.temperature,
         request.requested_output_tokens,
-    )
-    .map_err(|_| {
-        serve_api_error(
-            500,
-            "server_error",
-            "generation_failed",
-            "Model generation failed. Run nanocamelid inspect or nanocamelid generate for the same model and prompt.",
-        )
-    })?;
+        parsed,
+    )?;
     Ok(api_completion_response_json(&request.model, &choices))
 }
 
@@ -4484,21 +4483,18 @@ fn serve_chat_completion_response_json(
     parsed: &ServeArgs,
 ) -> Result<String, ServeApiError> {
     let model_path = resolve_api_model_path(&request.model, parsed)?;
-    let choices = generate_api_chat_completion_choices(
+    let choices = generate_api_chat_completion_choices_with_cap(
         &model_path,
         &request.messages,
         request.temperature,
         request.requested_output_tokens,
-    )
-    .map_err(|_| {
-        serve_api_error(
-            500,
-            "server_error",
-            "generation_failed",
-            "Chat completion generation failed. Run nanocamelid inspect or nanocamelid chat for the same model and messages.",
-        )
-    })?;
+        parsed,
+    )?;
     Ok(api_chat_completion_response_json(&request.model, &choices))
+}
+
+fn api_generation_failed_error(message: &'static str) -> ServeApiError {
+    serve_api_error(500, "server_error", "generation_failed", message)
 }
 
 fn resolve_api_model_path(model_id: &str, parsed: &ServeArgs) -> Result<PathBuf, ServeApiError> {
@@ -4556,56 +4552,83 @@ fn api_model_entry_matches(path: &Path, model_id: &str) -> bool {
             .is_some_and(|stem| stem == model_id)
 }
 
-fn generate_api_completion_choices(
+fn generate_api_completion_choices_with_cap(
     model_path: &Path,
     prompts: &[String],
     temp: f32,
     max_tokens: usize,
-) -> Result<Vec<ApiCompletionChoice>, String> {
-    prefill_batch_size_from_env().map_err(str::to_owned)?;
+    parsed: &ServeArgs,
+) -> Result<Vec<ApiCompletionChoice>, ServeApiError> {
+    prefill_batch_size_from_env().map_err(|_| {
+        api_generation_failed_error(
+            "Model generation failed. Run nanocamelid inspect or nanocamelid generate for the same model and prompt.",
+        )
+    })?;
 
-    let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
-    let mut config = model::LlamaModelConfig::from_gguf(&gguf)
-        .map_err(|err| format!("failed to parse config: {err}"))?;
-    apply_context_limit(&mut config)?;
-    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
-        .map_err(|err| format!("failed to load tokenizer: {err}"))?;
-    let weights = model::LlamaWeights::load(model_path, &config, &gguf)
-        .map_err(|err| format!("failed to load weights: {err}"))?;
+    let generation_failed = || {
+        api_generation_failed_error(
+            "Model generation failed. Run nanocamelid inspect or nanocamelid generate for the same model and prompt.",
+        )
+    };
+    let gguf = gguf::read_file(model_path).map_err(|_| generation_failed())?;
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf).map_err(|_| generation_failed())?;
+    apply_context_limit(&mut config).map_err(|_| generation_failed())?;
+    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf).map_err(|_| generation_failed())?;
+    let prompt_tokens = prompts
+        .iter()
+        .map(|prompt| tokenizer.encode(prompt, true, true))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| generation_failed())?;
+    let input_tokens = prompt_tokens.iter().map(Vec::len).sum::<usize>();
+    validate_api_input_token_cap(input_tokens, parsed)?;
+    let weights =
+        model::LlamaWeights::load(model_path, &config, &gguf).map_err(|_| generation_failed())?;
     let runtime_options = runtime_options_from_gguf(&gguf, q8::Q8DotKernelSelector::from_env());
 
-    prompts
-        .iter()
+    prompt_tokens
+        .into_iter()
         .enumerate()
-        .map(|(index, prompt)| {
+        .map(|(index, prompt_tokens)| {
             let runtime = ApiGenerationRuntime {
                 config: &config,
                 weights: &weights,
                 tokenizer: &tokenizer,
                 runtime_options,
             };
-            generate_api_completion_choice(index, prompt, temp, max_tokens, runtime)
+            generate_api_completion_choice_from_tokens(
+                index,
+                prompt_tokens,
+                temp,
+                max_tokens,
+                runtime,
+            )
+            .map_err(|_| generation_failed())
         })
         .collect()
 }
 
-fn generate_api_chat_completion_choices(
+fn generate_api_chat_completion_choices_with_cap(
     model_path: &Path,
     messages: &[ApiChatMessage],
     temp: f32,
     max_tokens: usize,
-) -> Result<Vec<ApiCompletionChoice>, String> {
-    prefill_batch_size_from_env().map_err(str::to_owned)?;
+    parsed: &ServeArgs,
+) -> Result<Vec<ApiCompletionChoice>, ServeApiError> {
+    prefill_batch_size_from_env().map_err(|_| {
+        api_generation_failed_error(
+            "Chat completion generation failed. Run nanocamelid inspect or nanocamelid chat for the same model and messages.",
+        )
+    })?;
 
-    let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
-    let mut config = model::LlamaModelConfig::from_gguf(&gguf)
-        .map_err(|err| format!("failed to parse config: {err}"))?;
-    apply_context_limit(&mut config)?;
-    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
-        .map_err(|err| format!("failed to load tokenizer: {err}"))?;
-    let weights = model::LlamaWeights::load(model_path, &config, &gguf)
-        .map_err(|err| format!("failed to load weights: {err}"))?;
-    let runtime_options = runtime_options_from_gguf(&gguf, q8::Q8DotKernelSelector::from_env());
+    let generation_failed = || {
+        api_generation_failed_error(
+            "Chat completion generation failed. Run nanocamelid inspect or nanocamelid chat for the same model and messages.",
+        )
+    };
+    let gguf = gguf::read_file(model_path).map_err(|_| generation_failed())?;
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf).map_err(|_| generation_failed())?;
+    apply_context_limit(&mut config).map_err(|_| generation_failed())?;
+    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf).map_err(|_| generation_failed())?;
     let rendered_messages = messages
         .iter()
         .map(|message| tokenizer::ChatMessage {
@@ -4614,8 +4637,13 @@ fn generate_api_chat_completion_choices(
         })
         .collect::<Vec<_>>();
     let rendered = tokenizer.render_chat_prompt(&rendered_messages);
-    let prompt_tokens =
-        tokenizer.encode(&rendered.text, rendered.add_special, rendered.parse_special)?;
+    let prompt_tokens = tokenizer
+        .encode(&rendered.text, rendered.add_special, rendered.parse_special)
+        .map_err(|_| generation_failed())?;
+    validate_api_input_token_cap(prompt_tokens.len(), parsed)?;
+    let weights =
+        model::LlamaWeights::load(model_path, &config, &gguf).map_err(|_| generation_failed())?;
+    let runtime_options = runtime_options_from_gguf(&gguf, q8::Q8DotKernelSelector::from_env());
     let runtime = ApiGenerationRuntime {
         config: &config,
         weights: &weights,
@@ -4624,17 +4652,7 @@ fn generate_api_chat_completion_choices(
     };
     generate_api_completion_choice_from_tokens(0, prompt_tokens, temp, max_tokens, runtime)
         .map(|choice| vec![choice])
-}
-
-fn generate_api_completion_choice(
-    index: usize,
-    prompt: &str,
-    temp: f32,
-    max_tokens: usize,
-    runtime: ApiGenerationRuntime<'_>,
-) -> Result<ApiCompletionChoice, String> {
-    let prompt_tokens = runtime.tokenizer.encode(prompt, true, true)?;
-    generate_api_completion_choice_from_tokens(index, prompt_tokens, temp, max_tokens, runtime)
+        .map_err(|_| generation_failed())
 }
 
 fn generate_api_completion_choice_from_tokens(
@@ -9750,7 +9768,7 @@ mod tests {
         shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
         smoke_plan_command_with_context, smoke_plan_command_with_env, trim_tui_history,
         tui_prompt_history, validate_api_chat_completion_request, validate_api_completion_request,
-        validate_generation_budget,
+        validate_api_input_token_cap, validate_generation_budget,
     };
 
     #[test]
@@ -10383,11 +10401,15 @@ flags\t\t: sse4_2 avx2
         .expect_err("output cap should fail");
         assert_eq!(err.code, "output_tokens_exceeded");
 
-        let err = validate_api_completion_request(
+        let request = validate_api_completion_request(
             r#"{"model":"tiny","prompt":"one two three four five six seven","max_tokens":4}"#,
             &parsed,
         )
-        .expect_err("input cap should fail");
+        .expect("estimated input cap should not reject before tokenizer encoding");
+        assert_eq!(request.input_tokens, 9);
+
+        let err = validate_api_input_token_cap(7, &parsed)
+            .expect_err("exact tokenizer input cap should fail");
         assert_eq!(err.code, "input_tokens_exceeded");
 
         let err = validate_api_completion_request(r#"{"model":"tiny"}"#, &parsed)
