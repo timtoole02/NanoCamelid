@@ -64,6 +64,9 @@ nanocamelid serve --max-request-bytes 65536 --max-input-tokens 2048 --max-output
 NANOCAMELID_API_KEY=replace-with-a-token nanocamelid serve --dry-run
 ```
 
+Unauthenticated API serving is restricted to loopback bind addresses. If you
+bind outside loopback, set `NANOCAMELID_API_KEY` or pass `--api-key`.
+
 For service mode on systemd Linux hosts, inspect and install the user service
 from a checkout or release archive:
 

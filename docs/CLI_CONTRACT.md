@@ -33,6 +33,8 @@ below.
 - `models list`, `models scan`, and `/v1/models` report `aliases` for rows
   that currently resolve from the stable `1b` or `3b` aliases. `1b` prefers the
   configured directory's Q4_0 row and falls back to Q8_0 when Q4_0 is absent.
+- `serve` permits unauthenticated requests only on loopback bind addresses.
+  Non-loopback `--host` values require `--api-key` or `NANOCAMELID_API_KEY`.
 
 ## Exit and Error Behavior
 

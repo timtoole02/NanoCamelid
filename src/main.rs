@@ -940,7 +940,7 @@ fn print_serve_usage() {
     );
     println!();
     println!(
-        "Run the local HTTP API server. The default bind address is {DEFAULT_API_HOST}:{DEFAULT_API_PORT}."
+        "Run the local HTTP API server. The default bind address is {DEFAULT_API_HOST}:{DEFAULT_API_PORT}. Non-loopback binds require bearer-token auth."
     );
     println!();
     println!("Endpoints:");
@@ -959,7 +959,9 @@ fn print_serve_usage() {
     println!("  --host <addr>                            Bind address, default {DEFAULT_API_HOST}");
     println!("  --port <port>                            Bind port, default {DEFAULT_API_PORT}");
     println!("  --model-dir <path>                       Model directory for /v1/models");
-    println!("  --api-key <token>                        Require Authorization: Bearer <token>");
+    println!(
+        "  --api-key <token>                        Require Authorization: Bearer <token>; required for non-loopback --host values"
+    );
     println!(
         "  --max-request-bytes <count>              HTTP request byte cap, default {DEFAULT_SERVE_MAX_REQUEST_BYTES}"
     );
@@ -1869,6 +1871,9 @@ fn parse_serve_args_with_defaults(
     if host.is_empty() {
         return Err("serve --host requires a non-empty bind address");
     }
+    if api_key.is_none() && !is_loopback_bind_host(&host) {
+        return Err("serve --host outside loopback requires --api-key or NANOCAMELID_API_KEY");
+    }
 
     Ok(ServeArgs {
         host,
@@ -1880,6 +1885,14 @@ fn parse_serve_args_with_defaults(
         max_output_tokens,
         dry_run,
     })
+}
+
+fn is_loopback_bind_host(host: &str) -> bool {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|addr| addr.is_loopback())
 }
 
 fn parse_models_args(args: &[String]) -> Result<ModelsArgs, &'static str> {
@@ -10275,6 +10288,21 @@ flags\t\t: sse4_2 avx2
             parse_serve_args(&["extra".to_owned()]).expect_err("extra arg should fail"),
             "unexpected serve argument"
         );
+        assert_eq!(
+            parse_serve_args(&["--host=0.0.0.0".to_owned()])
+                .expect_err("unauthenticated network bind should fail"),
+            "serve --host outside loopback requires --api-key or NANOCAMELID_API_KEY"
+        );
+        assert!(
+            parse_serve_args(&[
+                "--host=0.0.0.0".to_owned(),
+                "--api-key".to_owned(),
+                "secret".to_owned(),
+            ])
+            .is_ok()
+        );
+        assert!(parse_serve_args(&["--host=localhost".to_owned()]).is_ok());
+        assert!(parse_serve_args(&["--host=::1".to_owned()]).is_ok());
     }
 
     #[test]

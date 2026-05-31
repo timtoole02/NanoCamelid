@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Hardened `nanocamelid serve` and the systemd user-service installer so
+  unauthenticated API serving remains loopback-only; non-loopback binds now
+  require `--api-key` or `NANOCAMELID_API_KEY`.
 - Added a packaged `VERSION` manifest and release-install verification that the
   archive manifest and `nanocamelid --version` output match the requested
   version before the binary is installed.

@@ -502,6 +502,7 @@ cargo run -- doctor --dry-run --json
 expect_output "doctor dry-run status" "NanoCamelid doctor" cargo run -- doctor --dry-run
 expect_output "doctor json output" "\"command\":\"doctor\"" cargo run -- doctor --dry-run --json
 expect_output "serve help documents default loopback" "default bind address is 127.0.0.1:8080" cargo run -- serve --help
+expect_output "serve help documents non-loopback auth" "Non-loopback binds require bearer-token auth" cargo run -- serve --help
 expect_output "serve help documents health endpoint" "GET  /health" cargo run -- serve --help
 expect_output "serve dry-run status" "NanoCamelid serve dry run" cargo run -- serve --dry-run
 expect_output "serve dry-run default listen" "listen: http://127.0.0.1:8080" cargo run -- serve --dry-run
@@ -512,6 +513,8 @@ expect_output "serve dry-run explicit command" "serve_command: nanocamelid serve
 expect_output "serve dry-run api key required from env" "api_key_required: true" env NANOCAMELID_API_KEY=redacted-test-key cargo run -- serve --dry-run
 expect_output "serve dry-run custom port" "listen: http://127.0.0.1:9090" cargo run -- serve --port 9090 --dry-run
 expect_failure_output "serve rejects bad port" "serve --port must be an integer from 1 to 65535" cargo run -- serve --port 0 --dry-run
+expect_failure_output "serve rejects unauthenticated network bind" "serve --host outside loopback requires --api-key or NANOCAMELID_API_KEY" cargo run -- serve --host 0.0.0.0 --dry-run
+expect_output "serve allows authenticated network bind" "listen: http://0.0.0.0:8080" env NANOCAMELID_API_KEY=redacted-test-key cargo run -- serve --host 0.0.0.0 --dry-run
 
 echo "==> Checking local API server HTTP smoke..."
 check_local_api_smoke
@@ -1173,3 +1176,5 @@ expect_output "service installer localhost allowlist" "IPAddressAllow=localhost"
 expect_output "service installer api key redacted state" "api_key_required: true" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --dry-run
 expect_no_output "service installer does not print api key" "redacted-test-key" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --dry-run
 expect_failure_output "service installer rejects bad port" "--port must be an integer from 1 to 65535" ./scripts/install-systemd-user-service.sh --port 0 --dry-run
+expect_failure_output "service installer rejects unauthenticated network bind" "--host outside loopback requires --api-key or NANOCAMELID_API_KEY" ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
+expect_output "service installer allows authenticated network bind" "listen: http://0.0.0.0:8080" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run

@@ -26,7 +26,7 @@ directory at /mnt/nanocamelid/models.
 Options:
   --binary <path>              nanocamelid binary, default NANOCAMELID_BIN or PATH lookup
   --model-dir <path>           Model directory, default /mnt/nanocamelid/models
-  --host <addr>                Bind address, default 127.0.0.1
+  --host <addr>                Bind address, default 127.0.0.1; non-loopback requires auth
   --port <port>                Bind port, default 8080
   --api-key <token>            Store bearer token in a 0600 EnvironmentFile
   --max-request-bytes <count>  HTTP request byte cap, default 65536
@@ -58,6 +58,19 @@ need() {
 
 is_positive_int() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+is_loopback_host() {
+  local value="${1#[}"
+  value="${value%]}"
+  case "$value" in
+    [Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|::1|127.*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 validate_name() {
@@ -190,6 +203,11 @@ validate_no_newline "binary" "$binary"
 validate_no_newline "model-dir" "$model_dir"
 validate_no_newline "host" "$host"
 validate_no_newline "api-key" "$api_key"
+
+if [[ -z "$api_key" ]] && ! is_loopback_host "$host"; then
+  echo "--host outside loopback requires --api-key or NANOCAMELID_API_KEY" >&2
+  exit 2
+fi
 
 if ! is_positive_int "$port" || (( port > 65535 )); then
   echo "--port must be an integer from 1 to 65535" >&2

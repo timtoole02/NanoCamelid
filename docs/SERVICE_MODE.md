@@ -83,6 +83,9 @@ basic user-service hardening:
 - address-family restriction to Unix, IPv4, and IPv6 sockets
 - localhost-only systemd IP allowlist
 
+The installer refuses non-loopback bind addresses unless bearer-token auth is
+configured with `--api-key` or `NANOCAMELID_API_KEY`.
+
 The service does not configure system login lingering. On systems that should
 start the user service at boot before login, enable lingering for the target
 user with the host's normal system administration process.
