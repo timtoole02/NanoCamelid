@@ -4,6 +4,10 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added `docs/API.md` as the public v0.1 local API reference covering server
+  defaults, auth, request/output caps, `/health`, `/v1/models`,
+  `/v1/completions`, `/v1/chat/completions`, `/metrics`, model id resolution,
+  response shapes, and structured JSON errors.
 - Made GitHub CI run the standard validation gate instead of only its dry-run
   plan, and wired GitHub releases to publish `RELEASE_NOTES.md` as the release
   body.

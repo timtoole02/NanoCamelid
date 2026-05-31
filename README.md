@@ -144,6 +144,8 @@ front door.
   product surface.
 - [docs/CLI_CONTRACT.md](docs/CLI_CONTRACT.md): stable v0.1 CLI commands,
   inputs, outputs, and compatibility notes.
+- [docs/API.md](docs/API.md): local HTTP API endpoints, request/response
+  shapes, auth, caps, metrics, and structured errors.
 - [docs/SERVICE_MODE.md](docs/SERVICE_MODE.md): systemd user-service install,
   defaults, and hardening notes.
 - [docs/PRODUCT_HISTORY.md](docs/PRODUCT_HISTORY.md): detailed prototype
