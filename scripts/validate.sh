@@ -324,6 +324,8 @@ expect_output_count() {
 
 check_stable_cli_help() {
   expect_output "top-level help documents command usage" "nanocamelid <command> [args]" cargo run -- --help
+  expect_output "top-level help separates stable commands" "Stable v0.1 commands:" cargo run -- --help
+  expect_output "top-level help separates compatibility commands" "Compatibility and lab commands:" cargo run -- --help
   expect_output "doctor help documents usage" "nanocamelid doctor [--json] [--dry-run]" cargo run -- doctor --help
   expect_output "probe help documents usage" "nanocamelid probe" cargo run -- probe --help
   expect_output "models namespace help documents list" "nanocamelid models list" cargo run -- models --help

@@ -42,6 +42,8 @@ below.
   `models` command, and prints usage, options, and relevant environment
   variables. The equivalent `nanocamelid help models <list|scan|inspect>` form
   prints the same command-specific pages.
+- Top-level `nanocamelid --help` lists the stable v0.1 commands first and
+  separates compatibility/lab commands into their own section.
 - `--dry-run` commands print the resolved plan without loading model weights or
   binding sockets.
 - `probe` accepts no arguments; extra positional values or unsupported flags

@@ -864,22 +864,41 @@ fn print_usage() {
     println!("  nanocamelid <command> [args]");
     println!("  nanocamelid --version");
     println!();
-    println!("Commands:");
+    println!("Stable v0.1 commands:");
+    println!("  --version                                 Print the NanoCamelid release version");
     println!(
         "  probe                                     Print host CPU and runtime feature information"
     );
     println!(
         "  doctor [--json] [--dry-run]              Check install, host, and model directory readiness"
     );
-    println!("  serve [--host <addr>] [--port <port>]    Run the local HTTP API server");
-    println!("  model 1b [model.gguf] [--q4|--q8] [--dry-run]");
-    println!(
-        "                                            Audit the default Llama 3.2 1B model path"
-    );
     println!("  models list [--dir <path>] [--json]      List GGUF files in the model directory");
     println!("  models scan [--dir <path>] [--json]      Recursively classify GGUF files");
     println!(
         "  models inspect <model.gguf|1b|3b>         Inspect a model using the stable models namespace"
+    );
+    println!(
+        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--no-chat|--smoke-only|--chat|--dry-run]"
+    );
+    println!(
+        "                                            Run inspect, smoke, and direct chat gates for 1B"
+    );
+    println!("  chat <model.gguf> <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  chat 1b <prompt> [temp] [max_tokens] [--dry-run]");
+    println!("  chat 3b <prompt> [temp] [max_tokens] [--dry-run]");
+    println!(
+        "                                            Render a single-turn chat prompt before generation"
+    );
+    println!("  tui <model.gguf> [temp] [max_tokens]");
+    println!("  tui 1b [temp] [max_tokens]");
+    println!("  tui 3b [temp] [max_tokens]");
+    println!("                                            Open an interactive terminal chat");
+    println!("  serve [--host <addr>] [--port <port>]    Run the local HTTP API server");
+    println!();
+    println!("Compatibility and lab commands:");
+    println!("  model 1b [model.gguf] [--q4|--q8] [--dry-run]");
+    println!(
+        "                                            Audit the default Llama 3.2 1B model path"
     );
     println!(
         "  inspect <model.gguf>                      Inspect GGUF metadata and tensor layouts"
@@ -892,22 +911,6 @@ fn print_usage() {
     println!("  generate 3b <prompt> [temp] [max_tokens] [--dry-run]");
     println!(
         "                                            Generate text from prompt on Raspberry Pi 5"
-    );
-    println!("  chat <model.gguf> <prompt> [temp] [max_tokens] [--dry-run]");
-    println!("  chat 1b <prompt> [temp] [max_tokens] [--dry-run]");
-    println!("  chat 3b <prompt> [temp] [max_tokens] [--dry-run]");
-    println!(
-        "                                            Render a single-turn chat prompt before generation"
-    );
-    println!("  tui <model.gguf> [temp] [max_tokens]");
-    println!("  tui 1b [temp] [max_tokens]");
-    println!("  tui 3b [temp] [max_tokens]");
-    println!("                                            Open an interactive terminal chat");
-    println!(
-        "  ready 1b [model.gguf] [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--q4|--q8] [--no-chat|--smoke-only|--chat|--dry-run]"
-    );
-    println!(
-        "                                            Run inspect, smoke, and direct chat gates for 1B"
     );
     println!("  evidence 1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!("                                            Run the bounded 1B evidence bundle");
@@ -931,7 +934,6 @@ fn print_usage() {
     println!("  smoke 3b [chat|model|q8-chat|q8-model] [prompt] [max_tokens] [--dry-run]");
     println!("                                            Run the default Llama 3.2 3B smoke path");
     println!("  help [command]                            Show top-level or subcommand help");
-    println!("  --version                                 Print the NanoCamelid release version");
     println!();
     println!("Run `nanocamelid help <command>` or `nanocamelid <command> --help` for details.");
 }
