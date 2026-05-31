@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added standard validation coverage for the live local API server contract:
+  authenticated `/health`, `/v1/models`, `/metrics`, completion method errors,
+  and structured not-found JSON responses on `127.0.0.1`.
 - Switched local API completion request parsing to `serde_json` so malformed
   JSON, trailing data, escaped strings, arrays, and numeric fields follow normal
   JSON semantics before structured API validation errors are returned.
