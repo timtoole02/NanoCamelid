@@ -4,6 +4,8 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Redacted API tokens from `nanocamelid serve --dry-run` replay plans while
+  preserving an auth-enabled `NANOCAMELID_API_KEY='<token>'` command shape.
 - Added `docs/CLI_CONTRACT.md` and tightened the README core CLI section around
   the stable v0.1 product commands, with compatibility commands documented
   separately; release packages now include the linked `docs/` tree.

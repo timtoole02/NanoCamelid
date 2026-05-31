@@ -58,6 +58,7 @@ Inspect the local API server plan:
 ```bash
 nanocamelid serve --dry-run
 nanocamelid serve --max-request-bytes 65536 --max-input-tokens 2048 --max-output-tokens 256 --dry-run
+NANOCAMELID_API_KEY=replace-with-a-token nanocamelid serve --dry-run
 ```
 
 For service mode on systemd Linux hosts, inspect and install the user service

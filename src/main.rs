@@ -3712,29 +3712,45 @@ fn print_serve_dry_run(parsed: &ServeArgs) {
     println!("listen: http://{}:{}", parsed.host, parsed.port);
     println!("model_dir: {}", parsed.model_dir);
     println!("api_key_required: {}", parsed.api_key.is_some());
+    if parsed.api_key.is_some() {
+        println!(
+            "api_key_plan: set NANOCAMELID_API_KEY before running serve_command; token redacted"
+        );
+    }
     println!("max_request_bytes: {}", parsed.max_request_bytes);
     println!("max_input_tokens: {}", parsed.max_input_tokens);
     println!("max_output_tokens: {}", parsed.max_output_tokens);
     println!("endpoints: /health /v1/models /v1/completions /v1/chat/completions /metrics");
-    println!(
-        "serve_command: {}",
-        shell_command(&[
-            "nanocamelid",
-            "serve",
-            "--host",
-            &parsed.host,
-            "--port",
-            &parsed.port.to_string(),
-            "--model-dir",
-            &parsed.model_dir,
-            "--max-request-bytes",
-            &parsed.max_request_bytes.to_string(),
-            "--max-input-tokens",
-            &parsed.max_input_tokens.to_string(),
-            "--max-output-tokens",
-            &parsed.max_output_tokens.to_string(),
-        ])
-    );
+    println!("serve_command: {}", serve_dry_run_command(parsed));
+}
+
+fn serve_dry_run_command(parsed: &ServeArgs) -> String {
+    let port = parsed.port.to_string();
+    let max_request_bytes = parsed.max_request_bytes.to_string();
+    let max_input_tokens = parsed.max_input_tokens.to_string();
+    let max_output_tokens = parsed.max_output_tokens.to_string();
+    let args = [
+        "nanocamelid",
+        "serve",
+        "--host",
+        &parsed.host,
+        "--port",
+        &port,
+        "--model-dir",
+        &parsed.model_dir,
+        "--max-request-bytes",
+        &max_request_bytes,
+        "--max-input-tokens",
+        &max_input_tokens,
+        "--max-output-tokens",
+        &max_output_tokens,
+    ];
+
+    if parsed.api_key.is_some() {
+        shell_command_with_owned_env(&args, &[(API_KEY_ENV, "<token>".to_owned())])
+    } else {
+        shell_command(&args)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -9784,8 +9800,8 @@ mod tests {
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value, request_too_large_error,
         resolve_api_model_path, resolve_llama32_1b_model_path_with_workspace,
         resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
-        serve_metrics_text, serve_models_json, shared_token_prefix_len, shell_command,
-        shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
+        serve_dry_run_command, serve_metrics_text, serve_models_json, shared_token_prefix_len,
+        shell_command, shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
         smoke_plan_command_with_context, smoke_plan_command_with_env, trim_tui_history,
         tui_prompt_history, validate_api_chat_completion_request, validate_api_completion_request,
         validate_api_input_token_cap, validate_generation_budget,
@@ -10361,6 +10377,27 @@ flags\t\t: sse4_2 avx2
         assert_eq!(parsed.max_request_bytes, 2048);
         assert_eq!(parsed.max_input_tokens, 512);
         assert_eq!(parsed.max_output_tokens, 32);
+    }
+
+    #[test]
+    fn serve_dry_run_command_preserves_auth_without_leaking_token() {
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: "/models".to_owned(),
+            api_key: Some("test-token-value".to_owned()),
+            max_request_bytes: 4096,
+            max_input_tokens: 1024,
+            max_output_tokens: 64,
+            dry_run: true,
+        };
+
+        let command = serve_dry_run_command(&parsed);
+        assert!(command.starts_with("NANOCAMELID_API_KEY='<token>' nanocamelid serve"));
+        assert!(command.contains("--host 127.0.0.1"));
+        assert!(command.contains("--model-dir /models"));
+        assert!(!command.contains("test-token-value"));
+        assert!(!command.contains("--api-key"));
     }
 
     #[test]

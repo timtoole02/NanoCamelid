@@ -42,6 +42,15 @@ installer writes the token to a user-owned `0600` EnvironmentFile:
 ./scripts/install-systemd-user-service.sh --api-key replace-with-a-token
 ```
 
+For a direct `nanocamelid serve --dry-run`, auth-enabled plans keep the replay
+command authenticated with a `NANOCAMELID_API_KEY='<token>'` placeholder instead
+of echoing the configured token. Replace the placeholder in your shell before
+starting the server:
+
+```bash
+NANOCAMELID_API_KEY=replace-with-a-token nanocamelid serve --dry-run
+```
+
 ## Check
 
 ```bash
