@@ -18,7 +18,7 @@ today. Model-row evidence and promotion rules live in
 | Single-turn chat | Supported for promoted catalog rows | `nanocamelid chat` renders recognized tokenizer chat templates and prints machine-readable generation status |
 | Terminal TUI | Supported for promoted catalog rows | `nanocamelid tui` keeps a model loaded for repeated local chat and exposes `/models`, `/status`, `/history`, and transcript save commands |
 | Smoke/evidence bundle | Supported for 1B product gate | `nanocamelid smoke 1b`, `evidence 1b`, and Pi scripts provide bounded dry-run and Pi-local validation paths |
-| Local API server | Planned | `serve`, `/health`, OpenAI-compatible completion endpoints, `/metrics`, caps, and optional API key are not yet implemented |
+| Local API server | Partial | `serve` defaults to `127.0.0.1`, exposes `/health`, `/v1/models`, `/metrics`, optional bearer-token auth, cap settings, dry-run planning, and structured JSON errors; completion generation endpoints return a deliberate not-implemented JSON error |
 | Service mode | Planned | systemd/launch supervisor defaults and service hardening are not yet implemented |
 
 ## Model Rows
@@ -33,8 +33,8 @@ today. Model-row evidence and promotion rules live in
 
 ## v0.1 Gate Still Open
 
-- Implement the local API server contract: `serve`, `/health`, `/v1/models`,
-  `/v1/completions`, `/v1/chat/completions`, `/metrics`, optional API key,
-  request/output caps, and structured JSON errors.
-- Add service-mode packaging and security defaults after the API server exists.
+- Wire `/v1/completions` and `/v1/chat/completions` to bounded model
+  generation with request parsing and cap enforcement.
+- Add service-mode packaging and security defaults after the API completion
+  path exists.
 - Keep broad performance claims behind row-specific Pi evidence.

@@ -2,10 +2,11 @@ use std::{
     collections::BTreeSet,
     env, fs,
     hint::black_box,
-    io::{self, Write},
+    io::{self, Read, Write},
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use nanocamelid::{gguf, inference, model, q8, speculative, tokenizer};
@@ -31,7 +32,14 @@ const READY_SMOKE_TOKENS_ENV: &str = "NANOCAMELID_READY_SMOKE_TOKENS";
 const READY_PROMPT_ENV: &str = "NANOCAMELID_READY_PROMPT";
 const READY_TOKENS_ENV: &str = "NANOCAMELID_READY_TOKENS";
 const READY_TEMP_ENV: &str = "NANOCAMELID_READY_TEMP";
+const API_KEY_ENV: &str = "NANOCAMELID_API_KEY";
+const SERVE_MAX_INPUT_TOKENS_ENV: &str = "NANOCAMELID_MAX_INPUT_TOKENS";
+const SERVE_MAX_OUTPUT_TOKENS_ENV: &str = "NANOCAMELID_MAX_OUTPUT_TOKENS";
 const DEFAULT_PI_WORKSPACE: &str = "/mnt/nanocamelid";
+const DEFAULT_API_HOST: &str = "127.0.0.1";
+const DEFAULT_API_PORT: u16 = 8080;
+const DEFAULT_SERVE_MAX_INPUT_TOKENS: usize = 2048;
+const DEFAULT_SERVE_MAX_OUTPUT_TOKENS: usize = 256;
 const LLAMA32_1B_Q4_MODEL: &str = "Llama-3.2-1B-Instruct-Q4_0.gguf";
 const LLAMA32_1B_Q8_MODEL: &str = "Llama-3.2-1B-Instruct-Q8_0.gguf";
 const LLAMA32_3B_Q4_MODEL: &str = "Llama-3.2-3B-Instruct-Q4_0.gguf";
@@ -133,6 +141,21 @@ fn main() -> ExitCode {
                 Err(err) => {
                     eprintln!("{err}");
                     print_help(HelpTopic::Doctor);
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("serve") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Serve);
+                return ExitCode::SUCCESS;
+            }
+
+            match parse_serve_args(&args[1..]) {
+                Ok(parsed) => run_serve(parsed),
+                Err(err) => {
+                    eprintln!("{err}");
+                    print_help(HelpTopic::Serve);
                     ExitCode::from(2)
                 }
             }
@@ -636,6 +659,7 @@ enum HelpTopic {
     Model,
     Models,
     Doctor,
+    Serve,
     Probe,
     Inspect,
     Generate,
@@ -735,6 +759,7 @@ fn help_topic_named(name: &str) -> Option<HelpTopic> {
         "model" => Some(HelpTopic::Model),
         "models" => Some(HelpTopic::Models),
         "doctor" => Some(HelpTopic::Doctor),
+        "serve" => Some(HelpTopic::Serve),
         "probe" => Some(HelpTopic::Probe),
         "inspect" => Some(HelpTopic::Inspect),
         "generate" => Some(HelpTopic::Generate),
@@ -758,6 +783,7 @@ fn print_help(topic: HelpTopic) {
         HelpTopic::Model => print_model_usage(),
         HelpTopic::Models => print_models_usage(),
         HelpTopic::Doctor => print_doctor_usage(),
+        HelpTopic::Serve => print_serve_usage(),
         HelpTopic::Probe => print_probe_usage(),
         HelpTopic::Inspect => print_inspect_usage(),
         HelpTopic::Generate => print_generate_usage(),
@@ -784,6 +810,7 @@ fn print_usage() {
     println!(
         "  doctor [--json] [--dry-run]              Check install, host, and model directory readiness"
     );
+    println!("  serve [--host <addr>] [--port <port>]    Run the local HTTP API server");
     println!("  model 1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!(
         "                                            Audit the default Llama 3.2 1B model path"
@@ -872,6 +899,48 @@ fn print_doctor_usage() {
     println!(
         "  {DEFAULT_MODEL_GGUF_ENV:<38} Optional explicit default GGUF path for model commands"
     );
+}
+
+fn print_serve_usage() {
+    println!("NanoCamelid serve");
+    println!();
+    println!("Usage:");
+    println!(
+        "  nanocamelid serve [--host <addr>] [--port <port>] [--model-dir <path>] [--api-key <token>] [--max-input-tokens <count>] [--max-output-tokens <count>] [--dry-run]"
+    );
+    println!();
+    println!(
+        "Run the local HTTP API server. The default bind address is {DEFAULT_API_HOST}:{DEFAULT_API_PORT}."
+    );
+    println!();
+    println!("Endpoints:");
+    println!("  GET  /health");
+    println!("  GET  /v1/models");
+    println!("  POST /v1/completions");
+    println!("  POST /v1/chat/completions");
+    println!("  GET  /metrics");
+    println!();
+    println!("Options:");
+    println!("  --host <addr>                            Bind address, default {DEFAULT_API_HOST}");
+    println!("  --port <port>                            Bind port, default {DEFAULT_API_PORT}");
+    println!("  --model-dir <path>                       Model directory for /v1/models");
+    println!("  --api-key <token>                        Require Authorization: Bearer <token>");
+    println!(
+        "  --max-input-tokens <count>               Request input token cap, default {DEFAULT_SERVE_MAX_INPUT_TOKENS}"
+    );
+    println!(
+        "  --max-output-tokens <count>              Response token cap, default {DEFAULT_SERVE_MAX_OUTPUT_TOKENS}"
+    );
+    println!(
+        "  --dry-run                                Print the server plan without binding a socket"
+    );
+    println!();
+    println!("Env:");
+    println!("  {MODEL_DIR_ENV:<38} Default model directory for /v1/models");
+    println!("  {WORKSPACE_ENV:<38} Pi workspace used when {MODEL_DIR_ENV} is unset");
+    println!("  {API_KEY_ENV:<38} Require bearer-token auth when set");
+    println!("  {SERVE_MAX_INPUT_TOKENS_ENV:<38} Request input token cap");
+    println!("  {SERVE_MAX_OUTPUT_TOKENS_ENV:<38} Response token cap");
 }
 
 fn print_models_usage() {
@@ -1556,6 +1625,17 @@ struct DoctorArgs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct ServeArgs {
+    host: String,
+    port: u16,
+    model_dir: String,
+    api_key: Option<String>,
+    max_input_tokens: usize,
+    max_output_tokens: usize,
+    dry_run: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct ModelsArgs {
     action: ModelsAction,
     json: bool,
@@ -1589,6 +1669,143 @@ fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs, &'static str> {
         }
     }
     Ok(DoctorArgs { json, dry_run })
+}
+
+fn parse_serve_args(args: &[String]) -> Result<ServeArgs, &'static str> {
+    parse_serve_args_with_defaults(
+        args,
+        default_model_dir(),
+        env::var(API_KEY_ENV).ok(),
+        env::var(SERVE_MAX_INPUT_TOKENS_ENV).ok(),
+        env::var(SERVE_MAX_OUTPUT_TOKENS_ENV).ok(),
+    )
+}
+
+fn parse_serve_args_with_defaults(
+    args: &[String],
+    default_model_dir: String,
+    default_api_key: Option<String>,
+    default_max_input_tokens: Option<String>,
+    default_max_output_tokens: Option<String>,
+) -> Result<ServeArgs, &'static str> {
+    let mut host = DEFAULT_API_HOST.to_owned();
+    let mut port = DEFAULT_API_PORT;
+    let mut model_dir = default_model_dir;
+    let mut api_key = default_api_key.filter(|value| !value.is_empty());
+    let mut max_input_tokens = parse_optional_positive_usize(
+        default_max_input_tokens.as_ref(),
+        "NANOCAMELID_MAX_INPUT_TOKENS must be a positive integer",
+    )?
+    .unwrap_or(DEFAULT_SERVE_MAX_INPUT_TOKENS);
+    let mut max_output_tokens = parse_optional_positive_usize(
+        default_max_output_tokens.as_ref(),
+        "NANOCAMELID_MAX_OUTPUT_TOKENS must be a positive integer",
+    )?
+    .unwrap_or(DEFAULT_SERVE_MAX_OUTPUT_TOKENS);
+    let mut dry_run = false;
+    let mut idx = 0;
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--dry-run" => dry_run = true,
+            "--host" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return Err("serve --host requires a bind address");
+                };
+                host = value.clone();
+            }
+            arg if arg.starts_with("--host=") => {
+                host = arg.trim_start_matches("--host=").to_owned();
+            }
+            "--port" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return Err("serve --port requires a port");
+                };
+                port = parse_port(value)?;
+            }
+            arg if arg.starts_with("--port=") => {
+                port = parse_port(arg.trim_start_matches("--port="))?;
+            }
+            "--model-dir" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return Err("serve --model-dir requires a path");
+                };
+                model_dir = value.clone();
+            }
+            arg if arg.starts_with("--model-dir=") => {
+                model_dir = arg.trim_start_matches("--model-dir=").to_owned();
+            }
+            "--api-key" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return Err("serve --api-key requires a token");
+                };
+                if value.is_empty() {
+                    return Err("serve --api-key requires a non-empty token");
+                }
+                api_key = Some(value.clone());
+            }
+            arg if arg.starts_with("--api-key=") => {
+                let value = arg.trim_start_matches("--api-key=");
+                if value.is_empty() {
+                    return Err("serve --api-key requires a non-empty token");
+                }
+                api_key = Some(value.to_owned());
+            }
+            "--max-input-tokens" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return Err("serve --max-input-tokens requires a count");
+                };
+                max_input_tokens = parse_positive_usize(
+                    value,
+                    "serve --max-input-tokens must be a positive integer",
+                )?;
+            }
+            arg if arg.starts_with("--max-input-tokens=") => {
+                max_input_tokens = parse_positive_usize(
+                    arg.trim_start_matches("--max-input-tokens="),
+                    "serve --max-input-tokens must be a positive integer",
+                )?;
+            }
+            "--max-output-tokens" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return Err("serve --max-output-tokens requires a count");
+                };
+                max_output_tokens = parse_positive_usize(
+                    value,
+                    "serve --max-output-tokens must be a positive integer",
+                )?;
+            }
+            arg if arg.starts_with("--max-output-tokens=") => {
+                max_output_tokens = parse_positive_usize(
+                    arg.trim_start_matches("--max-output-tokens="),
+                    "serve --max-output-tokens must be a positive integer",
+                )?;
+            }
+            arg if arg.starts_with('-') => return Err("unknown serve option"),
+            _ => return Err("unexpected serve argument"),
+        }
+        idx += 1;
+    }
+
+    if host.is_empty() {
+        return Err("serve --host requires a non-empty bind address");
+    }
+
+    Ok(ServeArgs {
+        host,
+        port,
+        model_dir,
+        api_key,
+        max_input_tokens,
+        max_output_tokens,
+        dry_run,
+    })
 }
 
 fn parse_models_args(args: &[String]) -> Result<ModelsArgs, &'static str> {
@@ -2652,6 +2869,20 @@ fn parse_optional_positive_usize(
     }
 }
 
+fn parse_positive_usize(value: &str, error: &'static str) -> Result<usize, &'static str> {
+    match value.parse::<usize>() {
+        Ok(parsed) if parsed > 0 => Ok(parsed),
+        _ => Err(error),
+    }
+}
+
+fn parse_port(value: &str) -> Result<u16, &'static str> {
+    match value.parse::<u16>() {
+        Ok(parsed) if parsed > 0 => Ok(parsed),
+        _ => Err("serve --port must be an integer from 1 to 65535"),
+    }
+}
+
 fn parse_non_negative_f32(value: &str, error: &'static str) -> Result<f32, &'static str> {
     match value.parse::<f32>() {
         Ok(parsed) if parsed.is_finite() && parsed >= 0.0 => Ok(parsed),
@@ -3369,6 +3600,271 @@ fn run_doctor(parsed: DoctorArgs) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+fn run_serve(parsed: ServeArgs) -> ExitCode {
+    if parsed.dry_run {
+        print_serve_dry_run(&parsed);
+        return ExitCode::SUCCESS;
+    }
+
+    let addr = format!("{}:{}", parsed.host, parsed.port);
+    let listener = match TcpListener::bind(&addr) {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("serve bind failed for {addr}: {err}");
+            eprintln!(
+                "next_action: pass --host {DEFAULT_API_HOST}, choose a free --port, or stop the process already using the port."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("NanoCamelid serve");
+    println!("listen: http://{addr}");
+    println!("model_dir: {}", parsed.model_dir);
+    println!("api_key_required: {}", parsed.api_key.is_some());
+    println!("max_input_tokens: {}", parsed.max_input_tokens);
+    println!("max_output_tokens: {}", parsed.max_output_tokens);
+    println!("endpoints: /health /v1/models /v1/completions /v1/chat/completions /metrics");
+
+    let started = Instant::now();
+    let mut request_count = 0usize;
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                request_count = request_count.saturating_add(1);
+                if let Err(err) = handle_serve_connection(
+                    &mut stream,
+                    &parsed,
+                    request_count,
+                    started.elapsed().as_secs_f64(),
+                ) {
+                    eprintln!("serve request failed: {err}");
+                }
+            }
+            Err(err) => eprintln!("serve accept failed: {err}"),
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn print_serve_dry_run(parsed: &ServeArgs) {
+    println!("NanoCamelid serve dry run");
+    println!("listen: http://{}:{}", parsed.host, parsed.port);
+    println!("model_dir: {}", parsed.model_dir);
+    println!("api_key_required: {}", parsed.api_key.is_some());
+    println!("max_input_tokens: {}", parsed.max_input_tokens);
+    println!("max_output_tokens: {}", parsed.max_output_tokens);
+    println!("endpoints: /health /v1/models /v1/completions /v1/chat/completions /metrics");
+    println!(
+        "serve_command: {}",
+        shell_command(&[
+            "nanocamelid",
+            "serve",
+            "--host",
+            &parsed.host,
+            "--port",
+            &parsed.port.to_string(),
+            "--model-dir",
+            &parsed.model_dir,
+            "--max-input-tokens",
+            &parsed.max_input_tokens.to_string(),
+            "--max-output-tokens",
+            &parsed.max_output_tokens.to_string(),
+        ])
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    authorization: Option<String>,
+}
+
+fn handle_serve_connection(
+    stream: &mut TcpStream,
+    parsed: &ServeArgs,
+    request_count: usize,
+    uptime_seconds: f64,
+) -> io::Result<()> {
+    let mut buffer = [0u8; 16 * 1024];
+    let bytes_read = stream.read(&mut buffer)?;
+    if bytes_read == 0 {
+        return Ok(());
+    }
+
+    let request_text = String::from_utf8_lossy(&buffer[..bytes_read]);
+    let Some(request) = parse_http_request(&request_text) else {
+        return write_json_error(
+            stream,
+            400,
+            "invalid_request_error",
+            "bad_request",
+            "Request line is missing or invalid.",
+        );
+    };
+
+    if let Some(api_key) = &parsed.api_key {
+        let expected = format!("Bearer {api_key}");
+        if request.authorization.as_deref() != Some(expected.as_str()) {
+            return write_json_error(
+                stream,
+                401,
+                "authentication_error",
+                "unauthorized",
+                "Missing or invalid bearer token.",
+            );
+        }
+    }
+
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/health") => write_json_response(
+            stream,
+            200,
+            &format!(
+                "{{\"status\":\"ok\",\"version\":{},\"model_dir\":{},\"api_key_required\":{}}}",
+                json_string(env!("CARGO_PKG_VERSION")),
+                json_string(&parsed.model_dir),
+                parsed.api_key.is_some()
+            ),
+        ),
+        ("GET", "/v1/models") => write_json_response(stream, 200, &serve_models_json(parsed)),
+        ("GET", "/metrics") => write_text_response(
+            stream,
+            200,
+            &serve_metrics_text(request_count, uptime_seconds, parsed),
+            "text/plain; charset=utf-8",
+        ),
+        ("POST", "/v1/completions") | ("POST", "/v1/chat/completions") => write_json_error(
+            stream,
+            501,
+            "not_implemented_error",
+            "completion_runtime_not_wired",
+            "HTTP completion generation is not implemented yet; use nanocamelid chat or nanocamelid generate locally.",
+        ),
+        ("GET", "/v1/completions") | ("GET", "/v1/chat/completions") => write_json_error(
+            stream,
+            405,
+            "invalid_request_error",
+            "method_not_allowed",
+            "Use POST for completion endpoints.",
+        ),
+        _ => write_json_error(
+            stream,
+            404,
+            "invalid_request_error",
+            "not_found",
+            "Unknown NanoCamelid API endpoint.",
+        ),
+    }
+}
+
+fn parse_http_request(request_text: &str) -> Option<HttpRequest> {
+    let mut lines = request_text.lines();
+    let mut request_line = lines.next()?.split_whitespace();
+    let method = request_line.next()?.to_owned();
+    let path = request_line.next()?.split('?').next()?.to_owned();
+    let authorization = lines.find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("authorization")
+            .then(|| value.trim().to_owned())
+    });
+
+    Some(HttpRequest {
+        method,
+        path,
+        authorization,
+    })
+}
+
+fn serve_models_json(parsed: &ServeArgs) -> String {
+    let dir = Path::new(&parsed.model_dir);
+    let entries = scan_model_dir(dir, false).unwrap_or_default();
+    let data = entries
+        .iter()
+        .map(|entry| {
+            let id = entry
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown.gguf");
+            format!(
+                "{{\"id\":{},\"object\":\"model\",\"path\":{},\"bytes\":{},\"target\":{},\"quantization\":{}}}",
+                json_string(id),
+                json_string(&entry.path.display().to_string()),
+                entry.bytes,
+                json_optional_string(entry.target),
+                json_optional_string(entry.quantization)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        "{{\"object\":\"list\",\"model_dir\":{},\"model_dir_exists\":{},\"data\":[{}]}}",
+        json_string(&parsed.model_dir),
+        dir.is_dir(),
+        data
+    )
+}
+
+fn serve_metrics_text(request_count: usize, uptime_seconds: f64, parsed: &ServeArgs) -> String {
+    format!(
+        "nanocamelid_requests_total {}\nnanocamelid_uptime_seconds {:.3}\nnanocamelid_max_input_tokens {}\nnanocamelid_max_output_tokens {}\n",
+        request_count, uptime_seconds, parsed.max_input_tokens, parsed.max_output_tokens
+    )
+}
+
+fn write_json_error(
+    stream: &mut TcpStream,
+    status: u16,
+    error_type: &str,
+    code: &str,
+    message: &str,
+) -> io::Result<()> {
+    write_json_response(
+        stream,
+        status,
+        &format!(
+            "{{\"error\":{{\"message\":{},\"type\":{},\"code\":{}}}}}",
+            json_string(message),
+            json_string(error_type),
+            json_string(code)
+        ),
+    )
+}
+
+fn write_json_response(stream: &mut TcpStream, status: u16, body: &str) -> io::Result<()> {
+    write_text_response(stream, status, body, "application/json; charset=utf-8")
+}
+
+fn write_text_response(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+    content_type: &str,
+) -> io::Result<()> {
+    let status_text = http_status_text(status);
+    write!(
+        stream,
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn http_status_text(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        501 => "Not Implemented",
+        _ => "Internal Server Error",
+    }
 }
 
 fn run_models(parsed: ModelsArgs) -> ExitCode {
@@ -8229,14 +8725,14 @@ mod tests {
         DEFAULT_Q4_PREFILL_BATCH, DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS,
         DoctorArgs, GenerationStatusJson, HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL,
         LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, ModelsAction, PERFORMANCE_GOVERNOR_COMMAND,
-        PrefillBenchBatchMetrics, ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs,
-        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, classify_model_quantization,
+        PrefillBenchBatchMetrics, ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs,
+        Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, classify_model_quantization,
         classify_model_target, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         evidence_1b_status_json, evidence_context_pack_command, evidence_model_command,
         evidence_prefill_bench_command, evidence_prefill_bench_command_with_env,
         evidence_ready_no_chat_command, generation_status_json, help_topic_for_args,
-        help_topic_named, inspect_1b_status_json, inspect_runtime_summary,
+        help_topic_named, http_status_text, inspect_1b_status_json, inspect_runtime_summary,
         is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
         llama32_1b_quantization_for_path, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
@@ -8245,26 +8741,27 @@ mod tests {
         parse_context_packs, parse_cpu_list, parse_doctor_args, parse_evidence_1b_args_with_env,
         parse_evidence_1b_args_with_path, parse_generate_args_with_env,
         parse_generate_args_with_env_and_alias_env_and_workspace,
-        parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
-        parse_model_1b_args_with_path, parse_models_args, parse_prefill_batches,
-        parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
+        parse_generate_args_with_env_and_workspace, parse_http_request,
+        parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_models_args,
+        parse_prefill_batches, parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
         parse_ready_1b_args_with_env_and_smoke_defaults,
-        parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
-        parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
-        parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
-        parse_smoke_args_with_env, parse_tui_args_with_env,
-        parse_tui_args_with_env_and_alias_env_and_workspace, parse_tui_args_with_env_and_workspace,
-        parse_tui_command, prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
+        parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default, parse_serve_args,
+        parse_serve_args_with_defaults, parse_smoke_1b_args_with_env,
+        parse_smoke_1b_args_with_env_and_defaults, parse_smoke_3b_args_with_env,
+        parse_smoke_3b_args_with_env_and_defaults, parse_smoke_args_with_env,
+        parse_tui_args_with_env, parse_tui_args_with_env_and_alias_env_and_workspace,
+        parse_tui_args_with_env_and_workspace, parse_tui_command,
+        prefill_batch_size_from_env_value, prefill_bench_1b_batch_command,
         prefill_bench_1b_batch_env, prefill_bench_1b_result_json, prefill_bench_1b_smoke_command,
         prefill_bench_1b_smoke_env, prefill_bench_1b_status_json, prefill_prompt_tokens_per_sec,
         print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_default_for_args,
         ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value,
         resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        runtime_options_from_gguf, shared_token_prefix_len, shell_command, shell_command_with_env,
-        smoke_1b_status_json, smoke_defaults_from_values, smoke_plan_command_with_context,
-        smoke_plan_command_with_env, trim_tui_history, tui_prompt_history,
-        validate_generation_budget,
+        runtime_options_from_gguf, serve_metrics_text, serve_models_json, shared_token_prefix_len,
+        shell_command, shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
+        smoke_plan_command_with_context, smoke_plan_command_with_env, trim_tui_history,
+        tui_prompt_history, validate_generation_budget,
     };
 
     #[test]
@@ -8548,6 +9045,7 @@ flags\t\t: sse4_2 avx2
         assert_eq!(help_topic_named("model"), Some(HelpTopic::Model));
         assert_eq!(help_topic_named("models"), Some(HelpTopic::Models));
         assert_eq!(help_topic_named("doctor"), Some(HelpTopic::Doctor));
+        assert_eq!(help_topic_named("serve"), Some(HelpTopic::Serve));
         assert_eq!(help_topic_named("probe"), Some(HelpTopic::Probe));
         assert_eq!(help_topic_named("inspect"), Some(HelpTopic::Inspect));
         assert_eq!(help_topic_named("generate"), Some(HelpTopic::Generate));
@@ -8589,6 +9087,10 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "doctor".to_owned()]),
             Some(HelpTopic::Doctor)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "serve".to_owned()]),
+            Some(HelpTopic::Serve)
         );
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "smoke".to_owned()]),
@@ -8724,6 +9226,140 @@ flags\t\t: sse4_2 avx2
             parse_doctor_args(&["--bad".to_owned()]).expect_err("bad doctor flag should fail"),
             "unknown doctor option"
         );
+    }
+
+    #[test]
+    fn serve_args_parse_defaults_and_options() {
+        let parsed = parse_serve_args_with_defaults(
+            &["--dry-run".to_owned()],
+            "/mnt/nanocamelid/models".to_owned(),
+            None,
+            None,
+            None,
+        )
+        .expect("serve should parse");
+        assert_eq!(parsed.host, "127.0.0.1");
+        assert_eq!(parsed.port, 8080);
+        assert_eq!(parsed.model_dir, "/mnt/nanocamelid/models");
+        assert_eq!(parsed.api_key, None);
+        assert_eq!(parsed.max_input_tokens, 2048);
+        assert_eq!(parsed.max_output_tokens, 256);
+        assert!(parsed.dry_run);
+
+        let parsed = parse_serve_args_with_defaults(
+            &[
+                "--host=127.0.0.2".to_owned(),
+                "--port".to_owned(),
+                "9090".to_owned(),
+                "--model-dir".to_owned(),
+                "/models".to_owned(),
+                "--api-key".to_owned(),
+                "secret".to_owned(),
+                "--max-input-tokens=1024".to_owned(),
+                "--max-output-tokens".to_owned(),
+                "64".to_owned(),
+            ],
+            "/unused".to_owned(),
+            None,
+            None,
+            None,
+        )
+        .expect("serve explicit options should parse");
+        assert_eq!(
+            parsed,
+            ServeArgs {
+                host: "127.0.0.2".to_owned(),
+                port: 9090,
+                model_dir: "/models".to_owned(),
+                api_key: Some("secret".to_owned()),
+                max_input_tokens: 1024,
+                max_output_tokens: 64,
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn serve_args_reject_bad_shape() {
+        assert_eq!(
+            parse_serve_args(&["--port=0".to_owned()]).expect_err("zero port should fail"),
+            "serve --port must be an integer from 1 to 65535"
+        );
+        assert_eq!(
+            parse_serve_args(&["--host".to_owned()]).expect_err("missing host should fail"),
+            "serve --host requires a bind address"
+        );
+        assert_eq!(
+            parse_serve_args(&["--api-key=".to_owned()]).expect_err("empty key should fail"),
+            "serve --api-key requires a non-empty token"
+        );
+        assert_eq!(
+            parse_serve_args(&["extra".to_owned()]).expect_err("extra arg should fail"),
+            "unexpected serve argument"
+        );
+    }
+
+    #[test]
+    fn serve_args_read_caps_from_default_env_values() {
+        let parsed = parse_serve_args_with_defaults(
+            &[],
+            "/models".to_owned(),
+            Some("env-secret".to_owned()),
+            Some("512".to_owned()),
+            Some("32".to_owned()),
+        )
+        .expect("serve env caps should parse");
+        assert_eq!(parsed.model_dir, "/models");
+        assert_eq!(parsed.api_key.as_deref(), Some("env-secret"));
+        assert_eq!(parsed.max_input_tokens, 512);
+        assert_eq!(parsed.max_output_tokens, 32);
+    }
+
+    #[test]
+    fn http_request_parser_reads_method_path_and_auth() {
+        let request = parse_http_request(
+            "GET /v1/models?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\n\r\n",
+        )
+        .expect("request should parse");
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/v1/models");
+        assert_eq!(request.authorization.as_deref(), Some("Bearer secret"));
+        assert_eq!(parse_http_request("bad"), None);
+    }
+
+    #[test]
+    fn serve_models_json_reports_missing_dir_as_empty_list() {
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: "/definitely/missing/nanocamelid-models".to_owned(),
+            api_key: None,
+            max_input_tokens: 2048,
+            max_output_tokens: 256,
+            dry_run: false,
+        };
+        let json = serve_models_json(&parsed);
+        assert!(json.contains("\"object\":\"list\""));
+        assert!(json.contains("\"model_dir_exists\":false"));
+        assert!(json.contains("\"data\":[]"));
+    }
+
+    #[test]
+    fn serve_metrics_use_prometheus_text_shape() {
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: "/models".to_owned(),
+            api_key: None,
+            max_input_tokens: 1024,
+            max_output_tokens: 64,
+            dry_run: false,
+        };
+        let metrics = serve_metrics_text(3, 1.25, &parsed);
+        assert!(metrics.contains("nanocamelid_requests_total 3"));
+        assert!(metrics.contains("nanocamelid_uptime_seconds 1.250"));
+        assert!(metrics.contains("nanocamelid_max_input_tokens 1024"));
+        assert_eq!(http_status_text(501), "Not Implemented");
     }
 
     #[test]

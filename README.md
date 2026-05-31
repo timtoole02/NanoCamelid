@@ -11,8 +11,8 @@ checks, and Pi-side evidence for supported model rows.
   `SHA256SUMS`.
 - `nanocamelid --version` prints the package version.
 - GGUF model discovery, inspection, direct generation, single-turn chat,
-  terminal TUI, 1B readiness, and model-backed smoke/evidence paths are
-  available from the CLI.
+  terminal TUI, 1B readiness, a local HTTP API skeleton, and model-backed
+  smoke/evidence paths are available from the CLI.
 - The default Pi model directory is `/mnt/nanocamelid/models`.
 - Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma prompt rendering is
   available for supported smoke and chat paths.
@@ -53,6 +53,12 @@ nanocamelid chat 1b "Say hello in one sentence." 0.0 8
 nanocamelid tui 1b
 ```
 
+Inspect the local API server plan:
+
+```bash
+nanocamelid serve --dry-run
+```
+
 ## Install Modes
 
 The installer uses the published aarch64 Linux release by default:
@@ -83,6 +89,7 @@ nanocamelid probe
 nanocamelid models list
 nanocamelid models scan
 nanocamelid models inspect 1b --dry-run
+nanocamelid serve --dry-run
 nanocamelid model 1b --dry-run
 nanocamelid inspect 1b --dry-run
 nanocamelid inspect /path/to/model.gguf
