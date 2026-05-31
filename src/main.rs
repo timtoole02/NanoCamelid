@@ -167,8 +167,18 @@ fn main() -> ExitCode {
                 print_help(HelpTopic::Probe);
                 return ExitCode::SUCCESS;
             }
-            print_probe();
-            ExitCode::SUCCESS
+
+            match parse_probe_args(&args[1..]) {
+                Ok(()) => {
+                    print_probe();
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("{err}");
+                    print_help(HelpTopic::Probe);
+                    ExitCode::from(2)
+                }
+            }
         }
         Some("inspect") => {
             if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
@@ -1681,6 +1691,16 @@ fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs, &'static str> {
         }
     }
     Ok(DoctorArgs { json, dry_run })
+}
+
+fn parse_probe_args(args: &[String]) -> Result<(), &'static str> {
+    if let Some(arg) = args.first() {
+        if arg.starts_with('-') {
+            return Err("unknown probe option");
+        }
+        return Err("unexpected probe argument");
+    }
+    Ok(())
 }
 
 fn parse_serve_args(args: &[String]) -> Result<ServeArgs, &'static str> {
@@ -9748,8 +9768,8 @@ mod tests {
         parse_generate_args_with_env, parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_http_request,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_models_args,
-        parse_prefill_batches, parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
-        parse_ready_1b_args_with_env_and_smoke_defaults,
+        parse_prefill_batches, parse_prefill_bench_1b_batch_metrics, parse_probe_args,
+        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default, parse_serve_args,
         parse_serve_args_with_defaults, parse_smoke_1b_args_with_env,
         parse_smoke_1b_args_with_env_and_defaults, parse_smoke_3b_args_with_env,
@@ -10232,6 +10252,19 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             parse_doctor_args(&["--bad".to_owned()]).expect_err("bad doctor flag should fail"),
             "unknown doctor option"
+        );
+    }
+
+    #[test]
+    fn probe_args_reject_any_extra_inputs() {
+        assert_eq!(parse_probe_args(&[]), Ok(()));
+        assert_eq!(
+            parse_probe_args(&["extra".to_owned()]).expect_err("extra probe arg should fail"),
+            "unexpected probe argument"
+        );
+        assert_eq!(
+            parse_probe_args(&["--json".to_owned()]).expect_err("probe flag should fail"),
+            "unknown probe option"
         );
     }
 

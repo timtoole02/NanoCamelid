@@ -348,6 +348,9 @@ expect_output "smoke help 1b default tokens" "1b/3b [max_tokens]                
 expect_output "smoke help 1b quant selectors" "--q4" cargo run -- smoke --help
 
 echo "==> Checking doctor, serve, and models CLI contract..."
+expect_output "probe help documents no-arg usage" "nanocamelid probe" cargo run -- probe --help
+expect_failure_output "probe rejects extra argument" "unexpected probe argument" cargo run -- probe extra
+expect_failure_output "probe rejects unknown option" "unknown probe option" cargo run -- probe --json
 cargo run -- doctor --dry-run --json
 expect_output "doctor dry-run status" "NanoCamelid doctor" cargo run -- doctor --dry-run
 expect_output "doctor json output" "\"command\":\"doctor\"" cargo run -- doctor --dry-run --json

@@ -37,6 +37,8 @@ below.
   options, and relevant environment variables.
 - `--dry-run` commands print the resolved plan without loading model weights or
   binding sockets.
+- `probe` accepts no arguments; extra positional values or unsupported flags
+  fail before printing host details.
 - Missing model directories should fail with an actionable message that names
   the directory and points to `--dir` or `NANOCAMELID_MODEL_DIR`.
 - Invalid numeric flags should name the failing flag and accepted range.
