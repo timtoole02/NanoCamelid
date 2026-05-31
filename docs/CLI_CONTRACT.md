@@ -10,7 +10,7 @@ below.
 | Command | Contract | Primary output |
 | --- | --- | --- |
 | `nanocamelid --version` | Print the packaged NanoCamelid version and exit without loading model files | Plain version text |
-| `nanocamelid doctor` | Check install readiness, host summary, model directory, default model paths, and next action without loading a GGUF | Human-readable preflight; `--json` adds a machine-readable JSON status line |
+| `nanocamelid doctor` | Check install readiness, host summary, model directory, default model paths, and next action without loading a GGUF | Human-readable preflight; `--json` adds a machine-readable JSON status line with the same model/default-path readiness fields |
 | `nanocamelid probe` | Print host CPU and runtime feature detection | Human-readable host/runtime feature report |
 | `nanocamelid models list` | List `.gguf` files directly under the configured model directory | Human-readable list with active `1b`/`3b` aliases when a default row is present; `--json` emits JSON lines |
 | `nanocamelid models scan` | Recursively find `.gguf` files and classify filename target/quantization hints | Human-readable scan with active `1b`/`3b` aliases for default rows; `--json` emits JSON lines |
@@ -46,6 +46,9 @@ below.
   separates compatibility/lab commands into their own section.
 - `--dry-run` commands print the resolved plan without loading model weights or
   binding sockets.
+- `doctor --json` reports status, host, model directory state, default 1B/3B
+  paths, selected 1B alias path, relevant environment flags, and `next_action`
+  when the preflight is not ready.
 - `probe` accepts no arguments; extra positional values or unsupported flags
   fail before printing host details.
 - Missing model directories should fail with an actionable message that names

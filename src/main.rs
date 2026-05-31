@@ -1772,6 +1772,30 @@ struct DoctorArgs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct DoctorReport {
+    status: &'static str,
+    version: &'static str,
+    host: &'static str,
+    arch: &'static str,
+    cpu_model: String,
+    model_dir: String,
+    model_dir_exists: bool,
+    model_count: Option<usize>,
+    workspace: String,
+    default_1b_q4: String,
+    default_1b_q4_exists: bool,
+    default_1b_q8: String,
+    default_1b_q8_exists: bool,
+    default_3b_q4: String,
+    default_3b_q4_exists: bool,
+    default_1b_selected: String,
+    default_model_gguf_set: bool,
+    smoke_model_gguf_set: bool,
+    model_dir_env_set: bool,
+    next_action: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct ServeArgs {
     host: String,
     port: u16,
@@ -3740,63 +3764,104 @@ fn run_doctor(parsed: DoctorArgs) -> ExitCode {
         .or_else(|| device_model(&device_tree_model))
         .unwrap_or("unknown");
     let status = if model_dir_exists { "ok" } else { "warn" };
+    let default_1b_selected = default_llama32_1b_model_path(&workspace, q4_exists);
+    let q4_model_exists = Path::new(&q4_model).is_file();
+    let q8_model_exists = Path::new(&q8_model).is_file();
+    let three_b_model_exists = Path::new(&three_b_model).is_file();
+    let next_action = (!model_dir_exists).then(|| {
+        format!(
+            "create {}, set {MODEL_DIR_ENV}, or run `nanocamelid models list --dir <path>`.",
+            model_dir.display()
+        )
+    });
+    let report = DoctorReport {
+        status,
+        version: env!("CARGO_PKG_VERSION"),
+        host: env::consts::OS,
+        arch: env::consts::ARCH,
+        cpu_model: cpu_model.to_owned(),
+        model_dir: model_dir.display().to_string(),
+        model_dir_exists,
+        model_count,
+        workspace,
+        default_1b_q4: q4_model,
+        default_1b_q4_exists: q4_model_exists,
+        default_1b_q8: q8_model,
+        default_1b_q8_exists: q8_model_exists,
+        default_3b_q4: three_b_model,
+        default_3b_q4_exists: three_b_model_exists,
+        default_1b_selected,
+        default_model_gguf_set: env::var(DEFAULT_MODEL_GGUF_ENV).is_ok(),
+        smoke_model_gguf_set: env::var(SMOKE_MODEL_GGUF_ENV).is_ok(),
+        model_dir_env_set: env::var(MODEL_DIR_ENV).is_ok(),
+        next_action,
+    };
 
     println!("NanoCamelid doctor");
-    println!("status: {status}");
-    println!("version: {}", env!("CARGO_PKG_VERSION"));
-    println!("host: {} {}", env::consts::OS, env::consts::ARCH);
-    println!("cpu_model: {cpu_model}");
-    println!("model_dir: {}", model_dir.display());
-    println!("model_dir_exists: {model_dir_exists}");
-    if let Some(model_count) = model_count {
+    println!("status: {}", report.status);
+    println!("version: {}", report.version);
+    println!("host: {} {}", report.host, report.arch);
+    println!("cpu_model: {}", report.cpu_model);
+    println!("model_dir: {}", report.model_dir);
+    println!("model_dir_exists: {}", report.model_dir_exists);
+    if let Some(model_count) = report.model_count {
         println!("model_count: {model_count}");
     } else {
         println!("model_count: not_checked");
     }
-    println!("workspace: {workspace}");
-    println!("default_1b_q4: {q4_model}");
-    println!("default_1b_q4_exists: {}", Path::new(&q4_model).is_file());
-    println!("default_1b_q8: {q8_model}");
-    println!("default_1b_q8_exists: {}", Path::new(&q8_model).is_file());
-    println!("default_3b_q4: {three_b_model}");
-    println!(
-        "default_3b_q4_exists: {}",
-        Path::new(&three_b_model).is_file()
-    );
-    println!(
-        "default_1b_selected: {}",
-        default_llama32_1b_model_path(&workspace, q4_exists)
-    );
+    println!("workspace: {}", report.workspace);
+    println!("default_1b_q4: {}", report.default_1b_q4);
+    println!("default_1b_q4_exists: {}", report.default_1b_q4_exists);
+    println!("default_1b_q8: {}", report.default_1b_q8);
+    println!("default_1b_q8_exists: {}", report.default_1b_q8_exists);
+    println!("default_3b_q4: {}", report.default_3b_q4);
+    println!("default_3b_q4_exists: {}", report.default_3b_q4_exists);
+    println!("default_1b_selected: {}", report.default_1b_selected);
     println!(
         "{DEFAULT_MODEL_GGUF_ENV}_set: {}",
-        env::var(DEFAULT_MODEL_GGUF_ENV).is_ok()
+        report.default_model_gguf_set
     );
     println!(
         "{SMOKE_MODEL_GGUF_ENV}_set: {}",
-        env::var(SMOKE_MODEL_GGUF_ENV).is_ok()
+        report.smoke_model_gguf_set
     );
-    println!("{MODEL_DIR_ENV}_set: {}", env::var(MODEL_DIR_ENV).is_ok());
-    if !model_dir_exists {
-        println!(
-            "next_action: create {}, set {MODEL_DIR_ENV}, or run `nanocamelid models list --dir <path>`.",
-            model_dir.display()
-        );
+    println!("{MODEL_DIR_ENV}_set: {}", report.model_dir_env_set);
+    if let Some(next_action) = &report.next_action {
+        println!("next_action: {next_action}");
     }
     if parsed.json {
-        println!(
-            "json: {{\"command\":\"doctor\",\"status\":\"{}\",\"version\":{},\"host\":{},\"arch\":{},\"model_dir\":{},\"model_dir_exists\":{},\"model_count\":{}}}",
-            status,
-            json_string(env!("CARGO_PKG_VERSION")),
-            json_string(env::consts::OS),
-            json_string(env::consts::ARCH),
-            json_string(&model_dir.display().to_string()),
-            model_dir_exists,
-            model_count
-                .map(|count| count.to_string())
-                .unwrap_or_else(|| "null".to_owned())
-        );
+        println!("json: {}", doctor_json(&report));
     }
     ExitCode::SUCCESS
+}
+
+fn doctor_json(report: &DoctorReport) -> String {
+    format!(
+        "{{\"command\":\"doctor\",\"status\":\"{}\",\"version\":{},\"host\":{},\"arch\":{},\"cpu_model\":{},\"model_dir\":{},\"model_dir_exists\":{},\"model_count\":{},\"workspace\":{},\"default_1b_q4\":{},\"default_1b_q4_exists\":{},\"default_1b_q8\":{},\"default_1b_q8_exists\":{},\"default_3b_q4\":{},\"default_3b_q4_exists\":{},\"default_1b_selected\":{},\"{}_set\":{},\"{}_set\":{},\"{}_set\":{},\"next_action\":{}}}",
+        report.status,
+        json_string(report.version),
+        json_string(report.host),
+        json_string(report.arch),
+        json_string(&report.cpu_model),
+        json_string(&report.model_dir),
+        report.model_dir_exists,
+        json_optional_usize(report.model_count),
+        json_string(&report.workspace),
+        json_string(&report.default_1b_q4),
+        report.default_1b_q4_exists,
+        json_string(&report.default_1b_q8),
+        report.default_1b_q8_exists,
+        json_string(&report.default_3b_q4),
+        report.default_3b_q4_exists,
+        json_string(&report.default_1b_selected),
+        DEFAULT_MODEL_GGUF_ENV,
+        report.default_model_gguf_set,
+        SMOKE_MODEL_GGUF_ENV,
+        report.smoke_model_gguf_set,
+        MODEL_DIR_ENV,
+        report.model_dir_env_set,
+        json_optional_string(report.next_action.as_deref())
+    )
 }
 
 fn run_serve(parsed: ServeArgs) -> ExitCode {
@@ -9866,14 +9931,15 @@ mod tests {
         ApiChatMessage, ApiCompletionChoice, ChatTurn, DEFAULT_1B_PREFILL_PROMPT,
         DEFAULT_1B_PREFILL_TEMP, DEFAULT_1B_PREFILL_TOKENS, DEFAULT_1B_SMOKE_PROMPT,
         DEFAULT_1B_SMOKE_TOKENS, DEFAULT_MODEL_GGUF_ENV, DEFAULT_Q4_PREFILL_BATCH,
-        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, DoctorArgs, GenerationStatusJson,
-        HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
-        ModelEntry, ModelsAction, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
-        ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs, ServeMetrics, Smoke1BArgs,
-        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, api_chat_completion_response_json,
-        api_completion_response_json, classify_model_quantization, classify_model_target,
-        cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
-        default_llama32_3b_model_path, device_model, evidence_1b_status_json,
+        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, DoctorArgs, DoctorReport,
+        GenerationStatusJson, HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL,
+        LLAMA32_3B_Q4_MODEL, ModelEntry, ModelsAction, PERFORMANCE_GOVERNOR_COMMAND,
+        PrefillBenchBatchMetrics, ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs,
+        ServeMetrics, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand,
+        api_chat_completion_response_json, api_completion_response_json,
+        classify_model_quantization, classify_model_target, cpu_features,
+        cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
+        default_llama32_3b_model_path, device_model, doctor_json, evidence_1b_status_json,
         evidence_context_pack_command, evidence_model_command, evidence_prefill_bench_command,
         evidence_prefill_bench_command_with_env, evidence_ready_no_chat_command,
         generation_status_json, help_topic_for_args, help_topic_named, http_status_text,
@@ -10396,6 +10462,51 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             parse_doctor_args(&["--bad".to_owned()]).expect_err("bad doctor flag should fail"),
             "unknown doctor option"
+        );
+    }
+
+    #[test]
+    fn doctor_json_reports_actionable_model_state() {
+        let report = DoctorReport {
+            status: "warn",
+            version: "0.1.0",
+            host: "linux",
+            arch: "aarch64",
+            cpu_model: "Raspberry Pi 5".to_owned(),
+            model_dir: "/mnt/nanocamelid/models".to_owned(),
+            model_dir_exists: false,
+            model_count: None,
+            workspace: "/mnt/nanocamelid".to_owned(),
+            default_1b_q4: "/mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf".to_owned(),
+            default_1b_q4_exists: false,
+            default_1b_q8: "/mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf".to_owned(),
+            default_1b_q8_exists: true,
+            default_3b_q4: "/mnt/nanocamelid/models/Llama-3.2-3B-Instruct-Q4_0.gguf".to_owned(),
+            default_3b_q4_exists: false,
+            default_1b_selected: "/mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+                .to_owned(),
+            default_model_gguf_set: false,
+            smoke_model_gguf_set: true,
+            model_dir_env_set: false,
+            next_action: Some(
+                "create /mnt/nanocamelid/models or set NANOCAMELID_MODEL_DIR.".to_owned(),
+            ),
+        };
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&doctor_json(&report)).expect("doctor json should parse");
+        assert_eq!(parsed["command"], "doctor");
+        assert_eq!(parsed["status"], "warn");
+        assert_eq!(parsed["model_count"], serde_json::Value::Null);
+        assert_eq!(parsed["default_1b_q8_exists"], true);
+        assert_eq!(
+            parsed["default_1b_selected"],
+            "/mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+        );
+        assert_eq!(parsed["NANOCAMELID_SMOKE_GGUF_set"], true);
+        assert_eq!(
+            parsed["next_action"],
+            "create /mnt/nanocamelid/models or set NANOCAMELID_MODEL_DIR."
         );
     }
 

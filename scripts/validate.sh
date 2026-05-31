@@ -552,6 +552,8 @@ expect_failure_output "probe rejects extra argument" "unexpected probe argument"
 expect_failure_output "probe rejects unknown option" "unknown probe option" cargo run -- probe --json
 expect_output "doctor dry-run status" "NanoCamelid doctor" cargo run -- doctor --dry-run
 expect_output "doctor json output" "\"command\":\"doctor\"" cargo run -- doctor --dry-run --json
+expect_output "doctor json default model selection" "\"default_1b_selected\"" cargo run -- doctor --dry-run --json
+expect_output "doctor json next action" "\"next_action\":" cargo run -- doctor --dry-run --json
 expect_output "serve help documents default loopback" "default bind address is 127.0.0.1:8080" cargo run -- serve --help
 expect_output "serve help documents non-loopback auth" "Non-loopback binds require bearer-token auth" cargo run -- serve --help
 expect_output "serve help documents health endpoint" "GET  /health" cargo run -- serve --help
