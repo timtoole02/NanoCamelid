@@ -16,6 +16,7 @@ Useful env:
   NANOCAMELID_REMOTE_CONTEXT_PACKS  Optional comma-separated 1B context caps to run after readiness
   NANOCAMELID_REMOTE_PREFILL_BATCH   Optional prompt prefill batch for remote readiness/smoke gates
   NANOCAMELID_REMOTE_TARGET_DIR      Optional Cargo target dir; defaults to <remote-workspace>/target
+  NANOCAMELID_REMOTE_MIN_FREE_KB     Optional minimum free KiB required before deploy; defaults to 262144
   NANOCAMELID_REMOTE_1B_QUANT       Optional q4/q8 selector for Pi-local default 1B rows
   NANOCAMELID_REMOTE_PREFILL_BENCH  Set to 1 to run the 1B prefill batch sweep after readiness; 0/false/no/off disables it
   NANOCAMELID_REMOTE_PREFILL_BATCHES Optional comma-separated prefill batches for the remote sweep
@@ -54,6 +55,7 @@ DEPLOY_MODE="${4:-${NANOCAMELID_DEPLOY_MODE:-git-ff}}"
 PI_WORKSPACE="${NANOCAMELID_REMOTE_WORKSPACE:-/mnt/nanocamelid}"
 PI_TARGET_DIR="${NANOCAMELID_REMOTE_TARGET_DIR:-$PI_WORKSPACE/target}"
 PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
+REMOTE_MIN_FREE_KB="${NANOCAMELID_REMOTE_MIN_FREE_KB:-262144}"
 REMOTE_SMOKE_ENABLED="${NANOCAMELID_REMOTE_SMOKE:-1}"
 REMOTE_SMOKE_ENABLED_LOWER="$(printf '%s' "$REMOTE_SMOKE_ENABLED" | tr '[:upper:]' '[:lower:]')"
 REMOTE_SMOKE_GGUF="${NANOCAMELID_REMOTE_SMOKE_GGUF:-}"
@@ -151,6 +153,16 @@ require_positive_integer() {
 
   if ! is_positive_integer "$value"; then
     echo "$label must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
+require_non_negative_integer() {
+  local label="$1"
+  local value="$2"
+
+  if [[ ! "${value:-}" =~ ^[0-9]+$ ]]; then
+    echo "$label must be a non-negative integer: $value" >&2
     exit 2
   fi
 }
@@ -370,6 +382,7 @@ print_evidence_command() {
 require_toggle "NANOCAMELID_REMOTE_SMOKE" "$REMOTE_SMOKE_ENABLED"
 require_toggle "NANOCAMELID_REMOTE_PREFILL_BENCH" "$REMOTE_PREFILL_BENCH"
 require_toggle "NANOCAMELID_REMOTE_EVIDENCE" "$REMOTE_EVIDENCE"
+require_non_negative_integer "NANOCAMELID_REMOTE_MIN_FREE_KB" "$REMOTE_MIN_FREE_KB"
 
 if evidence_enabled && remote_smoke_disabled; then
   echo "NANOCAMELID_REMOTE_EVIDENCE requires NANOCAMELID_REMOTE_SMOKE to be enabled." >&2
@@ -423,6 +436,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "remote_workspace: $PI_WORKSPACE"
   echo "remote_repo: $PI_REPO"
   echo "cargo_target_dir: $PI_TARGET_DIR"
+  echo "remote_min_free_kb: $REMOTE_MIN_FREE_KB"
   echo "remote_smoke_enabled: $REMOTE_SMOKE_ENABLED"
   echo "remote_smoke_kind: $REMOTE_SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"

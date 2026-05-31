@@ -11,6 +11,7 @@ PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
 PUBLIC_REPO_URL="${NANOCAMELID_PUBLIC_REPO_URL:-https://github.com/timtoole02/NanoCamelid.git}"
 PI_BRANCH="${NANOCAMELID_REMOTE_BRANCH:-main}"
 SSH_CONNECT_TIMEOUT="${NANOCAMELID_SSH_CONNECT_TIMEOUT:-10}"
+REMOTE_MIN_FREE_KB="${NANOCAMELID_REMOTE_MIN_FREE_KB:-262144}"
 
 if [[ -z "$PI_HOST" ]]; then
   echo "Usage: $0 <pi-ip-or-hostname> [ssh-key-path] [pi-username] [rsync|git-ff]" >&2
@@ -38,6 +39,35 @@ else
     -o ServerAliveCountMax=1
   )
 fi
+
+if [[ ! "$REMOTE_MIN_FREE_KB" =~ ^[0-9]+$ ]]; then
+  echo "NANOCAMELID_REMOTE_MIN_FREE_KB must be a non-negative integer: $REMOTE_MIN_FREE_KB" >&2
+  exit 2
+fi
+
+echo "Checking target Pi workspace free space..."
+printf -v REMOTE_PI_WORKSPACE '%q' "$PI_WORKSPACE"
+printf -v REMOTE_MIN_FREE_KB_ARG '%q' "$REMOTE_MIN_FREE_KB"
+ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
+  "PI_WORKSPACE=$REMOTE_PI_WORKSPACE REMOTE_MIN_FREE_KB=$REMOTE_MIN_FREE_KB_ARG bash" <<'EOF'
+set -euo pipefail
+
+mkdir -p "$PI_WORKSPACE"
+available_kb="$(df -Pk "$PI_WORKSPACE" | awk 'NR == 2 {print $4}')"
+case "$available_kb" in
+  "" | *[!0-9]*)
+    echo "Unable to read target Pi workspace free space." >&2
+    exit 7
+    ;;
+esac
+
+if (( available_kb < REMOTE_MIN_FREE_KB )); then
+  echo "Target Pi workspace has ${available_kb} KiB free; require at least ${REMOTE_MIN_FREE_KB} KiB before deploy." >&2
+  exit 8
+fi
+
+echo "Target Pi workspace free space: ${available_kb} KiB"
+EOF
 
 # Derive repo root relative to this script's location
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
