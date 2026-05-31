@@ -679,6 +679,9 @@ enum HelpTopic {
     TopLevel,
     Model,
     Models,
+    ModelsList,
+    ModelsScan,
+    ModelsInspect,
     Doctor,
     Serve,
     Probe,
@@ -695,14 +698,20 @@ enum HelpTopic {
 fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
     match args.first().map(String::as_str) {
         Some("-h" | "--help") | Some("help") if args.len() == 1 => Some(HelpTopic::TopLevel),
-        Some("help") => help_topic_named(args.get(1).map(String::as_str).unwrap_or_default()),
+        Some("help") => help_topic_for_named_args(&args[1..]),
         Some("models")
             if args
                 .get(1)
-                .is_some_and(|value| matches!(value.as_str(), "list" | "scan" | "inspect"))
+                .is_some_and(|value| matches!(value.as_str(), "list" | "scan"))
                 && args.get(2).is_some_and(|value| is_help_flag(value)) =>
         {
-            Some(HelpTopic::Models)
+            help_topic_for_models_command(args.get(1).map(String::as_str).unwrap_or_default())
+        }
+        Some("models")
+            if args.get(1).is_some_and(|value| value == "inspect")
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::ModelsInspect)
         }
         Some("models")
             if args.get(1).is_some_and(|value| value == "inspect")
@@ -711,7 +720,7 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
                 })
                 && args.get(3).is_some_and(|value| is_help_flag(value)) =>
         {
-            Some(HelpTopic::Models)
+            Some(HelpTopic::ModelsInspect)
         }
         Some("model")
             if args.get(1).is_some_and(|value| is_llama32_1b_alias(value))
@@ -803,6 +812,25 @@ fn help_topic_named(name: &str) -> Option<HelpTopic> {
     }
 }
 
+fn help_topic_for_named_args(args: &[String]) -> Option<HelpTopic> {
+    match args {
+        [namespace, command, ..] if namespace == "models" => {
+            help_topic_for_models_command(command.as_str())
+        }
+        [topic, ..] => help_topic_named(topic),
+        [] => Some(HelpTopic::TopLevel),
+    }
+}
+
+fn help_topic_for_models_command(command: &str) -> Option<HelpTopic> {
+    match command {
+        "list" => Some(HelpTopic::ModelsList),
+        "scan" => Some(HelpTopic::ModelsScan),
+        "inspect" => Some(HelpTopic::ModelsInspect),
+        _ => None,
+    }
+}
+
 fn is_help_flag(value: &str) -> bool {
     matches!(value, "-h" | "--help")
 }
@@ -812,6 +840,9 @@ fn print_help(topic: HelpTopic) {
         HelpTopic::TopLevel => print_usage(),
         HelpTopic::Model => print_model_usage(),
         HelpTopic::Models => print_models_usage(),
+        HelpTopic::ModelsList => print_models_list_usage(),
+        HelpTopic::ModelsScan => print_models_scan_usage(),
+        HelpTopic::ModelsInspect => print_models_inspect_usage(),
         HelpTopic::Doctor => print_doctor_usage(),
         HelpTopic::Serve => print_serve_usage(),
         HelpTopic::Probe => print_probe_usage(),
@@ -1018,6 +1049,79 @@ fn print_models_usage() {
     );
     println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Default GGUF path for inspect");
     println!("  {SMOKE_MODEL_GGUF_ENV:<38} Alias-specific inspect override");
+}
+
+fn print_models_list_usage() {
+    println!("NanoCamelid models list");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid models list [--dir <path>] [--json] [--dry-run]");
+    println!();
+    println!("List GGUF files directly under the configured model directory.");
+    println!();
+    println!("Options:");
+    println!("  --dir <path>                             Model directory to list");
+    println!(
+        "  --json                                   Print machine-readable model and summary lines"
+    );
+    println!(
+        "  --dry-run                                Print the resolved list plan without reading the directory"
+    );
+    println!();
+    println!("Env:");
+    println!("  {MODEL_DIR_ENV:<38} Override the model directory");
+    println!(
+        "  {WORKSPACE_ENV:<38} Pi workspace used when {MODEL_DIR_ENV} is unset; default {DEFAULT_PI_WORKSPACE}"
+    );
+}
+
+fn print_models_scan_usage() {
+    println!("NanoCamelid models scan");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid models scan [--dir <path>] [--json] [--dry-run]");
+    println!();
+    println!("Recursively find GGUF files and classify filename target and quantization hints.");
+    println!();
+    println!("Options:");
+    println!("  --dir <path>                             Model directory to scan recursively");
+    println!(
+        "  --json                                   Print machine-readable model and summary lines"
+    );
+    println!(
+        "  --dry-run                                Print the resolved scan plan without reading the directory"
+    );
+    println!();
+    println!("Env:");
+    println!("  {MODEL_DIR_ENV:<38} Override the model directory");
+    println!(
+        "  {WORKSPACE_ENV:<38} Pi workspace used when {MODEL_DIR_ENV} is unset; default {DEFAULT_PI_WORKSPACE}"
+    );
+}
+
+fn print_models_inspect_usage() {
+    println!("NanoCamelid models inspect");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid models inspect <model.gguf|1b|3b> [--q4|--q8|--dry-run]");
+    println!();
+    println!(
+        "Inspect GGUF metadata through the stable models namespace. The 1b and 3b aliases resolve to documented Llama 3.2 defaults."
+    );
+    println!();
+    println!("Options:");
+    println!("  --q4                                     Select the Pi-local 1B Q4_0 default row");
+    println!("  --q8                                     Select the Pi-local 1B Q8_0 default row");
+    println!(
+        "  --dry-run                                Print the resolved inspect plan without reading the GGUF"
+    );
+    println!();
+    println!("Env:");
+    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Default GGUF path for inspect");
+    println!("  {SMOKE_MODEL_GGUF_ENV:<38} Alias-specific inspect override");
+    println!(
+        "  {WORKSPACE_ENV:<38} Pi workspace used when {MODEL_DIR_ENV} is unset; default {DEFAULT_PI_WORKSPACE}"
+    );
 }
 
 fn print_probe_usage() {
@@ -10125,6 +10229,18 @@ flags\t\t: sse4_2 avx2
             Some(HelpTopic::Models)
         );
         assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "models".to_owned(), "list".to_owned()]),
+            Some(HelpTopic::ModelsList)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "models".to_owned(), "scan".to_owned()]),
+            Some(HelpTopic::ModelsScan)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "models".to_owned(), "inspect".to_owned()]),
+            Some(HelpTopic::ModelsInspect)
+        );
+        assert_eq!(
             help_topic_for_args(&["help".to_owned(), "doctor".to_owned()]),
             Some(HelpTopic::Doctor)
         );
@@ -10194,11 +10310,11 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(
             help_topic_for_args(&["models".to_owned(), "list".to_owned(), "--help".to_owned()]),
-            Some(HelpTopic::Models)
+            Some(HelpTopic::ModelsList)
         );
         assert_eq!(
             help_topic_for_args(&["models".to_owned(), "scan".to_owned(), "-h".to_owned()]),
-            Some(HelpTopic::Models)
+            Some(HelpTopic::ModelsScan)
         );
         assert_eq!(
             help_topic_for_args(&[
@@ -10206,7 +10322,7 @@ flags\t\t: sse4_2 avx2
                 "inspect".to_owned(),
                 "--help".to_owned()
             ]),
-            Some(HelpTopic::Models)
+            Some(HelpTopic::ModelsInspect)
         );
         assert_eq!(
             help_topic_for_args(&[
@@ -10215,7 +10331,7 @@ flags\t\t: sse4_2 avx2
                 "1b".to_owned(),
                 "--help".to_owned()
             ]),
-            Some(HelpTopic::Models)
+            Some(HelpTopic::ModelsInspect)
         );
         assert_eq!(
             help_topic_for_args(&["bench".to_owned(), "1b".to_owned(), "--help".to_owned()]),

@@ -38,8 +38,10 @@ below.
 
 ## Exit and Error Behavior
 
-- `--help` is supported for every stable command namespace and prints usage,
-  options, and relevant environment variables.
+- `--help` is supported for every stable command namespace and nested
+  `models` command, and prints usage, options, and relevant environment
+  variables. The equivalent `nanocamelid help models <list|scan|inspect>` form
+  prints the same command-specific pages.
 - `--dry-run` commands print the resolved plan without loading model weights or
   binding sockets.
 - `probe` accepts no arguments; extra positional values or unsupported flags
