@@ -923,8 +923,9 @@ fn print_serve_usage() {
     println!("  GET  /metrics");
     println!();
     println!(
-        "/v1/completions accepts a model id from /v1/models, a model filename/stem, 1b/3b aliases, or an explicit .gguf path."
+        "Completion endpoints accept a model id from /v1/models, a model filename/stem, 1b/3b aliases, or an explicit .gguf path."
     );
+    println!("/v1/chat/completions renders supported tokenizer chat templates before generation.");
     println!();
     println!("Options:");
     println!("  --host <addr>                            Bind address, default {DEFAULT_API_HOST}");
@@ -3733,6 +3734,21 @@ struct ValidatedApiCompletionRequest {
     temperature: f32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ApiChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct ValidatedApiChatCompletionRequest {
+    model: String,
+    messages: Vec<ApiChatMessage>,
+    input_tokens: usize,
+    requested_output_tokens: usize,
+    temperature: f32,
+}
+
 #[derive(Debug, PartialEq)]
 struct ApiCompletionChoice {
     index: usize,
@@ -3826,14 +3842,10 @@ fn handle_serve_connection(
             }
         }
         ("POST", "/v1/chat/completions") => {
-            match validate_api_chat_completion_request(&request.body, parsed) {
-                Ok(_request) => write_json_error(
-                    stream,
-                    501,
-                    "not_implemented_error",
-                    "completion_runtime_not_wired",
-                    "HTTP chat completion generation is not implemented yet; request JSON and caps were accepted. Use nanocamelid chat locally.",
-                ),
+            match validate_api_chat_completion_request(&request.body, parsed)
+                .and_then(|request| serve_chat_completion_response_json(&request, parsed))
+            {
+                Ok(response) => write_json_response(stream, 200, &response),
                 Err(err) => {
                     write_json_error(stream, err.status, err.error_type, err.code, err.message)
                 }
@@ -4026,7 +4038,7 @@ fn validate_api_completion_request(
 fn validate_api_chat_completion_request(
     body: &str,
     parsed: &ServeArgs,
-) -> Result<ValidatedApiCompletionRequest, ServeApiError> {
+) -> Result<ValidatedApiChatCompletionRequest, ServeApiError> {
     if body.trim().is_empty() {
         return Err(serve_api_error(
             400,
@@ -4039,10 +4051,10 @@ fn validate_api_chat_completion_request(
         return Err(invalid_json_error());
     }
     let model = required_json_string_field(body, "model", "missing_model")?;
-    let messages = required_chat_message_contents(body)?;
+    let messages = required_chat_messages(body)?;
     let input_tokens = messages
         .iter()
-        .map(|content| estimate_request_tokens(content))
+        .map(|message| estimate_request_tokens(&message.content))
         .sum::<usize>();
     let requested_output_tokens = json_usize_field(body, "max_tokens")
         .map_err(|_| {
@@ -4065,9 +4077,9 @@ fn validate_api_chat_completion_request(
         })?
         .unwrap_or(0.0);
     validate_api_caps(input_tokens, requested_output_tokens, parsed)?;
-    Ok(ValidatedApiCompletionRequest {
+    Ok(ValidatedApiChatCompletionRequest {
         model,
-        prompts: messages,
+        messages,
         input_tokens,
         requested_output_tokens,
         temperature,
@@ -4120,7 +4132,7 @@ fn required_completion_prompts(body: &str) -> Result<Vec<String>, ServeApiError>
     Ok(prompts)
 }
 
-fn required_chat_message_contents(body: &str) -> Result<Vec<String>, ServeApiError> {
+fn required_chat_messages(body: &str) -> Result<Vec<ApiChatMessage>, ServeApiError> {
     let Some(messages_start) = json_field_value_start(body, "messages") else {
         return Err(serve_api_error(
             400,
@@ -4129,25 +4141,26 @@ fn required_chat_message_contents(body: &str) -> Result<Vec<String>, ServeApiErr
             "Chat completion requests require a non-empty messages array.",
         ));
     };
-    if body[messages_start..].trim_start().starts_with('[') {
-        let contents = json_string_fields(body, "content").map_err(|_| {
-            serve_api_error(
-                400,
-                "invalid_request_error",
-                "invalid_messages",
-                "messages must contain objects with non-empty string content fields.",
-            )
-        })?;
-        if !contents.is_empty() && contents.iter().all(|content| !content.trim().is_empty()) {
-            return Ok(contents);
-        }
+    let messages = parse_json_chat_messages_at(body, messages_start).ok_or_else(|| {
+        serve_api_error(
+            400,
+            "invalid_request_error",
+            "invalid_messages",
+            "messages must contain role/content objects with non-empty string content fields.",
+        )
+    })?;
+    if messages.iter().any(|message| {
+        !matches!(message.role.as_str(), "system" | "user" | "assistant")
+            || message.content.trim().is_empty()
+    }) {
+        return Err(serve_api_error(
+            400,
+            "invalid_request_error",
+            "invalid_messages",
+            "messages must use system, user, or assistant roles and non-empty string content.",
+        ));
     }
-    Err(serve_api_error(
-        400,
-        "invalid_request_error",
-        "invalid_messages",
-        "messages must contain objects with non-empty string content fields.",
-    ))
+    Ok(messages)
 }
 
 fn validate_api_caps(
@@ -4216,22 +4229,79 @@ fn json_string_field(body: &str, field: &str) -> Result<Option<String>, ()> {
         .ok_or(())
 }
 
-fn json_string_fields(body: &str, field: &str) -> Result<Vec<String>, ()> {
-    let marker = format!("\"{field}\"");
-    let mut values = Vec::new();
-    let mut search_start = 0;
-    while let Some(relative_idx) = body[search_start..].find(&marker) {
-        let marker_idx = search_start + relative_idx;
-        let Some(value_start) = json_field_value_start_from(body, marker_idx, &marker) else {
-            return Err(());
-        };
-        let Some((value, end_idx)) = parse_json_string_at(body, value_start) else {
-            return Err(());
-        };
-        values.push(value);
-        search_start = end_idx;
+fn parse_json_chat_messages_at(body: &str, value_start: usize) -> Option<Vec<ApiChatMessage>> {
+    let mut idx = skip_json_whitespace(body, value_start);
+    if body[idx..].chars().next()? != '[' {
+        return None;
     }
-    Ok(values)
+    idx += 1;
+
+    let mut messages = Vec::new();
+    loop {
+        idx = skip_json_whitespace(body, idx);
+        match body[idx..].chars().next()? {
+            ']' => return (!messages.is_empty()).then_some(messages),
+            '{' => {
+                let end_idx = json_container_end(body, idx, '{', '}')?;
+                let object = &body[idx..end_idx];
+                let role = json_string_field(object, "role").ok().flatten()?;
+                let content = json_string_field(object, "content").ok().flatten()?;
+                messages.push(ApiChatMessage { role, content });
+                idx = skip_json_whitespace(body, end_idx);
+                match body[idx..].chars().next()? {
+                    ',' => idx += 1,
+                    ']' => return Some(messages),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn skip_json_whitespace(input: &str, start_idx: usize) -> usize {
+    start_idx
+        + input[start_idx..]
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .map(char::len_utf8)
+            .sum::<usize>()
+}
+
+fn json_container_end(input: &str, start_idx: usize, open: char, close: char) -> Option<usize> {
+    let mut chars = input[start_idx..].char_indices();
+    if chars.next()?.1 != open {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut in_string = false;
+    let mut escaping = false;
+
+    for (relative_idx, ch) in chars {
+        if in_string {
+            if escaping {
+                escaping = false;
+            } else if ch == '\\' {
+                escaping = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            ch if ch == open => depth += 1,
+            ch if ch == close => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(start_idx + relative_idx + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn json_usize_field(body: &str, field: &str) -> Result<Option<usize>, ()> {
@@ -4409,6 +4479,28 @@ fn serve_completion_response_json(
     Ok(api_completion_response_json(&request.model, &choices))
 }
 
+fn serve_chat_completion_response_json(
+    request: &ValidatedApiChatCompletionRequest,
+    parsed: &ServeArgs,
+) -> Result<String, ServeApiError> {
+    let model_path = resolve_api_model_path(&request.model, parsed)?;
+    let choices = generate_api_chat_completion_choices(
+        &model_path,
+        &request.messages,
+        request.temperature,
+        request.requested_output_tokens,
+    )
+    .map_err(|_| {
+        serve_api_error(
+            500,
+            "server_error",
+            "generation_failed",
+            "Chat completion generation failed. Run nanocamelid inspect or nanocamelid chat for the same model and messages.",
+        )
+    })?;
+    Ok(api_chat_completion_response_json(&request.model, &choices))
+}
+
 fn resolve_api_model_path(model_id: &str, parsed: &ServeArgs) -> Result<PathBuf, ServeApiError> {
     let explicit = Path::new(model_id);
     if looks_like_model_path_argument(model_id) {
@@ -4497,6 +4589,43 @@ fn generate_api_completion_choices(
         .collect()
 }
 
+fn generate_api_chat_completion_choices(
+    model_path: &Path,
+    messages: &[ApiChatMessage],
+    temp: f32,
+    max_tokens: usize,
+) -> Result<Vec<ApiCompletionChoice>, String> {
+    prefill_batch_size_from_env().map_err(str::to_owned)?;
+
+    let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf)
+        .map_err(|err| format!("failed to parse config: {err}"))?;
+    apply_context_limit(&mut config)?;
+    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
+        .map_err(|err| format!("failed to load tokenizer: {err}"))?;
+    let weights = model::LlamaWeights::load(model_path, &config, &gguf)
+        .map_err(|err| format!("failed to load weights: {err}"))?;
+    let runtime_options = runtime_options_from_gguf(&gguf, q8::Q8DotKernelSelector::from_env());
+    let rendered_messages = messages
+        .iter()
+        .map(|message| tokenizer::ChatMessage {
+            role: message.role.as_str(),
+            content: message.content.as_str(),
+        })
+        .collect::<Vec<_>>();
+    let rendered = tokenizer.render_chat_prompt(&rendered_messages);
+    let prompt_tokens =
+        tokenizer.encode(&rendered.text, rendered.add_special, rendered.parse_special)?;
+    let runtime = ApiGenerationRuntime {
+        config: &config,
+        weights: &weights,
+        tokenizer: &tokenizer,
+        runtime_options,
+    };
+    generate_api_completion_choice_from_tokens(0, prompt_tokens, temp, max_tokens, runtime)
+        .map(|choice| vec![choice])
+}
+
 fn generate_api_completion_choice(
     index: usize,
     prompt: &str,
@@ -4505,6 +4634,16 @@ fn generate_api_completion_choice(
     runtime: ApiGenerationRuntime<'_>,
 ) -> Result<ApiCompletionChoice, String> {
     let prompt_tokens = runtime.tokenizer.encode(prompt, true, true)?;
+    generate_api_completion_choice_from_tokens(index, prompt_tokens, temp, max_tokens, runtime)
+}
+
+fn generate_api_completion_choice_from_tokens(
+    index: usize,
+    prompt_tokens: Vec<u32>,
+    temp: f32,
+    max_tokens: usize,
+    runtime: ApiGenerationRuntime<'_>,
+) -> Result<ApiCompletionChoice, String> {
     if prompt_tokens.is_empty() {
         return Err("prompt tokenized to an empty sequence".to_owned());
     }
@@ -4612,6 +4751,37 @@ fn api_completion_response_json(model: &str, choices: &[ApiCompletionChoice]) ->
         .sum::<usize>();
     format!(
         "{{\"id\":\"cmpl-nanocamelid\",\"object\":\"text_completion\",\"model\":{},\"choices\":[{}],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}",
+        json_string(model),
+        choices_json,
+        prompt_tokens,
+        completion_tokens,
+        prompt_tokens + completion_tokens
+    )
+}
+
+fn api_chat_completion_response_json(model: &str, choices: &[ApiCompletionChoice]) -> String {
+    let choices_json = choices
+        .iter()
+        .map(|choice| {
+            format!(
+                "{{\"index\":{},\"message\":{{\"role\":\"assistant\",\"content\":{}}},\"finish_reason\":{}}}",
+                choice.index,
+                json_string(&choice.text),
+                json_string(choice.finish_reason)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let prompt_tokens = choices
+        .iter()
+        .map(|choice| choice.prompt_tokens)
+        .sum::<usize>();
+    let completion_tokens = choices
+        .iter()
+        .map(|choice| choice.generated_tokens)
+        .sum::<usize>();
+    format!(
+        "{{\"id\":\"chatcmpl-nanocamelid\",\"object\":\"chat.completion\",\"model\":{},\"choices\":[{}],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}",
         json_string(model),
         choices_json,
         prompt_tokens,
@@ -9536,27 +9706,27 @@ mod tests {
     use nanocamelid::tokenizer::{SpecialTokens, TokenizerModel};
 
     use super::{
-        ApiCompletionChoice, ChatTurn, DEFAULT_1B_PREFILL_PROMPT, DEFAULT_1B_PREFILL_TEMP,
-        DEFAULT_1B_PREFILL_TOKENS, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS,
-        DEFAULT_MODEL_GGUF_ENV, DEFAULT_Q4_PREFILL_BATCH, DEFAULT_Q4_PREFILL_PROMPT_LEN,
-        DEFAULT_Q4_PREFILL_RUNS, DoctorArgs, GenerationStatusJson, HelpTopic, InspectTarget,
-        LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, ModelsAction,
-        PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics, ReadyDirectChatStatus,
-        SMOKE_MODEL_GGUF_ENV, ServeArgs, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV,
-        TuiCommand, api_completion_response_json, classify_model_quantization,
-        classify_model_target, cpu_features, cpu_governor_recommendation, cpu_model,
-        default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
-        evidence_1b_status_json, evidence_context_pack_command, evidence_model_command,
-        evidence_prefill_bench_command, evidence_prefill_bench_command_with_env,
-        evidence_ready_no_chat_command, generation_status_json, help_topic_for_args,
-        help_topic_named, http_status_text, inspect_1b_status_json, inspect_runtime_summary,
-        is_generation_stop_token, is_help_flag, json_string, llama32_1b_model_not_found_message,
-        llama32_1b_quantization_for_path, llama32_1b_shape_audit,
-        llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
-        model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
-        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_content_length, parse_context_packs, parse_cpu_list, parse_doctor_args,
-        parse_evidence_1b_args_with_env, parse_evidence_1b_args_with_path,
+        ApiChatMessage, ApiCompletionChoice, ChatTurn, DEFAULT_1B_PREFILL_PROMPT,
+        DEFAULT_1B_PREFILL_TEMP, DEFAULT_1B_PREFILL_TOKENS, DEFAULT_1B_SMOKE_PROMPT,
+        DEFAULT_1B_SMOKE_TOKENS, DEFAULT_MODEL_GGUF_ENV, DEFAULT_Q4_PREFILL_BATCH,
+        DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, DoctorArgs, GenerationStatusJson,
+        HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
+        ModelsAction, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
+        ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs, Smoke1BArgs, SmokeDefaults,
+        SmokeKind, TRACE_ENV, TuiCommand, api_chat_completion_response_json,
+        api_completion_response_json, classify_model_quantization, classify_model_target,
+        cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
+        default_llama32_3b_model_path, device_model, evidence_1b_status_json,
+        evidence_context_pack_command, evidence_model_command, evidence_prefill_bench_command,
+        evidence_prefill_bench_command_with_env, evidence_ready_no_chat_command,
+        generation_status_json, help_topic_for_args, help_topic_named, http_status_text,
+        inspect_1b_status_json, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
+        json_string, llama32_1b_model_not_found_message, llama32_1b_quantization_for_path,
+        llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
+        looks_like_non_gguf_model_path, model_1b_status_json, parse_bench_1b_args_with_env,
+        parse_bench_1b_args_with_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
+        parse_bench_q8_dot_args, parse_content_length, parse_context_packs, parse_cpu_list,
+        parse_doctor_args, parse_evidence_1b_args_with_env, parse_evidence_1b_args_with_path,
         parse_generate_args_with_env, parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_http_request,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_models_args,
@@ -10255,7 +10425,19 @@ flags\t\t: sse4_2 avx2
         )
         .expect("chat request should validate");
         assert_eq!(request.model, "tiny");
-        assert_eq!(request.prompts, vec!["be brief", "say hi"]);
+        assert_eq!(
+            request.messages,
+            vec![
+                ApiChatMessage {
+                    role: "system".to_owned(),
+                    content: "be brief".to_owned(),
+                },
+                ApiChatMessage {
+                    role: "user".to_owned(),
+                    content: "say hi".to_owned(),
+                },
+            ]
+        );
         assert_eq!(request.input_tokens, 4);
         assert_eq!(request.requested_output_tokens, 2);
 
@@ -10264,6 +10446,13 @@ flags\t\t: sse4_2 avx2
             &parsed,
         )
         .expect_err("empty content should fail");
+        assert_eq!(err.code, "invalid_messages");
+
+        let err = validate_api_chat_completion_request(
+            r#"{"model":"tiny","messages":[{"role":"tool","content":"hello"}],"max_tokens":2}"#,
+            &parsed,
+        )
+        .expect_err("unsupported role should fail");
         assert_eq!(err.code, "invalid_messages");
 
         let err = validate_api_chat_completion_request(
@@ -10350,6 +10539,27 @@ flags\t\t: sse4_2 avx2
         assert!(json.contains("\"prompt_tokens\":5"));
         assert!(json.contains("\"completion_tokens\":3"));
         assert!(json.contains("\"total_tokens\":8"));
+    }
+
+    #[test]
+    fn api_chat_completion_response_json_reports_message_choices_and_usage() {
+        let json = api_chat_completion_response_json(
+            "tiny",
+            &[ApiCompletionChoice {
+                index: 0,
+                text: "hello".to_owned(),
+                prompt_tokens: 2,
+                generated_tokens: 1,
+                finish_reason: "stop",
+            }],
+        );
+        assert!(json.contains("\"object\":\"chat.completion\""));
+        assert!(json.contains("\"model\":\"tiny\""));
+        assert!(json.contains("\"message\":{\"role\":\"assistant\",\"content\":\"hello\"}"));
+        assert!(json.contains("\"finish_reason\":\"stop\""));
+        assert!(json.contains("\"prompt_tokens\":2"));
+        assert!(json.contains("\"completion_tokens\":1"));
+        assert!(json.contains("\"total_tokens\":3"));
     }
 
     #[test]

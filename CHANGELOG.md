@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Wired `/v1/chat/completions` to bounded local chat-template generation with
+  model id/alias/path resolution and OpenAI-shaped chat-completion JSON
+  responses.
 - Added an explicit local API `--max-request-bytes` cap, corresponding
   `NANOCAMELID_MAX_REQUEST_BYTES` env default, Prometheus metric, and
   structured `request_too_large` JSON errors for oversized HTTP requests.

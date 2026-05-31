@@ -66,6 +66,10 @@ Run a local completion once the server is listening and a model is present:
 curl http://127.0.0.1:8080/v1/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"1b","prompt":"Say hello in one sentence.","max_tokens":8,"temperature":0.0}'
+
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"1b","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":8,"temperature":0.0}'
 ```
 
 ## Install Modes
