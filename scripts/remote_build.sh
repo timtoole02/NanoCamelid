@@ -17,6 +17,7 @@ Useful env:
   NANOCAMELID_REMOTE_PREFILL_BATCH   Optional prompt prefill batch for remote readiness/smoke gates
   NANOCAMELID_REMOTE_TARGET_DIR      Optional Cargo target dir; defaults to <remote-workspace>/target
   NANOCAMELID_REMOTE_MIN_FREE_KB     Optional minimum free KiB required before deploy; defaults to 262144
+  NANOCAMELID_REMOTE_DIRTY_POLICY    fail/archive policy for dirty git-ff Pi checkouts; defaults to fail
   NANOCAMELID_REMOTE_1B_QUANT       Optional q4/q8 selector for Pi-local default 1B rows
   NANOCAMELID_REMOTE_PREFILL_BENCH  Set to 1 to run the 1B prefill batch sweep after readiness; 0/false/no/off disables it
   NANOCAMELID_REMOTE_PREFILL_BATCHES Optional comma-separated prefill batches for the remote sweep
@@ -56,6 +57,7 @@ PI_WORKSPACE="${NANOCAMELID_REMOTE_WORKSPACE:-/mnt/nanocamelid}"
 PI_TARGET_DIR="${NANOCAMELID_REMOTE_TARGET_DIR:-$PI_WORKSPACE/target}"
 PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
 REMOTE_MIN_FREE_KB="${NANOCAMELID_REMOTE_MIN_FREE_KB:-262144}"
+REMOTE_DIRTY_POLICY="${NANOCAMELID_REMOTE_DIRTY_POLICY:-fail}"
 REMOTE_SMOKE_ENABLED="${NANOCAMELID_REMOTE_SMOKE:-1}"
 REMOTE_SMOKE_ENABLED_LOWER="$(printf '%s' "$REMOTE_SMOKE_ENABLED" | tr '[:upper:]' '[:lower:]')"
 REMOTE_SMOKE_GGUF="${NANOCAMELID_REMOTE_SMOKE_GGUF:-}"
@@ -383,6 +385,13 @@ require_toggle "NANOCAMELID_REMOTE_SMOKE" "$REMOTE_SMOKE_ENABLED"
 require_toggle "NANOCAMELID_REMOTE_PREFILL_BENCH" "$REMOTE_PREFILL_BENCH"
 require_toggle "NANOCAMELID_REMOTE_EVIDENCE" "$REMOTE_EVIDENCE"
 require_non_negative_integer "NANOCAMELID_REMOTE_MIN_FREE_KB" "$REMOTE_MIN_FREE_KB"
+case "$REMOTE_DIRTY_POLICY" in
+  fail | archive) ;;
+  *)
+    echo "NANOCAMELID_REMOTE_DIRTY_POLICY must be fail or archive: $REMOTE_DIRTY_POLICY" >&2
+    exit 2
+    ;;
+esac
 
 if evidence_enabled && remote_smoke_disabled; then
   echo "NANOCAMELID_REMOTE_EVIDENCE requires NANOCAMELID_REMOTE_SMOKE to be enabled." >&2
@@ -437,6 +446,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "remote_repo: $PI_REPO"
   echo "cargo_target_dir: $PI_TARGET_DIR"
   echo "remote_min_free_kb: $REMOTE_MIN_FREE_KB"
+  echo "remote_dirty_policy: $REMOTE_DIRTY_POLICY"
   echo "remote_smoke_enabled: $REMOTE_SMOKE_ENABLED"
   echo "remote_smoke_kind: $REMOTE_SMOKE_KIND"
   echo "smoke_prompt: $SMOKE_PROMPT"

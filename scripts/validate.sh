@@ -1108,9 +1108,11 @@ echo "==> Checking remote Pi build launcher dry run..."
 expect_output "remote_build help documents remote prefill batch" "NANOCAMELID_REMOTE_PREFILL_BATCH" bash -c './scripts/remote_build.sh --help 2>&1'
 expect_output "remote_build help documents remote target dir" "NANOCAMELID_REMOTE_TARGET_DIR" bash -c './scripts/remote_build.sh --help 2>&1'
 expect_output "remote_build help documents remote 1b quant selector" "NANOCAMELID_REMOTE_1B_QUANT" bash -c './scripts/remote_build.sh --help 2>&1'
+expect_output "remote_build help documents dirty policy" "NANOCAMELID_REMOTE_DIRTY_POLICY" bash -c './scripts/remote_build.sh --help 2>&1'
 expect_output "remote_build prefill batch dry run" "prefill_batch: 32" env NANOCAMELID_REMOTE_PREFILL_BATCH=32 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build derives target dir from workspace" "cargo_target_dir: /tmp/nanocamelid-alt/target" env NANOCAMELID_REMOTE_WORKSPACE=/tmp/nanocamelid-alt ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build target dir override" "cargo_target_dir: /tmp/nanocamelid-target-alt" env NANOCAMELID_REMOTE_TARGET_DIR=/tmp/nanocamelid-target-alt ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_output "remote_build dirty archive policy dry run" "remote_dirty_policy: archive" env NANOCAMELID_REMOTE_DIRTY_POLICY=archive ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build readiness command carries prefill batch" "readiness_command: NANOCAMELID_PREFILL_BATCH=32 NANOCAMELID_READY_CHAT=1" env NANOCAMELID_REMOTE_PREFILL_BATCH=32 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build q4 quant dry run" "remote_1b_quant: q4" env NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build q4 readiness selector" "./scripts/pi/ready-1b.sh --q4" env NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
@@ -1124,6 +1126,7 @@ expect_failure_output "remote_build remote 1b quant conflicts with explicit mode
 
 echo "==> Checking remote Pi build launcher rejects invalid deploy mode..."
 expect_failure "remote_build invalid deploy mode" ./scripts/remote_build.sh "<redacted-pi-host>" "" "" bad-mode --dry-run
+expect_failure_output "remote_build invalid dirty policy" "NANOCAMELID_REMOTE_DIRTY_POLICY must be fail or archive" env NANOCAMELID_REMOTE_DIRTY_POLICY=reset ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
 echo "==> Checking remote Pi build launcher rejects invalid smoke token count..."
 expect_failure "remote_build invalid smoke token count" env NANOCAMELID_SMOKE_TOKENS=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run

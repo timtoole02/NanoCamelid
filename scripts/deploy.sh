@@ -12,11 +12,13 @@ PUBLIC_REPO_URL="${NANOCAMELID_PUBLIC_REPO_URL:-https://github.com/timtoole02/Na
 PI_BRANCH="${NANOCAMELID_REMOTE_BRANCH:-main}"
 SSH_CONNECT_TIMEOUT="${NANOCAMELID_SSH_CONNECT_TIMEOUT:-10}"
 REMOTE_MIN_FREE_KB="${NANOCAMELID_REMOTE_MIN_FREE_KB:-262144}"
+REMOTE_DIRTY_POLICY="${NANOCAMELID_REMOTE_DIRTY_POLICY:-fail}"
 
 if [[ -z "$PI_HOST" ]]; then
   echo "Usage: $0 <pi-ip-or-hostname> [ssh-key-path] [pi-username] [rsync|git-ff]" >&2
   echo "Example: $0 <pi-host>" >&2
   echo "         NANOCAMELID_DEPLOY_MODE=git-ff $0 <pi-host>" >&2
+  echo "         NANOCAMELID_REMOTE_DIRTY_POLICY=archive $0 <pi-host> <ssh-key> <user> git-ff" >&2
   exit 1
 fi
 
@@ -44,6 +46,14 @@ if [[ ! "$REMOTE_MIN_FREE_KB" =~ ^[0-9]+$ ]]; then
   echo "NANOCAMELID_REMOTE_MIN_FREE_KB must be a non-negative integer: $REMOTE_MIN_FREE_KB" >&2
   exit 2
 fi
+
+case "$REMOTE_DIRTY_POLICY" in
+  fail | archive) ;;
+  *)
+    echo "NANOCAMELID_REMOTE_DIRTY_POLICY must be fail or archive: $REMOTE_DIRTY_POLICY" >&2
+    exit 2
+    ;;
+esac
 
 echo "Checking target Pi workspace free space..."
 printf -v REMOTE_PI_WORKSPACE '%q' "$PI_WORKSPACE"
@@ -79,17 +89,44 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" "mkdir -p '$PI_REPO'
 if [[ "$DEPLOY_MODE" == "git-ff" ]]; then
   echo "Updating Pi checkout with clean git fast-forward mode..."
   printf -v REMOTE_PI_REPO '%q' "$PI_REPO"
+  printf -v REMOTE_PI_WORKSPACE '%q' "$PI_WORKSPACE"
   printf -v REMOTE_PUBLIC_REPO_URL '%q' "$PUBLIC_REPO_URL"
   printf -v REMOTE_PI_BRANCH '%q' "$PI_BRANCH"
+  printf -v REMOTE_DIRTY_POLICY_ARG '%q' "$REMOTE_DIRTY_POLICY"
   ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
-    "PI_REPO=$REMOTE_PI_REPO PUBLIC_REPO_URL=$REMOTE_PUBLIC_REPO_URL PI_BRANCH=$REMOTE_PI_BRANCH bash" <<'EOF'
+    "PI_REPO=$REMOTE_PI_REPO PI_WORKSPACE=$REMOTE_PI_WORKSPACE PUBLIC_REPO_URL=$REMOTE_PUBLIC_REPO_URL PI_BRANCH=$REMOTE_PI_BRANCH REMOTE_DIRTY_POLICY=$REMOTE_DIRTY_POLICY_ARG bash" <<'EOF'
 set -euo pipefail
+
+archive_checkout_and_clone() {
+  local reason="$1"
+  local archive_parent stamp archive_path suffix
+
+  archive_parent="$PI_WORKSPACE/dirty-archives"
+  mkdir -p "$archive_parent"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  archive_path="$archive_parent/NanoCamelid-${stamp}"
+  suffix=0
+  while [[ -e "$archive_path" ]]; do
+    suffix=$((suffix + 1))
+    archive_path="$archive_parent/NanoCamelid-${stamp}-${suffix}"
+  done
+
+  mv "$PI_REPO" "$archive_path"
+  echo "Archived existing Pi checkout before git-ff update: $reason"
+  git clone --branch "$PI_BRANCH" "$PUBLIC_REPO_URL" "$PI_REPO"
+  cd "$PI_REPO"
+  git status --short --branch
+}
 
 repo_parent="$(dirname "$PI_REPO")"
 mkdir -p "$repo_parent"
 
 if [[ ! -d "$PI_REPO/.git" ]]; then
   if [[ -d "$PI_REPO" ]] && [[ -n "$(find "$PI_REPO" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    if [[ "$REMOTE_DIRTY_POLICY" == "archive" ]]; then
+      archive_checkout_and_clone "existing path was not a git checkout"
+      exit 0
+    fi
     echo "Refusing git-ff update: $PI_REPO exists but is not a git checkout." >&2
     echo "Move it aside, empty it, or use rsync mode for snapshot deployment." >&2
     exit 3
@@ -105,11 +142,21 @@ fi
 cd "$PI_REPO"
 
 if [[ "$(git config --get remote.origin.url || true)" != "$PUBLIC_REPO_URL" ]]; then
+  if [[ "$REMOTE_DIRTY_POLICY" == "archive" ]]; then
+    cd "$repo_parent"
+    archive_checkout_and_clone "remote origin did not match public repo URL"
+    exit 0
+  fi
   echo "Refusing git-ff update: remote.origin.url does not match public repo URL." >&2
   exit 4
 fi
 
 if [[ -n "$(git status --porcelain)" ]]; then
+  if [[ "$REMOTE_DIRTY_POLICY" == "archive" ]]; then
+    cd "$repo_parent"
+    archive_checkout_and_clone "checkout had local changes or untracked files"
+    exit 0
+  fi
   echo "Refusing git-ff update: checkout has local changes or untracked files." >&2
   git status --short
   exit 5
@@ -128,6 +175,11 @@ remote_head="$(git rev-parse "origin/$PI_BRANCH")"
 merge_base="$(git merge-base HEAD "origin/$PI_BRANCH")"
 
 if [[ "$local_head" != "$merge_base" ]]; then
+  if [[ "$REMOTE_DIRTY_POLICY" == "archive" ]]; then
+    cd "$repo_parent"
+    archive_checkout_and_clone "local branch was not an ancestor of origin/$PI_BRANCH"
+    exit 0
+  fi
   echo "Refusing git-ff update: local branch is not an ancestor of origin/$PI_BRANCH." >&2
   exit 6
 fi
