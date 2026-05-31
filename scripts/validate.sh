@@ -1149,6 +1149,7 @@ echo "==> Checking installer dry run target-dir safety..."
 expect_output "installer release target override" "release_target: aarch64-unknown-linux-gnu" env NANOCAMELID_RELEASE_TARGET=aarch64-unknown-linux-gnu ./scripts/install.sh --dry-run
 expect_output "installer release companion dir" "release_install_dir: " ./scripts/install.sh --dry-run
 expect_output "installer release companion dir includes version and target" "releases/v0.1.0-aarch64-unknown-linux-gnu" ./scripts/install.sh --dry-run
+expect_output "installer release verifies version manifest" "verify VERSION manifest and nanocamelid --version" ./scripts/install.sh --dry-run
 expect_output "installer release installs bundled files" "install bundled README docs service script and nanocamelid" ./scripts/install.sh --dry-run
 expect_failure_output "installer rejects unsafe release companion dir" "Refusing unsafe release install dir" env NANOCAMELID_RELEASE_INSTALL_DIR=/ ./scripts/install.sh --dry-run
 expect_output "installer dev mode skips release URL" "release_url: not used" ./scripts/install.sh --dev --dry-run
@@ -1157,6 +1158,7 @@ expect_output "installer dev mode skips companion dir" "release_install_dir: not
 echo "==> Checking release package dry run target contract..."
 ./scripts/package-release.sh --dry-run
 expect_output "release package target" "target_triple: aarch64-unknown-linux-gnu" ./scripts/package-release.sh --dry-run
+expect_output "release package version manifest" "version_manifest: " ./scripts/package-release.sh --dry-run
 expect_output "release package explicit cargo target" "cargo_command: cargo build --release --bins --target aarch64-unknown-linux-gnu" ./scripts/package-release.sh --dry-run
 expect_output "release package target-scoped binary" "binary: " ./scripts/package-release.sh --dry-run
 expect_output "release package target-scoped binary path" "/aarch64-unknown-linux-gnu/release/nanocamelid" ./scripts/package-release.sh --dry-run

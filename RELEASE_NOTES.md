@@ -13,6 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts
 ## Included Artifacts
 
 - `nanocamelid`
+- `VERSION`
 - `README.md`
 - `docs/`
 - `LICENSE`

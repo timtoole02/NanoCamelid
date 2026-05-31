@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added a packaged `VERSION` manifest and release-install verification that the
+  archive manifest and `nanocamelid --version` output match the requested
+  version before the binary is installed.
 - Made model discovery expose active `1b`/`3b` aliases in `models list`,
   `models scan`, and `/v1/models`, with catalog docs for the default alias
   resolution rules.

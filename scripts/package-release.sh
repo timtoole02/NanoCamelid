@@ -59,9 +59,10 @@ if [[ "$dry_run" == "1" ]]; then
   echo "dist_dir: $dist_dir"
   echo "cargo_target_dir: $target_dir"
   echo "artifact: $dist_dir/$package_name.tar.gz"
+  echo "version_manifest: $stage_dir/VERSION"
   echo "cargo_command: cargo build --release --bins --target $target_triple"
   echo "binary: $target_dir/$target_triple/release/nanocamelid"
-  echo "steps: cargo build --release --bins --target $target_triple; stage binary README docs LICENSE RELEASE_NOTES service installer; tar; sha256"
+  echo "steps: cargo build --release --bins --target $target_triple; stage binary VERSION README docs LICENSE RELEASE_NOTES service installer; tar; sha256"
   exit 0
 fi
 
@@ -77,6 +78,7 @@ if [[ ! -x "$binary" ]]; then
 fi
 
 cp "$binary" "$stage_dir/nanocamelid"
+printf '%s\n' "$version_tag" > "$stage_dir/VERSION"
 cp "$repo_root/README.md" "$stage_dir/README.md"
 cp -R "$repo_root/docs" "$stage_dir/docs"
 cp "$repo_root/LICENSE" "$stage_dir/LICENSE"

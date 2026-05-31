@@ -215,7 +215,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
     echo "steps: ensure git and cargo; clone/update repo; cargo build --release; link nanocamelid"
   else
-    echo "steps: ensure curl and tar; download release tarball and SHA256SUMS; verify checksum; install bundled README docs service script and nanocamelid"
+    echo "steps: ensure curl and tar; download release tarball and SHA256SUMS; verify checksum; verify VERSION manifest and nanocamelid --version; install bundled README docs service script and nanocamelid"
   fi
   exit 0
 fi
@@ -305,20 +305,38 @@ else
     exit 1
   fi
 
+  if [[ ! -f "$extracted_dir/VERSION" ]]; then
+    echo "Release archive did not contain a VERSION manifest" >&2
+    exit 1
+  fi
+  manifest_version="$(tr -d '\r\n' < "$extracted_dir/VERSION")"
+  if [[ "$manifest_version" != "$version" ]]; then
+    echo "Release VERSION manifest mismatch: expected $version, got $manifest_version" >&2
+    exit 1
+  fi
+
+  archive_binary="$extracted_dir/nanocamelid"
+  if [[ ! -x "$archive_binary" ]]; then
+    echo "Release archive did not contain an executable nanocamelid binary" >&2
+    exit 1
+  fi
+
+  expected_version_output="nanocamelid ${version#v}"
+  actual_version_output="$("$archive_binary" --version 2>/dev/null || true)"
+  if [[ "$actual_version_output" != "$expected_version_output" ]]; then
+    echo "Release binary version mismatch: expected '$expected_version_output', got '${actual_version_output:-<no output>}'" >&2
+    exit 1
+  fi
+
   mkdir -p "$(dirname "$release_install_dir")"
   rm -rf "$release_install_dir"
   cp -R "$extracted_dir" "$release_install_dir"
 
   extracted_binary="$release_install_dir/nanocamelid"
-  if [[ -z "$extracted_binary" ]]; then
-    echo "Release archive did not contain an executable nanocamelid binary" >&2
-    exit 1
-  fi
   if [[ ! -x "$extracted_binary" ]]; then
-    echo "Release archive did not contain an executable nanocamelid binary" >&2
+    echo "Installed release companion directory did not contain an executable nanocamelid binary" >&2
     exit 1
   fi
-
   install -m 0755 "$extracted_binary" "$bin_dir/nanocamelid"
 fi
 
