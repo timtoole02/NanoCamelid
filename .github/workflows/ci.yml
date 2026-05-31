@@ -11,13 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Check formatting
-        run: cargo fmt -- --check
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Test
-        run: cargo test
       - name: Build release binaries
         run: cargo build --release --bins
-      - name: Validate scripts dry run
-        run: ./scripts/validate.sh --dry-run
+      - name: Run standard validation gate
+        run: ./scripts/validate.sh

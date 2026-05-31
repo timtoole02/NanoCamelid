@@ -29,6 +29,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          body_path: RELEASE_NOTES.md
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS

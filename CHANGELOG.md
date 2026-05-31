@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Made GitHub CI run the standard validation gate instead of only its dry-run
+  plan, and wired GitHub releases to publish `RELEASE_NOTES.md` as the release
+  body.
 - Added `CHANGELOG.md` to versioned release archives and release install
   companion files so packaged installs carry both per-release notes and the
   project change history.
