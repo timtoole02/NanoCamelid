@@ -11,6 +11,7 @@ use std::{
 use nanocamelid::{gguf, inference, model, q8, speculative, tokenizer};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
+const MODEL_DIR_ENV: &str = "NANOCAMELID_MODEL_DIR";
 const SMOKE_MODEL_GGUF_ENV: &str = "NANOCAMELID_SMOKE_GGUF";
 const WORKSPACE_ENV: &str = "NANOCAMELID_WORKSPACE";
 const RAYON_THREADS_ENV: &str = "NANOCAMELID_RAYON_THREADS";
@@ -102,6 +103,36 @@ fn main() -> ExitCode {
                 None => {
                     eprintln!("missing model audit target");
                     print_help(HelpTopic::Model);
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("models") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Models);
+                return ExitCode::SUCCESS;
+            }
+
+            match parse_models_args(&args[1..]) {
+                Ok(parsed) => run_models(parsed),
+                Err(err) => {
+                    eprintln!("{err}");
+                    print_help(HelpTopic::Models);
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("doctor") => {
+            if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
+                print_help(HelpTopic::Doctor);
+                return ExitCode::SUCCESS;
+            }
+
+            match parse_doctor_args(&args[1..]) {
+                Ok(parsed) => run_doctor(parsed),
+                Err(err) => {
+                    eprintln!("{err}");
+                    print_help(HelpTopic::Doctor);
                     ExitCode::from(2)
                 }
             }
@@ -603,6 +634,8 @@ fn ready_chat_temp_from_env_value(value: Option<String>) -> Result<f32, &'static
 enum HelpTopic {
     TopLevel,
     Model,
+    Models,
+    Doctor,
     Probe,
     Inspect,
     Generate,
@@ -618,6 +651,14 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
     match args.first().map(String::as_str) {
         Some("-h" | "--help") | Some("help") if args.len() == 1 => Some(HelpTopic::TopLevel),
         Some("help") => help_topic_named(args.get(1).map(String::as_str).unwrap_or_default()),
+        Some("models")
+            if args
+                .get(1)
+                .is_some_and(|value| matches!(value.as_str(), "list" | "scan" | "inspect"))
+                && args.get(2).is_some_and(|value| is_help_flag(value)) =>
+        {
+            Some(HelpTopic::Models)
+        }
         Some("model")
             if args.get(1).is_some_and(|value| is_llama32_1b_alias(value))
                 && args.get(2).is_some_and(|value| is_help_flag(value)) =>
@@ -692,6 +733,8 @@ fn help_topic_for_args(args: &[String]) -> Option<HelpTopic> {
 fn help_topic_named(name: &str) -> Option<HelpTopic> {
     match name {
         "model" => Some(HelpTopic::Model),
+        "models" => Some(HelpTopic::Models),
+        "doctor" => Some(HelpTopic::Doctor),
         "probe" => Some(HelpTopic::Probe),
         "inspect" => Some(HelpTopic::Inspect),
         "generate" => Some(HelpTopic::Generate),
@@ -713,6 +756,8 @@ fn print_help(topic: HelpTopic) {
     match topic {
         HelpTopic::TopLevel => print_usage(),
         HelpTopic::Model => print_model_usage(),
+        HelpTopic::Models => print_models_usage(),
+        HelpTopic::Doctor => print_doctor_usage(),
         HelpTopic::Probe => print_probe_usage(),
         HelpTopic::Inspect => print_inspect_usage(),
         HelpTopic::Generate => print_generate_usage(),
@@ -736,9 +781,17 @@ fn print_usage() {
     println!(
         "  probe                                     Print host CPU and runtime feature information"
     );
+    println!(
+        "  doctor [--json] [--dry-run]              Check install, host, and model directory readiness"
+    );
     println!("  model 1b [model.gguf] [--q4|--q8] [--dry-run]");
     println!(
         "                                            Audit the default Llama 3.2 1B model path"
+    );
+    println!("  models list [--dir <path>] [--json]      List GGUF files in the model directory");
+    println!("  models scan [--dir <path>] [--json]      Recursively classify GGUF files");
+    println!(
+        "  models inspect <model.gguf|1b|3b>         Inspect a model using the stable models namespace"
     );
     println!(
         "  inspect <model.gguf>                      Inspect GGUF metadata and tensor layouts"
@@ -793,6 +846,68 @@ fn print_usage() {
     println!("  --version                                 Print the NanoCamelid release version");
     println!();
     println!("Run `nanocamelid help <command>` or `nanocamelid <command> --help` for details.");
+}
+
+fn print_doctor_usage() {
+    println!("NanoCamelid doctor");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid doctor [--json] [--dry-run]");
+    println!();
+    println!(
+        "Run a non-loading product preflight for the binary version, host CPU summary, default model directory, and known 1B/3B model defaults."
+    );
+    println!();
+    println!("Options:");
+    println!("  --json                                   Print a machine-readable status line");
+    println!(
+        "  --dry-run                                Print the checks without reading model files"
+    );
+    println!();
+    println!("Env:");
+    println!("  {MODEL_DIR_ENV:<38} Override the model directory");
+    println!(
+        "  {WORKSPACE_ENV:<38} Pi workspace used when {MODEL_DIR_ENV} is unset; default {DEFAULT_PI_WORKSPACE}"
+    );
+    println!(
+        "  {DEFAULT_MODEL_GGUF_ENV:<38} Optional explicit default GGUF path for model commands"
+    );
+}
+
+fn print_models_usage() {
+    println!("NanoCamelid models");
+    println!();
+    println!("Usage:");
+    println!("  nanocamelid models list [--dir <path>] [--json] [--dry-run]");
+    println!("  nanocamelid models scan [--dir <path>] [--json] [--dry-run]");
+    println!("  nanocamelid models inspect <model.gguf|1b|3b> [--q4|--q8|--dry-run]");
+    println!();
+    println!("Args:");
+    println!(
+        "  list                                     List GGUF files directly under the model directory"
+    );
+    println!(
+        "  scan                                     Recursively find GGUF files and classify target/quantization hints"
+    );
+    println!(
+        "  inspect                                  Alias namespace for `nanocamelid inspect`"
+    );
+    println!();
+    println!("Options:");
+    println!("  --dir <path>                             Model directory for list or scan");
+    println!("  --json                                   Print machine-readable summary lines");
+    println!(
+        "  --dry-run                                Print the resolved plan without reading model files"
+    );
+    println!("  --q4, --q8                               Forwarded to `models inspect 1b`");
+    println!();
+    println!("Env:");
+    println!("  {MODEL_DIR_ENV:<38} Override the model directory");
+    println!(
+        "  {WORKSPACE_ENV:<38} Pi workspace used when {MODEL_DIR_ENV} is unset; default {DEFAULT_PI_WORKSPACE}"
+    );
+    println!("  {DEFAULT_MODEL_GGUF_ENV:<38} Default GGUF path for inspect");
+    println!("  {SMOKE_MODEL_GGUF_ENV:<38} Alias-specific inspect override");
 }
 
 fn print_probe_usage() {
@@ -1432,6 +1547,102 @@ struct Evidence1BArgs {
     context_packs: Vec<usize>,
     prefill: Bench1BArgs,
     dry_run: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DoctorArgs {
+    json: bool,
+    dry_run: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ModelsArgs {
+    action: ModelsAction,
+    json: bool,
+    dry_run: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ModelsAction {
+    List { dir: String },
+    Scan { dir: String },
+    Inspect(InspectArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelEntry {
+    path: PathBuf,
+    bytes: u64,
+    target: Option<&'static str>,
+    quantization: Option<&'static str>,
+}
+
+fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs, &'static str> {
+    let mut json = false;
+    let mut dry_run = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--dry-run" => dry_run = true,
+            arg if arg.starts_with('-') => return Err("unknown doctor option"),
+            _ => return Err("unexpected doctor argument"),
+        }
+    }
+    Ok(DoctorArgs { json, dry_run })
+}
+
+fn parse_models_args(args: &[String]) -> Result<ModelsArgs, &'static str> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Err("missing models command; expected list, scan, or inspect");
+    };
+
+    match command {
+        "list" | "scan" => {
+            let mut dir = None;
+            let mut json = false;
+            let mut dry_run = false;
+            let mut idx = 1;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--json" => json = true,
+                    "--dry-run" => dry_run = true,
+                    "--dir" => {
+                        idx += 1;
+                        let Some(value) = args.get(idx) else {
+                            return Err("models --dir requires a path");
+                        };
+                        dir = Some(value.clone());
+                    }
+                    arg if arg.starts_with("--dir=") => {
+                        dir = Some(arg.trim_start_matches("--dir=").to_owned());
+                    }
+                    arg if arg.starts_with('-') => return Err("unknown models option"),
+                    _ => return Err("unexpected models argument"),
+                }
+                idx += 1;
+            }
+            let dir = dir.unwrap_or_else(default_model_dir);
+            let action = if command == "list" {
+                ModelsAction::List { dir }
+            } else {
+                ModelsAction::Scan { dir }
+            };
+            Ok(ModelsArgs {
+                action,
+                json,
+                dry_run,
+            })
+        }
+        "inspect" => {
+            let inspect = parse_inspect_args(&args[1..])?;
+            Ok(ModelsArgs {
+                action: ModelsAction::Inspect(inspect),
+                json: false,
+                dry_run: false,
+            })
+        }
+        _ => Err("unknown models command; expected list, scan, or inspect"),
+    }
 }
 
 fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
@@ -3010,6 +3221,16 @@ fn llama32_1b_model_path(workspace: &str, model_name: &str) -> String {
         .into_owned()
 }
 
+fn default_model_dir() -> String {
+    env::var(MODEL_DIR_ENV).unwrap_or_else(|_| {
+        let workspace = env::var(WORKSPACE_ENV).unwrap_or_else(|_| DEFAULT_PI_WORKSPACE.to_owned());
+        Path::new(&workspace)
+            .join("models")
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
 fn default_model_path_from_env() -> Option<String> {
     env::var(DEFAULT_MODEL_GGUF_ENV).ok()
 }
@@ -3060,6 +3281,263 @@ fn llama32_3b_model_not_found_message(model_path: &Path) -> String {
         "3B model not found: {}\nSet {SMOKE_MODEL_GGUF_ENV} or {DEFAULT_MODEL_GGUF_ENV}, pass an explicit .gguf path, or place {LLAMA32_3B_Q4_MODEL} under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
         model_path.display()
     )
+}
+
+fn model_dir_not_found_message(dir: &Path) -> String {
+    format!(
+        "models directory not found: {}\nSet {MODEL_DIR_ENV}, set {WORKSPACE_ENV}, pass --dir <path>, or place GGUF files under ${{{WORKSPACE_ENV}:-{DEFAULT_PI_WORKSPACE}}}/models.",
+        dir.display()
+    )
+}
+
+fn run_doctor(parsed: DoctorArgs) -> ExitCode {
+    let model_dir = PathBuf::from(default_model_dir());
+    let model_dir_exists = model_dir.is_dir();
+    let model_count = if parsed.dry_run {
+        None
+    } else if model_dir_exists {
+        scan_model_dir(&model_dir, false)
+            .ok()
+            .map(|entries| entries.len())
+    } else {
+        Some(0)
+    };
+    let (workspace, q4_exists) = llama32_1b_workspace_defaults();
+    let q4_model = llama32_1b_model_path(&workspace, LLAMA32_1B_Q4_MODEL);
+    let q8_model = llama32_1b_model_path(&workspace, LLAMA32_1B_Q8_MODEL);
+    let three_b_model = default_llama32_3b_model_path(&workspace);
+    let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let device_tree_model = fs::read_to_string("/proc/device-tree/model").unwrap_or_default();
+    let cpu_model = cpu_model(&cpuinfo)
+        .or_else(|| device_model(&device_tree_model))
+        .unwrap_or("unknown");
+    let status = if model_dir_exists { "ok" } else { "warn" };
+
+    println!("NanoCamelid doctor");
+    println!("status: {status}");
+    println!("version: {}", env!("CARGO_PKG_VERSION"));
+    println!("host: {} {}", env::consts::OS, env::consts::ARCH);
+    println!("cpu_model: {cpu_model}");
+    println!("model_dir: {}", model_dir.display());
+    println!("model_dir_exists: {model_dir_exists}");
+    if let Some(model_count) = model_count {
+        println!("model_count: {model_count}");
+    } else {
+        println!("model_count: not_checked");
+    }
+    println!("workspace: {workspace}");
+    println!("default_1b_q4: {q4_model}");
+    println!("default_1b_q4_exists: {}", Path::new(&q4_model).is_file());
+    println!("default_1b_q8: {q8_model}");
+    println!("default_1b_q8_exists: {}", Path::new(&q8_model).is_file());
+    println!("default_3b_q4: {three_b_model}");
+    println!(
+        "default_3b_q4_exists: {}",
+        Path::new(&three_b_model).is_file()
+    );
+    println!(
+        "default_1b_selected: {}",
+        default_llama32_1b_model_path(&workspace, q4_exists)
+    );
+    println!(
+        "{DEFAULT_MODEL_GGUF_ENV}_set: {}",
+        env::var(DEFAULT_MODEL_GGUF_ENV).is_ok()
+    );
+    println!(
+        "{SMOKE_MODEL_GGUF_ENV}_set: {}",
+        env::var(SMOKE_MODEL_GGUF_ENV).is_ok()
+    );
+    println!("{MODEL_DIR_ENV}_set: {}", env::var(MODEL_DIR_ENV).is_ok());
+    if !model_dir_exists {
+        println!(
+            "next_action: create {}, set {MODEL_DIR_ENV}, or run `nanocamelid models list --dir <path>`.",
+            model_dir.display()
+        );
+    }
+    if parsed.json {
+        println!(
+            "json: {{\"command\":\"doctor\",\"status\":\"{}\",\"version\":{},\"host\":{},\"arch\":{},\"model_dir\":{},\"model_dir_exists\":{},\"model_count\":{}}}",
+            status,
+            json_string(env!("CARGO_PKG_VERSION")),
+            json_string(env::consts::OS),
+            json_string(env::consts::ARCH),
+            json_string(&model_dir.display().to_string()),
+            model_dir_exists,
+            model_count
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "null".to_owned())
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_models(parsed: ModelsArgs) -> ExitCode {
+    match parsed.action {
+        ModelsAction::List { dir } => run_models_list(&dir, false, parsed.json, parsed.dry_run),
+        ModelsAction::Scan { dir } => run_models_list(&dir, true, parsed.json, parsed.dry_run),
+        ModelsAction::Inspect(inspect) => run_inspect(inspect),
+    }
+}
+
+fn run_models_list(dir: &str, recursive: bool, json: bool, dry_run: bool) -> ExitCode {
+    let dir = Path::new(dir);
+    let command = if recursive {
+        "models scan"
+    } else {
+        "models list"
+    };
+    println!("NanoCamelid {command}");
+    println!("model_dir: {}", dir.display());
+    println!("recursive: {recursive}");
+
+    if dry_run {
+        println!("dry_run: true");
+        println!(
+            "{}_command: {}",
+            if recursive { "scan" } else { "list" },
+            shell_command(&[
+                "nanocamelid",
+                "models",
+                if recursive { "scan" } else { "list" },
+                "--dir",
+                &dir.display().to_string(),
+            ])
+        );
+        if json {
+            println!(
+                "json_on_success: {{\"command\":\"{}\",\"status\":\"ok\",\"model_dir\":{},\"recursive\":{},\"count\":null}}",
+                command,
+                json_string(&dir.display().to_string()),
+                recursive
+            );
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let entries = match scan_model_dir(dir, recursive) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            eprintln!("{}", model_dir_not_found_message(dir));
+            return ExitCode::from(2);
+        }
+        Err(err) => {
+            eprintln!("models scan failed for {}: {err}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("count: {}", entries.len());
+    if entries.is_empty() {
+        println!("  no GGUF files found");
+    }
+    for entry in &entries {
+        println!("  {}", entry.path.display());
+        println!("    bytes: {}", entry.bytes);
+        println!("    target: {}", entry.target.unwrap_or("unknown"));
+        println!(
+            "    quantization: {}",
+            entry.quantization.unwrap_or("unknown")
+        );
+        println!(
+            "    inspect_command: {}",
+            shell_command(&[
+                "nanocamelid",
+                "models",
+                "inspect",
+                &entry.path.display().to_string(),
+            ])
+        );
+        if json {
+            println!(
+                "json_model: {{\"path\":{},\"bytes\":{},\"target\":{},\"quantization\":{}}}",
+                json_string(&entry.path.display().to_string()),
+                entry.bytes,
+                json_optional_string(entry.target),
+                json_optional_string(entry.quantization)
+            );
+        }
+    }
+    if json {
+        println!(
+            "json: {{\"command\":\"{}\",\"status\":\"ok\",\"model_dir\":{},\"recursive\":{},\"count\":{}}}",
+            command,
+            json_string(&dir.display().to_string()),
+            recursive,
+            entries.len()
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn scan_model_dir(dir: &Path, recursive: bool) -> io::Result<Vec<ModelEntry>> {
+    let mut entries = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current_dir) = pending.pop() {
+        for entry in fs::read_dir(&current_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() && recursive {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() || !looks_like_gguf_path(&path.to_string_lossy()) {
+                continue;
+            }
+            let bytes = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            entries.push(ModelEntry {
+                target: classify_model_target(&path),
+                quantization: classify_model_quantization(&path),
+                path,
+                bytes,
+            });
+        }
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(entries)
+}
+
+fn classify_model_target(path: &Path) -> Option<&'static str> {
+    let filename = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    if filename.contains("llama-3.2-1b") {
+        Some("llama32-1b")
+    } else if filename.contains("llama-3.2-3b") {
+        Some("llama32-3b")
+    } else if filename.contains("qwen3") {
+        Some("qwen3")
+    } else if filename.contains("qwen2.5") || filename.contains("qwen2") {
+        Some("qwen2")
+    } else if filename.contains("gemma-3") {
+        Some("gemma3")
+    } else if filename.contains("smollm3") {
+        Some("smollm3")
+    } else if filename.contains("smollm2") {
+        Some("smollm2")
+    } else if filename.contains("mistral") {
+        Some("mistral")
+    } else {
+        None
+    }
+}
+
+fn classify_model_quantization(path: &Path) -> Option<&'static str> {
+    let filename = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    [
+        ("iq4_nl", "IQ4_NL"),
+        ("q8_0", "Q8_0"),
+        ("q8_k", "Q8_K"),
+        ("q6_k", "Q6_K"),
+        ("q5_k", "Q5_K"),
+        ("q5_1", "Q5_1"),
+        ("q5_0", "Q5_0"),
+        ("q4_k", "Q4_K"),
+        ("q4_1", "Q4_1"),
+        ("q4_0", "Q4_0"),
+        ("q3_k", "Q3_K"),
+        ("q2_k", "Q2_K"),
+    ]
+    .iter()
+    .find_map(|(needle, label)| filename.contains(needle).then_some(*label))
 }
 
 fn print_probe() {
@@ -7749,10 +8227,11 @@ mod tests {
         ChatTurn, DEFAULT_1B_PREFILL_PROMPT, DEFAULT_1B_PREFILL_TEMP, DEFAULT_1B_PREFILL_TOKENS,
         DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_MODEL_GGUF_ENV,
         DEFAULT_Q4_PREFILL_BATCH, DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS,
-        GenerationStatusJson, HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL,
-        LLAMA32_3B_Q4_MODEL, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
-        ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs, SmokeDefaults, SmokeKind,
-        TRACE_ENV, TuiCommand, cpu_features, cpu_governor_recommendation, cpu_model,
+        DoctorArgs, GenerationStatusJson, HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL,
+        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, ModelsAction, PERFORMANCE_GOVERNOR_COMMAND,
+        PrefillBenchBatchMetrics, ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, Smoke1BArgs,
+        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, classify_model_quantization,
+        classify_model_target, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         evidence_1b_status_json, evidence_context_pack_command, evidence_model_command,
         evidence_prefill_bench_command, evidence_prefill_bench_command_with_env,
@@ -7763,12 +8242,13 @@ mod tests {
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
         model_1b_status_json, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
         parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_context_packs, parse_cpu_list, parse_evidence_1b_args_with_env,
+        parse_context_packs, parse_cpu_list, parse_doctor_args, parse_evidence_1b_args_with_env,
         parse_evidence_1b_args_with_path, parse_generate_args_with_env,
         parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_inspect_args_with_env,
-        parse_model_1b_args_with_path, parse_prefill_batches, parse_prefill_bench_1b_batch_metrics,
-        parse_ready_1b_args_with_env, parse_ready_1b_args_with_env_and_smoke_defaults,
+        parse_model_1b_args_with_path, parse_models_args, parse_prefill_batches,
+        parse_prefill_bench_1b_batch_metrics, parse_ready_1b_args_with_env,
+        parse_ready_1b_args_with_env_and_smoke_defaults,
         parse_ready_1b_args_with_env_and_smoke_defaults_and_chat_default,
         parse_smoke_1b_args_with_env, parse_smoke_1b_args_with_env_and_defaults,
         parse_smoke_3b_args_with_env, parse_smoke_3b_args_with_env_and_defaults,
@@ -8066,6 +8546,8 @@ flags\t\t: sse4_2 avx2
     #[test]
     fn help_topic_named_maps_supported_commands() {
         assert_eq!(help_topic_named("model"), Some(HelpTopic::Model));
+        assert_eq!(help_topic_named("models"), Some(HelpTopic::Models));
+        assert_eq!(help_topic_named("doctor"), Some(HelpTopic::Doctor));
         assert_eq!(help_topic_named("probe"), Some(HelpTopic::Probe));
         assert_eq!(help_topic_named("inspect"), Some(HelpTopic::Inspect));
         assert_eq!(help_topic_named("generate"), Some(HelpTopic::Generate));
@@ -8099,6 +8581,14 @@ flags\t\t: sse4_2 avx2
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "model".to_owned()]),
             Some(HelpTopic::Model)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "models".to_owned()]),
+            Some(HelpTopic::Models)
+        );
+        assert_eq!(
+            help_topic_for_args(&["help".to_owned(), "doctor".to_owned()]),
+            Some(HelpTopic::Doctor)
         );
         assert_eq!(
             help_topic_for_args(&["help".to_owned(), "smoke".to_owned()]),
@@ -8161,6 +8651,22 @@ flags\t\t: sse4_2 avx2
             Some(HelpTopic::Model)
         );
         assert_eq!(
+            help_topic_for_args(&["models".to_owned(), "list".to_owned(), "--help".to_owned()]),
+            Some(HelpTopic::Models)
+        );
+        assert_eq!(
+            help_topic_for_args(&["models".to_owned(), "scan".to_owned(), "-h".to_owned()]),
+            Some(HelpTopic::Models)
+        );
+        assert_eq!(
+            help_topic_for_args(&[
+                "models".to_owned(),
+                "inspect".to_owned(),
+                "--help".to_owned()
+            ]),
+            Some(HelpTopic::Models)
+        );
+        assert_eq!(
             help_topic_for_args(&["bench".to_owned(), "1b".to_owned(), "--help".to_owned()]),
             Some(HelpTopic::Bench)
         );
@@ -8199,6 +8705,103 @@ flags\t\t: sse4_2 avx2
         assert!(is_help_flag("-h"));
         assert!(is_help_flag("--help"));
         assert!(!is_help_flag("help"));
+    }
+
+    #[test]
+    fn doctor_args_accept_json_and_dry_run_only() {
+        assert_eq!(
+            parse_doctor_args(&["--json".to_owned(), "--dry-run".to_owned()]),
+            Ok(DoctorArgs {
+                json: true,
+                dry_run: true
+            })
+        );
+        assert_eq!(
+            parse_doctor_args(&["extra".to_owned()]).expect_err("extra doctor arg should fail"),
+            "unexpected doctor argument"
+        );
+        assert_eq!(
+            parse_doctor_args(&["--bad".to_owned()]).expect_err("bad doctor flag should fail"),
+            "unknown doctor option"
+        );
+    }
+
+    #[test]
+    fn models_args_parse_list_scan_and_inspect() {
+        let parsed = parse_models_args(&[
+            "list".to_owned(),
+            "--dir".to_owned(),
+            "/models".to_owned(),
+            "--json".to_owned(),
+            "--dry-run".to_owned(),
+        ])
+        .expect("models list should parse");
+        assert!(parsed.json);
+        assert!(parsed.dry_run);
+        assert_eq!(
+            parsed.action,
+            ModelsAction::List {
+                dir: "/models".to_owned()
+            }
+        );
+
+        let parsed = parse_models_args(&["scan".to_owned(), "--dir=/models".to_owned()])
+            .expect("models scan should parse");
+        assert_eq!(
+            parsed.action,
+            ModelsAction::Scan {
+                dir: "/models".to_owned()
+            }
+        );
+
+        let parsed = parse_models_args(&[
+            "inspect".to_owned(),
+            "/models/Llama-3.2-1B-Instruct-Q4_0.gguf".to_owned(),
+            "--dry-run".to_owned(),
+        ])
+        .expect("models inspect should parse");
+        match parsed.action {
+            ModelsAction::Inspect(inspect) => {
+                assert_eq!(
+                    inspect.model_path,
+                    "/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
+                );
+                assert!(inspect.dry_run);
+            }
+            other => panic!("expected inspect action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_args_reject_bad_shape() {
+        assert_eq!(
+            parse_models_args(&[]).expect_err("missing models command should fail"),
+            "missing models command; expected list, scan, or inspect"
+        );
+        assert_eq!(
+            parse_models_args(&["bad".to_owned()]).expect_err("unknown models command should fail"),
+            "unknown models command; expected list, scan, or inspect"
+        );
+        assert_eq!(
+            parse_models_args(&["list".to_owned(), "--dir".to_owned()])
+                .expect_err("missing models dir should fail"),
+            "models --dir requires a path"
+        );
+    }
+
+    #[test]
+    fn model_scan_classifies_common_filename_hints() {
+        let llama_path = Path::new("/models/Llama-3.2-1B-Instruct-Q8_0.gguf");
+        assert_eq!(classify_model_target(llama_path), Some("llama32-1b"));
+        assert_eq!(classify_model_quantization(llama_path), Some("Q8_0"));
+
+        let qwen_path = Path::new("/models/qwen2.5-coder-0.5b-instruct-q5_k_m.gguf");
+        assert_eq!(classify_model_target(qwen_path), Some("qwen2"));
+        assert_eq!(classify_model_quantization(qwen_path), Some("Q5_K"));
+
+        let unknown_path = Path::new("/models/custom.gguf");
+        assert_eq!(classify_model_target(unknown_path), None);
+        assert_eq!(classify_model_quantization(unknown_path), None);
     }
 
     #[test]

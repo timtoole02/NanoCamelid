@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added the stable non-loading `doctor` preflight and `models list`,
+  `models scan`, and `models inspect` CLI namespace for model discovery and
+  actionable model-directory errors.
 - Reworked the repository front door into a short customer-facing README with a
   5-minute quickstart, install modes, core CLI examples, and links to detailed
   docs.

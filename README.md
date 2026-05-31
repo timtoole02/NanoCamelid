@@ -10,8 +10,9 @@ checks, and Pi-side evidence for supported model rows.
 - Release installer defaults to versioned GitHub releases and verifies
   `SHA256SUMS`.
 - `nanocamelid --version` prints the package version.
-- GGUF inspection, direct generation, single-turn chat, terminal TUI, 1B
-  readiness, and model-backed smoke/evidence paths are available from the CLI.
+- GGUF model discovery, inspection, direct generation, single-turn chat,
+  terminal TUI, 1B readiness, and model-backed smoke/evidence paths are
+  available from the CLI.
 - The default Pi model directory is `/mnt/nanocamelid/models`.
 - Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma prompt rendering is
   available for supported smoke and chat paths.
@@ -25,6 +26,7 @@ Install the current release on an ARM64 Linux host:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts/install.sh | bash
 nanocamelid --version
+nanocamelid doctor
 nanocamelid probe
 ```
 
@@ -39,6 +41,7 @@ explicit `.gguf` file. For the default Llama 3.2 1B path, use one of:
 Run a dry-run readiness plan before loading the model:
 
 ```bash
+nanocamelid models list
 nanocamelid ready 1b --dry-run
 ```
 
@@ -75,7 +78,11 @@ do not create large Cargo artifacts on the internal disk. Run
 
 ```bash
 nanocamelid --version
+nanocamelid doctor
 nanocamelid probe
+nanocamelid models list
+nanocamelid models scan
+nanocamelid models inspect 1b --dry-run
 nanocamelid model 1b --dry-run
 nanocamelid inspect 1b --dry-run
 nanocamelid inspect /path/to/model.gguf
@@ -94,6 +101,8 @@ arguments and environment controls.
 
 - [docs/MODEL_CATALOG.md](docs/MODEL_CATALOG.md): supported model rows and next
   candidates.
+- [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md): v0.1 support status by
+  product surface.
 - [docs/PRODUCT_HISTORY.md](docs/PRODUCT_HISTORY.md): detailed prototype
   history, Pi evidence, performance notes, and advanced launchers.
 - [docs/PI_PORTING.md](docs/PI_PORTING.md): Pi deployment and validation notes.
