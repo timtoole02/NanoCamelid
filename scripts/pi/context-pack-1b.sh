@@ -24,6 +24,7 @@ Useful env:
   NANOCAMELID_PREFILL_BATCH   Prefill prompt token batch size, default 16
   NANOCAMELID_CONTEXT_PACKS   Comma-separated context caps, default 512,1024,2048,4096,8192
   --q4, --q8                  Select the Pi-local Q4_0 or Q8_0 default row
+                              Do not combine with explicit model args or GGUF env overrides
   --dry-run                   Print the resolved context-pack plan without loading the model
 USAGE
 }
@@ -136,6 +137,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
 require_optional_prefill_batch
+require_unambiguous_1b_quant_selector "1B context-pack" "$QUANT_MODEL" "${1:-}"
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"

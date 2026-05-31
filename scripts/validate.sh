@@ -903,9 +903,9 @@ expect_output "ready-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi
 expect_output "ready-1b success marker dry run" "status_on_success: ready_1b_status: ok" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b selected quantization" "quantization: q8_0" ./scripts/pi/ready-1b.sh --dry-run
-expect_output "ready-1b forced q4 source" "selected_source: workspace Q4_0 requested" ./scripts/pi/ready-1b.sh --q4 --dry-run
-expect_output "ready-1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/ready-1b.sh --q4 --dry-run
-expect_output "ready-1b forced q8 source" "selected_source: workspace Q8_0 requested" ./scripts/pi/ready-1b.sh --q8 --dry-run
+expect_output "ready-1b forced q4 source" "selected_source: workspace Q4_0 requested" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/ready-1b.sh --q4 --dry-run
+expect_output "ready-1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/ready-1b.sh --q4 --dry-run
+expect_output "ready-1b forced q8 source" "selected_source: workspace Q8_0 requested" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/ready-1b.sh --q8 --dry-run
 expect_failure "ready-1b conflicting quant selectors" ./scripts/pi/ready-1b.sh --q4 --q8 --dry-run
 expect_output "ready-1b json records quantization" "\"quantization\":\"q8_0\"" ./scripts/pi/ready-1b.sh --dry-run
 expect_output "ready-1b json records probe" "\"probe\":true" ./scripts/pi/ready-1b.sh --dry-run
@@ -971,9 +971,11 @@ expect_output "bench-1b-prefill q4 model audit" "q4_model: /mnt/nanocamelid/mode
 expect_output "bench-1b-prefill q8 model audit" "q8_model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q8_0.gguf" ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill selected source" "selected_source: " ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill selected quantization" "quantization: q8_0" ./scripts/pi/bench-1b-prefill.sh --dry-run
-expect_output "bench-1b-prefill q4 selector source" "selected_source: workspace Q4_0 requested" ./scripts/pi/bench-1b-prefill.sh --q4 --dry-run
-expect_output "bench-1b-prefill q4 selector model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/bench-1b-prefill.sh --q4 --dry-run
+expect_output "bench-1b-prefill q4 selector source" "selected_source: workspace Q4_0 requested" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/bench-1b-prefill.sh --q4 --dry-run
+expect_output "bench-1b-prefill q4 selector model" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/bench-1b-prefill.sh --q4 --dry-run
 expect_failure_output "bench-1b-prefill conflicting quant selectors" "Only one 1B prefill benchmark quantization selector may be provided." ./scripts/pi/bench-1b-prefill.sh --q4 --q8 --dry-run
+expect_failure_output "bench-1b-prefill quant conflicts with explicit model" "1B prefill benchmark quantization selector cannot be combined with an explicit model path." ./scripts/pi/bench-1b-prefill.sh --q4 /models/custom.gguf --dry-run
+expect_failure_output "bench-1b-prefill quant conflicts with env model" "1B prefill benchmark quantization selector cannot be combined with NANOCAMELID_SMOKE_GGUF or NANOCAMELID_MODEL_GGUF." env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/bench-1b-prefill.sh --q8 --dry-run
 expect_output "bench-1b-prefill smoke env override" "selected_source: NANOCAMELID_SMOKE_GGUF" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill smoke env model" "model: /models/smoke.gguf" env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/bench-1b-prefill.sh --dry-run
 expect_output "bench-1b-prefill context limit dry run" "context_limit: 512" env NANOCAMELID_CONTEXT_LIMIT=512 ./scripts/pi/bench-1b-prefill.sh --dry-run
@@ -1019,10 +1021,12 @@ expect_output "context-pack-1b help documents prefill batch" "NANOCAMELID_PREFIL
 expect_output "context-pack-1b help documents quant selectors" "--q4, --q8" ./scripts/pi/context-pack-1b.sh --help
 expect_output "context-pack-1b selected source" "selected_source: " ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b selected quantization" "quantization: q8_0" ./scripts/pi/context-pack-1b.sh --dry-run
-expect_output "context-pack-1b forced q4 source" "selected_source: workspace Q4_0 requested" ./scripts/pi/context-pack-1b.sh --q4 --dry-run
-expect_output "context-pack-1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/context-pack-1b.sh --q4 --dry-run
-expect_output "context-pack-1b forced q8 source" "selected_source: workspace Q8_0 requested" ./scripts/pi/context-pack-1b.sh --q8 --dry-run
+expect_output "context-pack-1b forced q4 source" "selected_source: workspace Q4_0 requested" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/context-pack-1b.sh --q4 --dry-run
+expect_output "context-pack-1b forced q4 path" "model: /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/context-pack-1b.sh --q4 --dry-run
+expect_output "context-pack-1b forced q8 source" "selected_source: workspace Q8_0 requested" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/context-pack-1b.sh --q8 --dry-run
 expect_failure_output "context-pack-1b conflicting quant selectors" "Only one 1B context-pack quantization selector may be provided." ./scripts/pi/context-pack-1b.sh --q4 --q8 --dry-run
+expect_failure_output "context-pack-1b quant conflicts with explicit model" "1B context-pack quantization selector cannot be combined with an explicit model path." ./scripts/pi/context-pack-1b.sh --q4 /models/custom.gguf --dry-run
+expect_failure_output "context-pack-1b quant conflicts with env model" "1B context-pack quantization selector cannot be combined with NANOCAMELID_SMOKE_GGUF or NANOCAMELID_MODEL_GGUF." env NANOCAMELID_MODEL_GGUF=/models/model.gguf ./scripts/pi/context-pack-1b.sh --q8 --dry-run
 expect_output "context-pack-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b success marker dry run" "status_on_success: context_pack_1b_status: ok" ./scripts/pi/context-pack-1b.sh --dry-run
 expect_output "context-pack-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/context-pack-1b.sh --dry-run
@@ -1054,9 +1058,11 @@ expect_output "evidence-1b q8 model audit" "q8_model: /mnt/nanocamelid/models/Ll
 expect_output "evidence-1b q4 existence check" "q4_exists: " ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b q8 existence check" "q8_exists: " ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b help documents quant selectors" "--q4, --q8" ./scripts/pi/evidence-1b.sh --help
-expect_output "evidence-1b q4 selector source" "selected_source: workspace Q4_0 requested" ./scripts/pi/evidence-1b.sh --q4 --dry-run
-expect_output "evidence-1b q4 selector child command" "model_command: ./scripts/pi/model-1b.sh /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" ./scripts/pi/evidence-1b.sh --q4 --dry-run
+expect_output "evidence-1b q4 selector source" "selected_source: workspace Q4_0 requested" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/evidence-1b.sh --q4 --dry-run
+expect_output "evidence-1b q4 selector child command" "model_command: ./scripts/pi/model-1b.sh /mnt/nanocamelid/models/Llama-3.2-1B-Instruct-Q4_0.gguf" env -u NANOCAMELID_SMOKE_GGUF -u NANOCAMELID_MODEL_GGUF ./scripts/pi/evidence-1b.sh --q4 --dry-run
 expect_failure_output "evidence-1b conflicting quant selectors" "Only one 1B evidence quantization selector may be provided." ./scripts/pi/evidence-1b.sh --q4 --q8 --dry-run
+expect_failure_output "evidence-1b quant conflicts with explicit model" "1B evidence quantization selector cannot be combined with an explicit model path." ./scripts/pi/evidence-1b.sh --q4 /models/custom.gguf --dry-run
+expect_failure_output "evidence-1b quant conflicts with env model" "1B evidence quantization selector cannot be combined with NANOCAMELID_SMOKE_GGUF or NANOCAMELID_MODEL_GGUF." env NANOCAMELID_SMOKE_GGUF=/models/smoke.gguf ./scripts/pi/evidence-1b.sh --q8 --dry-run
 expect_output "evidence-1b success marker dry run" "status_on_success: evidence_1b_status: ok" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b shape audit dry run" "shape_audit: enabled" ./scripts/pi/evidence-1b.sh --dry-run
 expect_output "evidence-1b json success marker dry run" "\"target\":\"llama32-1b\",\"status\":\"ok\"" ./scripts/pi/evidence-1b.sh --dry-run
@@ -1111,6 +1117,8 @@ expect_failure "mixtral-cluster invalid context cap" env NANOCAMELID_CLUSTER_CON
 echo "==> Checking 1B Pi readiness launcher rejects invalid temperature..."
 expect_failure "ready-1b invalid temperature" env NANOCAMELID_READY_TEMP=bad ./scripts/pi/ready-1b.sh --dry-run
 expect_failure "ready-1b invalid direct chat toggle" env NANOCAMELID_READY_CHAT=flase ./scripts/pi/ready-1b.sh --dry-run
+expect_failure_output "ready-1b quant conflicts with explicit model" "1B readiness quantization selector cannot be combined with an explicit model path." ./scripts/pi/ready-1b.sh --q4 /models/custom.gguf --dry-run
+expect_failure_output "ready-1b quant conflicts with env model" "1B readiness quantization selector cannot be combined with NANOCAMELID_SMOKE_GGUF or NANOCAMELID_MODEL_GGUF." env NANOCAMELID_MODEL_GGUF=/models/model.gguf ./scripts/pi/ready-1b.sh --q8 --dry-run
 
 echo "==> Checking 1B Pi readiness launcher ignores direct chat env when chat is disabled..."
 env NANOCAMELID_READY_CHAT=flase ./scripts/pi/ready-1b.sh --no-chat --dry-run

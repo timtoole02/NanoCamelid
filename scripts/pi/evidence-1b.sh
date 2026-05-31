@@ -33,6 +33,7 @@ Useful env:
   NANOCAMELID_PREFILL_TEMP       Temperature for bench-1b-prefill.sh
   NANOCAMELID_PREFILL_BATCHES    Batch list for bench-1b-prefill.sh
   --q4, --q8                     Select the Pi-local Q4_0 or Q8_0 default row
+                                  Do not combine with explicit model args or GGUF env overrides
   --dry-run                      Print the resolved bundle plan without loading the model
 USAGE
 }
@@ -193,6 +194,7 @@ fi
 if looks_like_gguf_path "${1:-}"; then
   MODEL_ARGS=("$1")
 fi
+require_unambiguous_1b_quant_selector "1B evidence" "$QUANT_MODEL" "${MODEL_ARGS[0]:-}"
 
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"

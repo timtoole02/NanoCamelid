@@ -31,6 +31,7 @@ Useful env:
   NANOCAMELID_READY_TOKENS         Direct chat generated token count
   NANOCAMELID_READY_TEMP           Direct chat temperature, default 0.0
   --q4, --q8                       Select the Pi-local Q4_0 or Q8_0 default row
+                                   Do not combine with explicit model args or GGUF env overrides
   NANOCAMELID_READY_CHAT=0         Stop after audit, inspect, and smoke; also accepts false/no/off
   --no-chat, --smoke-only          Stop after audit, inspect, and smoke; positionals override the smoke prompt
   --chat                           Force the direct chat turn even when NANOCAMELID_READY_CHAT=0
@@ -123,6 +124,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
 require_optional_context_limit
 require_optional_prefill_batch
+require_unambiguous_1b_quant_selector "1B readiness" "$QUANT_MODEL" "${1:-}"
 WORKSPACE="${NANOCAMELID_WORKSPACE:-/mnt/nanocamelid}"
 REPO="${NANOCAMELID_REPO:-$REPO_ROOT}"
 TARGET_DIR="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-/mnt/nanocamelid/target}}"

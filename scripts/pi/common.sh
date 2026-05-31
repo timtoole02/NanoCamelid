@@ -184,3 +184,23 @@ llama32_1b_quantization_for_path() {
     *) printf 'unknown' ;;
   esac
 }
+
+require_unambiguous_1b_quant_selector() {
+  local label="$1"
+  local quant_selector="$2"
+  local explicit_model="${3:-}"
+
+  if [[ -z "$quant_selector" ]]; then
+    return
+  fi
+
+  if looks_like_gguf_path "$explicit_model"; then
+    echo "$label quantization selector cannot be combined with an explicit model path." >&2
+    exit 2
+  fi
+
+  if [[ -n "${NANOCAMELID_SMOKE_GGUF:-}" || -n "${NANOCAMELID_MODEL_GGUF:-}" ]]; then
+    echo "$label quantization selector cannot be combined with NANOCAMELID_SMOKE_GGUF or NANOCAMELID_MODEL_GGUF." >&2
+    exit 2
+  fi
+}
