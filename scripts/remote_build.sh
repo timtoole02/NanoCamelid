@@ -15,6 +15,7 @@ Useful env:
   NANOCAMELID_REMOTE_CONTEXT_LIMIT Optional single context cap for readiness and prefill sweep
   NANOCAMELID_REMOTE_CONTEXT_PACKS  Optional comma-separated 1B context caps to run after readiness
   NANOCAMELID_REMOTE_PREFILL_BATCH   Optional prompt prefill batch for remote readiness/smoke gates
+  NANOCAMELID_REMOTE_TARGET_DIR      Optional Cargo target dir; defaults to <remote-workspace>/target
   NANOCAMELID_REMOTE_1B_QUANT       Optional q4/q8 selector for Pi-local default 1B rows
   NANOCAMELID_REMOTE_PREFILL_BENCH  Set to 1 to run the 1B prefill batch sweep after readiness; 0/false/no/off disables it
   NANOCAMELID_REMOTE_PREFILL_BATCHES Optional comma-separated prefill batches for the remote sweep
@@ -51,7 +52,7 @@ SSH_KEY="${2:-${NANOCAMELID_SSH_KEY:-}}"
 PI_USER="${3:-${NANOCAMELID_PI_USER:-$USER}}"
 DEPLOY_MODE="${4:-${NANOCAMELID_DEPLOY_MODE:-git-ff}}"
 PI_WORKSPACE="${NANOCAMELID_REMOTE_WORKSPACE:-/mnt/nanocamelid}"
-PI_TARGET_DIR="/mnt/nanocamelid/target"
+PI_TARGET_DIR="${NANOCAMELID_REMOTE_TARGET_DIR:-$PI_WORKSPACE/target}"
 PI_REPO="$PI_WORKSPACE/src/NanoCamelid"
 REMOTE_SMOKE_ENABLED="${NANOCAMELID_REMOTE_SMOKE:-1}"
 REMOTE_SMOKE_ENABLED_LOWER="$(printf '%s' "$REMOTE_SMOKE_ENABLED" | tr '[:upper:]' '[:lower:]')"
