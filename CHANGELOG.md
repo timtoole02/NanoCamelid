@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Switched local API completion request parsing to `serde_json` so malformed
+  JSON, trailing data, escaped strings, arrays, and numeric fields follow normal
+  JSON semantics before structured API validation errors are returned.
 - Redacted API tokens from `nanocamelid serve --dry-run` replay plans while
   preserving an auth-enabled `NANOCAMELID_API_KEY='<token>'` command shape.
 - Added `docs/CLI_CONTRACT.md` and tightened the README core CLI section around

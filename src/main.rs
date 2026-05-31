@@ -10,6 +10,7 @@ use std::{
 };
 
 use nanocamelid::{gguf, inference, model, q8, speculative, tokenizer};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
 const MODEL_DIR_ENV: &str = "NANOCAMELID_MODEL_DIR";
@@ -4032,16 +4033,14 @@ fn validate_api_completion_request(
             "Request body must be a JSON object.",
         ));
     }
-    if !looks_like_json_object(body) {
-        return Err(invalid_json_error());
-    }
-    let model = required_json_string_field(body, "model", "missing_model")?;
-    let prompts = required_completion_prompts(body)?;
+    let object = parse_api_json_object(body)?;
+    let model = required_json_string_field(&object, "model", "missing_model")?;
+    let prompts = required_completion_prompts(&object)?;
     let input_tokens = prompts
         .iter()
         .map(|prompt| estimate_request_tokens(prompt))
         .sum::<usize>();
-    let requested_output_tokens = json_usize_field(body, "max_tokens")
+    let requested_output_tokens = json_usize_field(&object, "max_tokens")
         .map_err(|_| {
             serve_api_error(
                 400,
@@ -4051,7 +4050,7 @@ fn validate_api_completion_request(
             )
         })?
         .unwrap_or(parsed.max_output_tokens);
-    let temperature = json_f32_field(body, "temperature")
+    let temperature = json_f32_field(&object, "temperature")
         .map_err(|_| {
             serve_api_error(
                 400,
@@ -4083,16 +4082,14 @@ fn validate_api_chat_completion_request(
             "Request body must be a JSON object.",
         ));
     }
-    if !looks_like_json_object(body) {
-        return Err(invalid_json_error());
-    }
-    let model = required_json_string_field(body, "model", "missing_model")?;
-    let messages = required_chat_messages(body)?;
+    let object = parse_api_json_object(body)?;
+    let model = required_json_string_field(&object, "model", "missing_model")?;
+    let messages = required_chat_messages(&object)?;
     let input_tokens = messages
         .iter()
         .map(|message| estimate_request_tokens(&message.content))
         .sum::<usize>();
-    let requested_output_tokens = json_usize_field(body, "max_tokens")
+    let requested_output_tokens = json_usize_field(&object, "max_tokens")
         .map_err(|_| {
             serve_api_error(
                 400,
@@ -4102,7 +4099,7 @@ fn validate_api_chat_completion_request(
             )
         })?
         .unwrap_or(parsed.max_output_tokens);
-    let temperature = json_f32_field(body, "temperature")
+    let temperature = json_f32_field(&object, "temperature")
         .map_err(|_| {
             serve_api_error(
                 400,
@@ -4122,14 +4119,23 @@ fn validate_api_chat_completion_request(
     })
 }
 
+fn parse_api_json_object(body: &str) -> Result<JsonMap<String, JsonValue>, ServeApiError> {
+    match serde_json::from_str::<JsonValue>(body) {
+        Ok(JsonValue::Object(object)) => Ok(object),
+        Ok(_) | Err(_) => Err(invalid_json_error()),
+    }
+}
+
 fn required_json_string_field(
-    body: &str,
+    object: &JsonMap<String, JsonValue>,
     field: &str,
     missing_code: &'static str,
 ) -> Result<String, ServeApiError> {
-    json_string_field(body, field)
-        .map_err(|_| invalid_json_error())?
+    object
+        .get(field)
+        .and_then(JsonValue::as_str)
         .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
         .ok_or_else(|| {
             serve_api_error(
                 400,
@@ -4140,8 +4146,10 @@ fn required_json_string_field(
         })
 }
 
-fn required_completion_prompts(body: &str) -> Result<Vec<String>, ServeApiError> {
-    let Some(value_start) = json_field_value_start(body, "prompt") else {
+fn required_completion_prompts(
+    object: &JsonMap<String, JsonValue>,
+) -> Result<Vec<String>, ServeApiError> {
+    let Some(value) = object.get("prompt") else {
         return Err(serve_api_error(
             400,
             "invalid_request_error",
@@ -4149,27 +4157,34 @@ fn required_completion_prompts(body: &str) -> Result<Vec<String>, ServeApiError>
             "Completion requests require a non-empty prompt string or string array.",
         ));
     };
-    let prompts = json_string_or_string_array_at(body, value_start).ok_or_else(|| {
+
+    let invalid_prompt = || {
         serve_api_error(
             400,
             "invalid_request_error",
             "invalid_prompt",
             "prompt must be a non-empty string or array of non-empty strings.",
         )
-    })?;
+    };
+    let prompts = match value {
+        JsonValue::String(prompt) => vec![prompt.clone()],
+        JsonValue::Array(values) if !values.is_empty() => values
+            .iter()
+            .map(|value| value.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(invalid_prompt)?,
+        _ => return Err(invalid_prompt()),
+    };
     if prompts.iter().any(|prompt| prompt.trim().is_empty()) {
-        return Err(serve_api_error(
-            400,
-            "invalid_request_error",
-            "invalid_prompt",
-            "prompt must be a non-empty string or array of non-empty strings.",
-        ));
+        return Err(invalid_prompt());
     }
     Ok(prompts)
 }
 
-fn required_chat_messages(body: &str) -> Result<Vec<ApiChatMessage>, ServeApiError> {
-    let Some(messages_start) = json_field_value_start(body, "messages") else {
+fn required_chat_messages(
+    object: &JsonMap<String, JsonValue>,
+) -> Result<Vec<ApiChatMessage>, ServeApiError> {
+    let Some(value) = object.get("messages") else {
         return Err(serve_api_error(
             400,
             "invalid_request_error",
@@ -4177,14 +4192,34 @@ fn required_chat_messages(body: &str) -> Result<Vec<ApiChatMessage>, ServeApiErr
             "Chat completion requests require a non-empty messages array.",
         ));
     };
-    let messages = parse_json_chat_messages_at(body, messages_start).ok_or_else(|| {
+
+    let invalid_messages = || {
         serve_api_error(
             400,
             "invalid_request_error",
             "invalid_messages",
             "messages must contain role/content objects with non-empty string content fields.",
         )
-    })?;
+    };
+    let JsonValue::Array(values) = value else {
+        return Err(invalid_messages());
+    };
+    if values.is_empty() {
+        return Err(invalid_messages());
+    }
+    let messages = values
+        .iter()
+        .map(|value| {
+            let JsonValue::Object(message) = value else {
+                return None;
+            };
+            Some(ApiChatMessage {
+                role: message.get("role")?.as_str()?.to_owned(),
+                content: message.get("content")?.as_str()?.to_owned(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(invalid_messages)?;
     if messages.iter().any(|message| {
         !matches!(message.role.as_str(), "system" | "user" | "assistant")
             || message.content.trim().is_empty()
@@ -4257,215 +4292,23 @@ fn invalid_json_error() -> ServeApiError {
     )
 }
 
-fn looks_like_json_object(body: &str) -> bool {
-    let body = body.trim();
-    body.starts_with('{') && body.ends_with('}')
-}
-
-fn json_string_field(body: &str, field: &str) -> Result<Option<String>, ()> {
-    let Some(value_start) = json_field_value_start(body, field) else {
+fn json_usize_field(object: &JsonMap<String, JsonValue>, field: &str) -> Result<Option<usize>, ()> {
+    let Some(value) = object.get(field) else {
         return Ok(None);
     };
-    parse_json_string_at(body, value_start)
-        .map(|(value, _)| Some(value))
-        .ok_or(())
-}
-
-fn parse_json_chat_messages_at(body: &str, value_start: usize) -> Option<Vec<ApiChatMessage>> {
-    let mut idx = skip_json_whitespace(body, value_start);
-    if body[idx..].chars().next()? != '[' {
-        return None;
-    }
-    idx += 1;
-
-    let mut messages = Vec::new();
-    loop {
-        idx = skip_json_whitespace(body, idx);
-        match body[idx..].chars().next()? {
-            ']' => return (!messages.is_empty()).then_some(messages),
-            '{' => {
-                let end_idx = json_container_end(body, idx, '{', '}')?;
-                let object = &body[idx..end_idx];
-                let role = json_string_field(object, "role").ok().flatten()?;
-                let content = json_string_field(object, "content").ok().flatten()?;
-                messages.push(ApiChatMessage { role, content });
-                idx = skip_json_whitespace(body, end_idx);
-                match body[idx..].chars().next()? {
-                    ',' => idx += 1,
-                    ']' => return Some(messages),
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        }
-    }
-}
-
-fn skip_json_whitespace(input: &str, start_idx: usize) -> usize {
-    start_idx
-        + input[start_idx..]
-            .chars()
-            .take_while(|ch| ch.is_whitespace())
-            .map(char::len_utf8)
-            .sum::<usize>()
-}
-
-fn json_container_end(input: &str, start_idx: usize, open: char, close: char) -> Option<usize> {
-    let mut chars = input[start_idx..].char_indices();
-    if chars.next()?.1 != open {
-        return None;
-    }
-    let mut depth = 1usize;
-    let mut in_string = false;
-    let mut escaping = false;
-
-    for (relative_idx, ch) in chars {
-        if in_string {
-            if escaping {
-                escaping = false;
-            } else if ch == '\\' {
-                escaping = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            ch if ch == open => depth += 1,
-            ch if ch == close => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(start_idx + relative_idx + ch.len_utf8());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn json_usize_field(body: &str, field: &str) -> Result<Option<usize>, ()> {
-    let Some(value_start) = json_field_value_start(body, field) else {
-        return Ok(None);
-    };
-    let value = body[value_start..].trim_start();
-    let end = value
-        .find(|ch: char| !ch.is_ascii_digit())
-        .unwrap_or(value.len());
-    if end == 0 {
-        return Err(());
-    }
-    let parsed = value[..end].parse::<usize>().map_err(|_| ())?;
+    let parsed = value.as_u64().ok_or(())?;
+    let parsed = usize::try_from(parsed).map_err(|_| ())?;
     (parsed > 0).then_some(Some(parsed)).ok_or(())
 }
 
-fn json_f32_field(body: &str, field: &str) -> Result<Option<f32>, ()> {
-    let Some(value_start) = json_field_value_start(body, field) else {
+fn json_f32_field(object: &JsonMap<String, JsonValue>, field: &str) -> Result<Option<f32>, ()> {
+    let Some(value) = object.get(field) else {
         return Ok(None);
     };
-    let value = body[value_start..].trim_start();
-    let end = value
-        .find(|ch: char| !(ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | 'e' | 'E')))
-        .unwrap_or(value.len());
-    if end == 0 {
-        return Err(());
-    }
-    let parsed = value[..end].parse::<f32>().map_err(|_| ())?;
+    let parsed = value.as_f64().ok_or(())? as f32;
     (parsed.is_finite() && parsed >= 0.0)
         .then_some(Some(parsed))
         .ok_or(())
-}
-
-fn json_string_or_string_array_at(body: &str, value_start: usize) -> Option<Vec<String>> {
-    let value = body[value_start..].trim_start();
-    if value.starts_with('"') {
-        return parse_json_string_at(value, 0).map(|(prompt, _)| vec![prompt]);
-    }
-    if !value.starts_with('[') {
-        return None;
-    }
-    let mut prompts = Vec::new();
-    let mut idx = 1;
-    loop {
-        idx += value[idx..]
-            .chars()
-            .take_while(|ch| ch.is_whitespace())
-            .count();
-        match value[idx..].chars().next()? {
-            ']' => return (!prompts.is_empty()).then_some(prompts),
-            '"' => {
-                let (prompt, end_idx) = parse_json_string_at(value, idx)?;
-                prompts.push(prompt);
-                idx = end_idx;
-                idx += value[idx..]
-                    .chars()
-                    .take_while(|ch| ch.is_whitespace())
-                    .count();
-                match value[idx..].chars().next()? {
-                    ',' => idx += 1,
-                    ']' => return Some(prompts),
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        }
-    }
-}
-
-fn json_field_value_start(body: &str, field: &str) -> Option<usize> {
-    let marker = format!("\"{field}\"");
-    let marker_idx = body.find(&marker)?;
-    json_field_value_start_from(body, marker_idx, &marker)
-}
-
-fn json_field_value_start_from(body: &str, marker_idx: usize, marker: &str) -> Option<usize> {
-    let mut idx = marker_idx + marker.len();
-    idx += body[idx..]
-        .chars()
-        .take_while(|ch| ch.is_whitespace())
-        .count();
-    if body[idx..].chars().next()? != ':' {
-        return None;
-    }
-    idx += 1;
-    idx += body[idx..]
-        .chars()
-        .take_while(|ch| ch.is_whitespace())
-        .count();
-    Some(idx)
-}
-
-fn parse_json_string_at(input: &str, start_idx: usize) -> Option<(String, usize)> {
-    let mut chars = input[start_idx..].char_indices();
-    if chars.next()?.1 != '"' {
-        return None;
-    }
-    let mut out = String::new();
-    while let Some((relative_idx, ch)) = chars.next() {
-        match ch {
-            '"' => return Some((out, start_idx + relative_idx + ch.len_utf8())),
-            '\\' => {
-                let (_, escaped) = chars.next()?;
-                match escaped {
-                    '"' => out.push('"'),
-                    '\\' => out.push('\\'),
-                    '/' => out.push('/'),
-                    'b' => out.push('\u{0008}'),
-                    'f' => out.push('\u{000c}'),
-                    'n' => out.push('\n'),
-                    'r' => out.push('\r'),
-                    't' => out.push('\t'),
-                    'u' => return None,
-                    _ => return None,
-                }
-            }
-            ch if ch.is_control() => return None,
-            ch => out.push(ch),
-        }
-    }
-    None
 }
 
 fn serve_models_json(parsed: &ServeArgs) -> String {
@@ -10458,6 +10301,13 @@ flags\t\t: sse4_2 avx2
         assert_eq!(request.temperature, 0.0);
 
         let request = validate_api_completion_request(
+            r#"{"model":"tiny","prompt":"hello\nworld","max_tokens":4}"#,
+            &parsed,
+        )
+        .expect("escaped prompt should validate");
+        assert_eq!(request.prompts, vec!["hello\nworld"]);
+
+        let request = validate_api_completion_request(
             r#"{"model":"tiny","prompt":"hello","temperature":0.2}"#,
             &parsed,
         )
@@ -10488,6 +10338,13 @@ flags\t\t: sse4_2 avx2
 
         let err = validate_api_completion_request(r#""model":"tiny","prompt":"hello""#, &parsed)
             .expect_err("non-object body should fail");
+        assert_eq!(err.code, "invalid_json");
+
+        let err = validate_api_completion_request(
+            r#"{"model":"tiny","prompt":"hello"} trailing"#,
+            &parsed,
+        )
+        .expect_err("trailing JSON data should fail");
         assert_eq!(err.code, "invalid_json");
 
         let err = validate_api_completion_request(
@@ -10532,6 +10389,14 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(request.input_tokens, 4);
         assert_eq!(request.requested_output_tokens, 2);
+
+        let request = validate_api_chat_completion_request(
+            r#"{"model":"tiny","messages":[{"role":"user","content":"say \"hi\""}],"temperature":1e-1}"#,
+            &parsed,
+        )
+        .expect("escaped chat content and exponent temperature should validate");
+        assert_eq!(request.messages[0].content, "say \"hi\"");
+        assert_eq!(request.temperature, 0.1);
 
         let err = validate_api_chat_completion_request(
             r#"{"model":"tiny","messages":[{"role":"user","content":""}]}"#,
