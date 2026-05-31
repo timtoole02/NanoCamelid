@@ -43,6 +43,7 @@ Runs NanoCamelid's standard local validation gate:
   35. NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run
   36. cargo run -- --version
   37. ./scripts/install.sh --dry-run
+  38. ./scripts/install-systemd-user-service.sh --dry-run
 
 Target-dir resolution:
   1. CARGO_TARGET_DIR
@@ -203,7 +204,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- smoke --help; cargo run -- doctor --dry-run --json; cargo run -- serve --help; cargo run -- serve --dry-run; cargo run -- models --help; cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models inspect 1b --dry-run; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run"
+  echo "steps: cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; cargo run -- smoke --help; cargo run -- doctor --dry-run --json; cargo run -- serve --help; cargo run -- serve --dry-run; cargo run -- models --help; cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models inspect 1b --dry-run; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run; ./scripts/install-systemd-user-service.sh --dry-run"
   exit 0
 fi
 
@@ -955,3 +956,13 @@ echo "==> Checking installer dry run target-dir safety..."
 ./scripts/install.sh --dry-run
 expect_output "installer release target override" "release_target: aarch64-unknown-linux-gnu" env NANOCAMELID_RELEASE_TARGET=aarch64-unknown-linux-gnu ./scripts/install.sh --dry-run
 expect_output "installer dev mode skips release URL" "release_url: not used" ./scripts/install.sh --dev --dry-run
+
+echo "==> Checking systemd user service installer dry run..."
+./scripts/install-systemd-user-service.sh --dry-run
+expect_output "service installer dry-run status" "NanoCamelid systemd user service dry run" ./scripts/install-systemd-user-service.sh --dry-run
+expect_output "service installer default listen" "listen: http://127.0.0.1:8080" ./scripts/install-systemd-user-service.sh --dry-run
+expect_output "service installer hardening" "NoNewPrivileges=true" ./scripts/install-systemd-user-service.sh --dry-run
+expect_output "service installer localhost allowlist" "IPAddressAllow=localhost" ./scripts/install-systemd-user-service.sh --dry-run
+expect_output "service installer api key redacted state" "api_key_required: true" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --dry-run
+expect_no_output "service installer does not print api key" "redacted-test-key" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --dry-run
+expect_failure_output "service installer rejects bad port" "--port must be an integer from 1 to 65535" ./scripts/install-systemd-user-service.sh --port 0 --dry-run

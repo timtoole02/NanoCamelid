@@ -60,6 +60,14 @@ nanocamelid serve --dry-run
 nanocamelid serve --max-request-bytes 65536 --max-input-tokens 2048 --max-output-tokens 256 --dry-run
 ```
 
+For service mode on systemd Linux hosts, inspect and install the user service
+from a checkout or release archive:
+
+```bash
+./scripts/install-systemd-user-service.sh --dry-run
+./scripts/install-systemd-user-service.sh --enable-now
+```
+
 Run a local completion once the server is listening and a model is present:
 
 ```bash
@@ -123,6 +131,8 @@ arguments and environment controls.
   candidates.
 - [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md): v0.1 support status by
   product surface.
+- [docs/SERVICE_MODE.md](docs/SERVICE_MODE.md): systemd user-service install,
+  defaults, and hardening notes.
 - [docs/PRODUCT_HISTORY.md](docs/PRODUCT_HISTORY.md): detailed prototype
   history, Pi evidence, performance notes, and advanced launchers.
 - [docs/PI_PORTING.md](docs/PI_PORTING.md): Pi deployment and validation notes.

@@ -16,6 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts
 - `README.md`
 - `LICENSE`
 - `RELEASE_NOTES.md`
+- `scripts/install-systemd-user-service.sh`
 - `SHA256SUMS`
 
 ## Supported Models
@@ -26,6 +27,8 @@ See `docs/MODEL_CATALOG.md` and `docs/SUPPORT_MATRIX.md`.
 
 - Cluster mode remains experimental/labs until the single-node product path is complete.
 - Streamed API responses are planned after the first non-streaming local API server.
+- Service mode is supported for systemd user services; system services and launchd
+  are not claimed in v0.1.
 
 ## Validation Checklist
 

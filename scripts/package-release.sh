@@ -52,7 +52,7 @@ if [[ "$dry_run" == "1" ]]; then
   echo "dist_dir: $dist_dir"
   echo "cargo_target_dir: $target_dir"
   echo "artifact: $dist_dir/$package_name.tar.gz"
-  echo "steps: cargo build --release --bins; stage binary README LICENSE RELEASE_NOTES; tar; sha256"
+  echo "steps: cargo build --release --bins; stage binary README LICENSE RELEASE_NOTES service installer; tar; sha256"
   exit 0
 fi
 
@@ -71,6 +71,8 @@ cp "$binary" "$stage_dir/nanocamelid"
 cp "$repo_root/README.md" "$stage_dir/README.md"
 cp "$repo_root/LICENSE" "$stage_dir/LICENSE"
 cp "$repo_root/RELEASE_NOTES.md" "$stage_dir/RELEASE_NOTES.md"
+mkdir -p "$stage_dir/scripts"
+cp "$repo_root/scripts/install-systemd-user-service.sh" "$stage_dir/scripts/install-systemd-user-service.sh"
 
 (
   cd "$dist_dir"

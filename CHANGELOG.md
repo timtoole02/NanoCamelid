@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added `scripts/install-systemd-user-service.sh`, release-package staging for
+  the service installer, `docs/SERVICE_MODE.md`, and validation coverage for
+  the loopback-only systemd user-service dry run.
 - Wired `/v1/chat/completions` to bounded local chat-template generation with
   model id/alias/path resolution and OpenAI-shaped chat-completion JSON
   responses.
