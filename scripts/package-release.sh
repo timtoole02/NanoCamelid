@@ -62,7 +62,7 @@ if [[ "$dry_run" == "1" ]]; then
   echo "version_manifest: $stage_dir/VERSION"
   echo "cargo_command: cargo build --release --bins --target $target_triple"
   echo "binary: $target_dir/$target_triple/release/nanocamelid"
-  echo "steps: cargo build --release --bins --target $target_triple; stage binary VERSION README docs LICENSE RELEASE_NOTES service installer; tar; sha256"
+  echo "steps: cargo build --release --bins --target $target_triple; stage binary VERSION README docs LICENSE CHANGELOG RELEASE_NOTES service installer; tar; sha256"
   exit 0
 fi
 
@@ -82,6 +82,7 @@ printf '%s\n' "$version_tag" > "$stage_dir/VERSION"
 cp "$repo_root/README.md" "$stage_dir/README.md"
 cp -R "$repo_root/docs" "$stage_dir/docs"
 cp "$repo_root/LICENSE" "$stage_dir/LICENSE"
+cp "$repo_root/CHANGELOG.md" "$stage_dir/CHANGELOG.md"
 cp "$repo_root/RELEASE_NOTES.md" "$stage_dir/RELEASE_NOTES.md"
 mkdir -p "$stage_dir/scripts"
 cp "$repo_root/scripts/install-systemd-user-service.sh" "$stage_dir/scripts/install-systemd-user-service.sh"

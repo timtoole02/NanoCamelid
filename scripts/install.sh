@@ -215,7 +215,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$install_mode" == "source" || "$install_mode" == "dev" ]]; then
     echo "steps: ensure git and cargo; clone/update repo; cargo build --release; link nanocamelid"
   else
-    echo "steps: ensure curl and tar; download release tarball and SHA256SUMS; verify checksum; verify VERSION manifest and nanocamelid --version; install bundled README docs service script and nanocamelid"
+    echo "steps: ensure curl and tar; download release tarball and SHA256SUMS; verify checksum; verify VERSION manifest and nanocamelid --version; install bundled README docs changelog release notes service script and nanocamelid"
   fi
   exit 0
 fi

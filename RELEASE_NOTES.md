@@ -17,6 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/timtoole02/NanoCamelid/main/scripts
 - `README.md`
 - `docs/`
 - `LICENSE`
+- `CHANGELOG.md`
 - `RELEASE_NOTES.md`
 - `scripts/install-systemd-user-service.sh`
 - `SHA256SUMS`

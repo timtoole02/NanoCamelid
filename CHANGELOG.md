@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added `CHANGELOG.md` to versioned release archives and release install
+  companion files so packaged installs carry both per-release notes and the
+  project change history.
 - Hardened `nanocamelid serve` and the systemd user-service installer so
   unauthenticated API serving remains loopback-only; non-loopback binds now
   require `--api-key` or `NANOCAMELID_API_KEY`.
