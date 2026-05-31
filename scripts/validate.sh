@@ -1222,3 +1222,4 @@ expect_no_output "service installer does not print api key" "redacted-test-key" 
 expect_failure_output "service installer rejects bad port" "--port must be an integer from 1 to 65535" ./scripts/install-systemd-user-service.sh --port 0 --dry-run
 expect_failure_output "service installer rejects unauthenticated network bind" "--host outside loopback requires --api-key or NANOCAMELID_API_KEY" ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
 expect_output "service installer allows authenticated network bind" "listen: http://0.0.0.0:8080" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
+expect_output "service installer network bind allowlist" "IPAddressAllow=any" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run

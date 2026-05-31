@@ -248,6 +248,10 @@ api_key_required=false
 if [[ -n "$api_key" ]]; then
   api_key_required=true
 fi
+ip_address_allow="localhost"
+if ! is_loopback_host "$host"; then
+  ip_address_allow="any"
+fi
 
 exec_start="$(systemd_quote "$binary") serve --host $(systemd_quote "$host") --port $(systemd_quote "$port") --model-dir $(systemd_quote "$model_dir") --max-request-bytes $(systemd_quote "$max_request_bytes") --max-input-tokens $(systemd_quote "$max_input_tokens") --max-output-tokens $(systemd_quote "$max_output_tokens")"
 readonly_model_path="-$(systemd_quote "$model_dir")"
@@ -272,7 +276,7 @@ printf -v unit_content '%s\n' \
   "ReadOnlyPaths=$readonly_model_path" \
   "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" \
   "IPAddressDeny=any" \
-  "IPAddressAllow=localhost" \
+  "IPAddressAllow=$ip_address_allow" \
   "" \
   "[Install]" \
   "WantedBy=default.target"
@@ -296,6 +300,7 @@ if [[ "$dry_run" == "1" ]]; then
   echo "listen: http://$host:$port"
   echo "model_dir: $model_dir"
   echo "api_key_required: $api_key_required"
+  echo "ip_address_allow: $ip_address_allow"
   echo "enable_now: $enable_now"
   echo "exec_start: $exec_start"
   echo "unit:"
