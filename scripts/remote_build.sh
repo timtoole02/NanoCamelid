@@ -243,6 +243,10 @@ is_disabled_toggle() {
   [[ "$1" == "0" || "$1" == "false" || "$1" == "no" || "$1" == "off" ]]
 }
 
+is_enabled_toggle() {
+  [[ "$1" == "1" || "$1" == "true" || "$1" == "yes" || "$1" == "on" ]]
+}
+
 require_toggle() {
   local label="$1"
   local value="$2"
@@ -287,11 +291,11 @@ print_readiness_command() {
 }
 
 prefill_bench_enabled() {
-  ! is_disabled_toggle "$REMOTE_PREFILL_BENCH_LOWER"
+  is_enabled_toggle "$REMOTE_PREFILL_BENCH_LOWER"
 }
 
 evidence_enabled() {
-  ! is_disabled_toggle "$REMOTE_EVIDENCE_LOWER"
+  is_enabled_toggle "$REMOTE_EVIDENCE_LOWER"
 }
 
 remote_smoke_disabled() {
@@ -654,7 +658,7 @@ ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "${PI_USER}@${PI_HOST}" \
   }
 
   is_enabled_toggle() {
-    ! is_disabled_toggle "$1"
+    [ "$1" = "1" ] || [ "$1" = "true" ] || [ "$1" = "yes" ] || [ "$1" = "on" ]
   }
 
   if is_disabled_toggle "$REMOTE_SMOKE_ENABLED_LOWER"; then
