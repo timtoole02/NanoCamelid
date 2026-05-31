@@ -345,7 +345,9 @@ check_stable_cli_help() {
 
 check_public_hygiene() {
   local public_paths=(README.md docs scripts/deploy.sh)
+  local public_doc_paths=(README.md docs)
   local matches
+  local doc_matches
   local status
 
   set +e
@@ -368,6 +370,33 @@ check_public_hygiene() {
   if [[ "$status" -gt 1 ]]; then
     echo "Public hygiene scan failed." >&2
     echo "$matches" >&2
+    exit "$status"
+  fi
+
+  set +e
+  doc_matches="$(
+    rg -n \
+      -e '\b[A-Za-z0-9._-]+\.local\b' \
+      -e '(^|[^A-Za-z0-9_-])raspberrypi([^A-Za-z0-9_-]|$)' \
+      -e '(^|[[:space:]])ssh[[:space:]]+[^<[:space:]]' \
+      -e '\.ssh/' \
+      -e 'BEGIN [A-Z ]*PRIVATE KEY' \
+      -e 'PRIVATE KEY' \
+      -e 'ssh-rsa[[:space:]]' \
+      -e 'ssh-ed25519[[:space:]]' \
+      "${public_doc_paths[@]}"
+  )"
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
+    echo "Public docs contain local hostnames, raw SSH commands, or key material:" >&2
+    echo "$doc_matches" >&2
+    exit 1
+  fi
+  if [[ "$status" -gt 1 ]]; then
+    echo "Public docs hostname/key hygiene scan failed." >&2
+    echo "$doc_matches" >&2
     exit "$status"
   fi
 }
