@@ -265,22 +265,44 @@ expect_output() {
   local description="$1"
   local expected="$2"
   shift 2
+  local output_file
 
-  if ! "$@" | grep -F -- "$expected" >/dev/null; then
-    echo "Expected output missing for $description: $expected" >&2
+  output_file="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-validate-output.XXXXXX")"
+  if ! "$@" >"$output_file" 2>&1; then
+    echo "Command failed for $description" >&2
+    cat "$output_file" >&2
+    rm -f "$output_file"
     exit 1
   fi
+  if ! grep -F -- "$expected" "$output_file" >/dev/null; then
+    echo "Expected output missing for $description: $expected" >&2
+    cat "$output_file" >&2
+    rm -f "$output_file"
+    exit 1
+  fi
+  rm -f "$output_file"
 }
 
 expect_no_output() {
   local description="$1"
   local unexpected="$2"
   shift 2
+  local output_file
 
-  if "$@" | grep -F "$unexpected" >/dev/null; then
-    echo "Unexpected output found for $description: $unexpected" >&2
+  output_file="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-validate-output.XXXXXX")"
+  if ! "$@" >"$output_file" 2>&1; then
+    echo "Command failed for $description" >&2
+    cat "$output_file" >&2
+    rm -f "$output_file"
     exit 1
   fi
+  if grep -F "$unexpected" "$output_file" >/dev/null; then
+    echo "Unexpected output found for $description: $unexpected" >&2
+    cat "$output_file" >&2
+    rm -f "$output_file"
+    exit 1
+  fi
+  rm -f "$output_file"
 }
 
 expect_output_count() {
@@ -444,6 +466,8 @@ check_local_api_smoke() {
     -H "Authorization: Bearer $api_key" "$base_url/metrics" || true)"
   expect_http_status "metrics endpoint" "200" "$status" "$api_smoke_body"
   expect_file_contains "metrics endpoint" "nanocamelid_requests_total" "$api_smoke_body"
+  expect_file_contains "metrics endpoint" "nanocamelid_responses_total{status=\"200\"}" "$api_smoke_body"
+  expect_file_contains "metrics endpoint" "nanocamelid_responses_total{status=\"401\"} 1" "$api_smoke_body"
   expect_file_contains "metrics endpoint" "nanocamelid_max_output_tokens 8" "$api_smoke_body"
 
   status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
@@ -518,7 +542,6 @@ echo "==> Checking doctor, serve, and models CLI contract..."
 expect_output "probe help documents no-arg usage" "nanocamelid probe" cargo run -- probe --help
 expect_failure_output "probe rejects extra argument" "unexpected probe argument" cargo run -- probe extra
 expect_failure_output "probe rejects unknown option" "unknown probe option" cargo run -- probe --json
-cargo run -- doctor --dry-run --json
 expect_output "doctor dry-run status" "NanoCamelid doctor" cargo run -- doctor --dry-run
 expect_output "doctor json output" "\"command\":\"doctor\"" cargo run -- doctor --dry-run --json
 expect_output "serve help documents default loopback" "default bind address is 127.0.0.1:8080" cargo run -- serve --help

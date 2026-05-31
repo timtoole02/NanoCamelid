@@ -3717,18 +3717,20 @@ fn run_serve(parsed: ServeArgs) -> ExitCode {
     println!("endpoints: /health /v1/models /v1/completions /v1/chat/completions /metrics");
 
     let started = Instant::now();
-    let mut request_count = 0usize;
+    let mut metrics = ServeMetrics::default();
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                request_count = request_count.saturating_add(1);
-                if let Err(err) = handle_serve_connection(
+                metrics.requests_total = metrics.requests_total.saturating_add(1);
+                match handle_serve_connection(
                     &mut stream,
                     &parsed,
-                    request_count,
+                    &metrics,
                     started.elapsed().as_secs_f64(),
                 ) {
-                    eprintln!("serve request failed: {err}");
+                    Ok(Some(status)) => metrics.record_response(status),
+                    Ok(None) => {}
+                    Err(err) => eprintln!("serve request failed: {err}"),
                 }
             }
             Err(err) => eprintln!("serve accept failed: {err}"),
@@ -3841,19 +3843,62 @@ struct ServeApiError {
     message: &'static str,
 }
 
+#[derive(Default, Debug, PartialEq, Eq)]
+struct ServeMetrics {
+    requests_total: usize,
+    responses_200: usize,
+    responses_400: usize,
+    responses_401: usize,
+    responses_404: usize,
+    responses_405: usize,
+    responses_413: usize,
+    responses_500: usize,
+    responses_other: usize,
+}
+
+impl ServeMetrics {
+    fn record_response(&mut self, status: u16) {
+        let counter = match status {
+            200 => &mut self.responses_200,
+            400 => &mut self.responses_400,
+            401 => &mut self.responses_401,
+            404 => &mut self.responses_404,
+            405 => &mut self.responses_405,
+            413 => &mut self.responses_413,
+            500 => &mut self.responses_500,
+            _ => &mut self.responses_other,
+        };
+        *counter = counter.saturating_add(1);
+    }
+
+    fn response_count_for_status(&self, status: u16) -> usize {
+        match status {
+            200 => self.responses_200,
+            400 => self.responses_400,
+            401 => self.responses_401,
+            404 => self.responses_404,
+            405 => self.responses_405,
+            413 => self.responses_413,
+            500 => self.responses_500,
+            _ => self.responses_other,
+        }
+    }
+}
+
 fn handle_serve_connection(
     stream: &mut TcpStream,
     parsed: &ServeArgs,
-    request_count: usize,
+    metrics: &ServeMetrics,
     uptime_seconds: f64,
-) -> io::Result<()> {
+) -> io::Result<Option<u16>> {
     let Some(request_text) = read_http_request_text(stream, parsed.max_request_bytes)? else {
-        return Ok(());
+        return Ok(None);
     };
     let request_text = match request_text {
         Ok(request_text) => request_text,
         Err(err) => {
-            return write_json_error(stream, err.status, err.error_type, err.code, err.message);
+            return write_json_error(stream, err.status, err.error_type, err.code, err.message)
+                .map(|()| Some(err.status));
         }
     };
 
@@ -3864,7 +3909,8 @@ fn handle_serve_connection(
             "invalid_request_error",
             "bad_request",
             "Request line is missing or invalid.",
-        );
+        )
+        .map(|()| Some(400));
     };
 
     if let Some(api_key) = &parsed.api_key {
@@ -3876,7 +3922,8 @@ fn handle_serve_connection(
                 "authentication_error",
                 "unauthorized",
                 "Missing or invalid bearer token.",
-            );
+            )
+            .map(|()| Some(401));
         }
     }
 
@@ -3890,21 +3937,26 @@ fn handle_serve_connection(
                 json_string(&parsed.model_dir),
                 parsed.api_key.is_some()
             ),
-        ),
-        ("GET", "/v1/models") => write_json_response(stream, 200, &serve_models_json(parsed)),
+        )
+        .map(|()| Some(200)),
+        ("GET", "/v1/models") => {
+            write_json_response(stream, 200, &serve_models_json(parsed)).map(|()| Some(200))
+        }
         ("GET", "/metrics") => write_text_response(
             stream,
             200,
-            &serve_metrics_text(request_count, uptime_seconds, parsed),
+            &serve_metrics_text(metrics, uptime_seconds, parsed),
             "text/plain; charset=utf-8",
-        ),
+        )
+        .map(|()| Some(200)),
         ("POST", "/v1/completions") => {
             match validate_api_completion_request(&request.body, parsed)
                 .and_then(|request| serve_completion_response_json(&request, parsed))
             {
-                Ok(response) => write_json_response(stream, 200, &response),
+                Ok(response) => write_json_response(stream, 200, &response).map(|()| Some(200)),
                 Err(err) => {
                     write_json_error(stream, err.status, err.error_type, err.code, err.message)
+                        .map(|()| Some(err.status))
                 }
             }
         }
@@ -3912,9 +3964,10 @@ fn handle_serve_connection(
             match validate_api_chat_completion_request(&request.body, parsed)
                 .and_then(|request| serve_chat_completion_response_json(&request, parsed))
             {
-                Ok(response) => write_json_response(stream, 200, &response),
+                Ok(response) => write_json_response(stream, 200, &response).map(|()| Some(200)),
                 Err(err) => {
                     write_json_error(stream, err.status, err.error_type, err.code, err.message)
+                        .map(|()| Some(err.status))
                 }
             }
         }
@@ -3924,14 +3977,16 @@ fn handle_serve_connection(
             "invalid_request_error",
             "method_not_allowed",
             "Use POST for completion endpoints.",
-        ),
+        )
+        .map(|()| Some(405)),
         _ => write_json_error(
             stream,
             404,
             "invalid_request_error",
             "not_found",
             "Unknown NanoCamelid API endpoint.",
-        ),
+        )
+        .map(|()| Some(404)),
     }
 }
 
@@ -4719,10 +4774,32 @@ fn api_chat_completion_response_json(model: &str, choices: &[ApiCompletionChoice
     )
 }
 
-fn serve_metrics_text(request_count: usize, uptime_seconds: f64, parsed: &ServeArgs) -> String {
+fn serve_metrics_text(metrics: &ServeMetrics, uptime_seconds: f64, parsed: &ServeArgs) -> String {
     format!(
-        "nanocamelid_requests_total {}\nnanocamelid_uptime_seconds {:.3}\nnanocamelid_max_request_bytes {}\nnanocamelid_max_input_tokens {}\nnanocamelid_max_output_tokens {}\n",
-        request_count,
+        concat!(
+            "nanocamelid_requests_total {}\n",
+            "nanocamelid_responses_total{{status=\"200\"}} {}\n",
+            "nanocamelid_responses_total{{status=\"400\"}} {}\n",
+            "nanocamelid_responses_total{{status=\"401\"}} {}\n",
+            "nanocamelid_responses_total{{status=\"404\"}} {}\n",
+            "nanocamelid_responses_total{{status=\"405\"}} {}\n",
+            "nanocamelid_responses_total{{status=\"413\"}} {}\n",
+            "nanocamelid_responses_total{{status=\"500\"}} {}\n",
+            "nanocamelid_responses_total{{status=\"other\"}} {}\n",
+            "nanocamelid_uptime_seconds {:.3}\n",
+            "nanocamelid_max_request_bytes {}\n",
+            "nanocamelid_max_input_tokens {}\n",
+            "nanocamelid_max_output_tokens {}\n",
+        ),
+        metrics.requests_total,
+        metrics.response_count_for_status(200),
+        metrics.response_count_for_status(400),
+        metrics.response_count_for_status(401),
+        metrics.response_count_for_status(404),
+        metrics.response_count_for_status(405),
+        metrics.response_count_for_status(413),
+        metrics.response_count_for_status(500),
+        metrics.response_count_for_status(0),
         uptime_seconds,
         parsed.max_request_bytes,
         parsed.max_input_tokens,
@@ -9682,8 +9759,8 @@ mod tests {
         DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, DoctorArgs, GenerationStatusJson,
         HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
         ModelEntry, ModelsAction, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
-        ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs, Smoke1BArgs, SmokeDefaults,
-        SmokeKind, TRACE_ENV, TuiCommand, api_chat_completion_response_json,
+        ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs, ServeMetrics, Smoke1BArgs,
+        SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, api_chat_completion_response_json,
         api_completion_response_json, classify_model_quantization, classify_model_target,
         cpu_features, cpu_governor_recommendation, cpu_model, default_llama32_1b_model_path,
         default_llama32_3b_model_path, device_model, evidence_1b_status_json,
@@ -10650,8 +10727,22 @@ flags\t\t: sse4_2 avx2
             max_output_tokens: 64,
             dry_run: false,
         };
-        let metrics = serve_metrics_text(3, 1.25, &parsed);
-        assert!(metrics.contains("nanocamelid_requests_total 3"));
+        let mut counters = ServeMetrics {
+            requests_total: 5,
+            ..ServeMetrics::default()
+        };
+        counters.record_response(200);
+        counters.record_response(200);
+        counters.record_response(401);
+        counters.record_response(405);
+        counters.record_response(418);
+
+        let metrics = serve_metrics_text(&counters, 1.25, &parsed);
+        assert!(metrics.contains("nanocamelid_requests_total 5"));
+        assert!(metrics.contains("nanocamelid_responses_total{status=\"200\"} 2"));
+        assert!(metrics.contains("nanocamelid_responses_total{status=\"401\"} 1"));
+        assert!(metrics.contains("nanocamelid_responses_total{status=\"405\"} 1"));
+        assert!(metrics.contains("nanocamelid_responses_total{status=\"other\"} 1"));
         assert!(metrics.contains("nanocamelid_uptime_seconds 1.250"));
         assert!(metrics.contains("nanocamelid_max_request_bytes 4096"));
         assert!(metrics.contains("nanocamelid_max_input_tokens 1024"));

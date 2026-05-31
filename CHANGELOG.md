@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added local API response-status counters to `/metrics`, documented the
+  Prometheus-style output, and extended the live API validation smoke to verify
+  status-bucket metrics.
 - Added `docs/API.md` as the public v0.1 local API reference covering server
   defaults, auth, request/output caps, `/health`, `/v1/models`,
   `/v1/completions`, `/v1/chat/completions`, `/metrics`, model id resolution,

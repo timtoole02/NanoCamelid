@@ -45,7 +45,7 @@ Authorization: Bearer <token>
 | `GET` | `/v1/models` | Models found in the configured model directory |
 | `POST` | `/v1/completions` | OpenAI-shaped text completion response |
 | `POST` | `/v1/chat/completions` | OpenAI-shaped chat completion response |
-| `GET` | `/metrics` | Prometheus-style counters and cap settings |
+| `GET` | `/metrics` | Prometheus-style request, response-status, uptime, and cap metrics |
 
 ### Health
 
@@ -189,11 +189,23 @@ Response:
 
 ```text
 nanocamelid_requests_total 3
+nanocamelid_responses_total{status="200"} 2
+nanocamelid_responses_total{status="400"} 0
+nanocamelid_responses_total{status="401"} 1
+nanocamelid_responses_total{status="404"} 0
+nanocamelid_responses_total{status="405"} 0
+nanocamelid_responses_total{status="413"} 0
+nanocamelid_responses_total{status="500"} 0
+nanocamelid_responses_total{status="other"} 0
 nanocamelid_uptime_seconds 1.250
 nanocamelid_max_request_bytes 65536
 nanocamelid_max_input_tokens 2048
 nanocamelid_max_output_tokens 256
 ```
+
+`nanocamelid_requests_total` includes the in-flight `/metrics` request.
+Response status counters report responses completed before the current metrics
+body was written.
 
 ## Errors
 
