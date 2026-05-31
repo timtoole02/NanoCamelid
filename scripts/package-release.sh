@@ -10,7 +10,7 @@ target_triple="${NANOCAMELID_RELEASE_TARGET:-aarch64-unknown-linux-gnu}"
 package_name="nanocamelid-${version_tag}-${target_triple}"
 dist_dir="${NANOCAMELID_DIST_DIR:-$repo_root/dist}"
 stage_dir="$dist_dir/$package_name"
-target_dir="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-$repo_root/target}}"
+target_dir="${CARGO_TARGET_DIR:-${NANOCAMELID_TARGET_DIR:-}}"
 
 usage() {
   cat <<'USAGE'
@@ -24,7 +24,11 @@ Env:
   NANOCAMELID_VERSION         Override package version; default Cargo.toml version
   NANOCAMELID_RELEASE_TARGET  Override artifact target name; default aarch64-unknown-linux-gnu
   NANOCAMELID_DIST_DIR        Output directory; default ./dist
-  CARGO_TARGET_DIR            Cargo target directory
+  CARGO_TARGET_DIR            Cargo target directory; otherwise Cargo metadata is used
+
+On macOS, set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to an external
+/Volumes path that resolves back under /Volumes, so release packaging does not
+create Cargo artifacts on the internal disk.
 USAGE
 }
 
@@ -52,6 +56,90 @@ if [[ "$version" != "$cargo_version" ]]; then
   exit 2
 fi
 
+resolve_existing_prefix() {
+  local path="$1"
+  local suffix=""
+  local parent
+
+  while [[ ! -e "$path" ]]; do
+    parent="$(dirname "$path")"
+    if [[ "$parent" == "$path" ]]; then
+      printf '%s%s\n' "$path" "$suffix"
+      return
+    fi
+    suffix="/$(basename "$path")$suffix"
+    path="$parent"
+  done
+
+  if [[ -d "$path" ]]; then
+    (
+      cd -P -- "$path"
+      local resolved_pwd="$PWD"
+      if [[ "$resolved_pwd" == //* ]]; then
+        resolved_pwd="/${resolved_pwd#//}"
+      fi
+      if [[ "$resolved_pwd" == "/" ]]; then
+        printf '/%s\n' "${suffix#/}"
+      else
+        printf '%s%s\n' "$resolved_pwd" "$suffix"
+      fi
+    )
+  else
+    printf '%s%s\n' "$path" "$suffix"
+  fi
+}
+
+validate_target_dir() {
+  local dir="$1"
+
+  case "$dir" in
+    target|target/*|./target|./target/*)
+      echo "Refusing to use a relative repo-local Cargo target dir: $dir" >&2
+      echo "Set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to an external path." >&2
+      exit 2
+      ;;
+  esac
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    case "$dir" in
+      /Volumes/*) ;;
+      *)
+        echo "Refusing to use a non-external Cargo target dir on macOS: $dir" >&2
+        echo "Set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to a /Volumes path." >&2
+        exit 2
+        ;;
+    esac
+
+    local resolved_target_dir
+    resolved_target_dir="$(resolve_existing_prefix "$dir")"
+    case "$resolved_target_dir" in
+      /Volumes/*) ;;
+      *)
+        echo "Refusing to use a Cargo target dir that resolves outside /Volumes on macOS: $dir -> $resolved_target_dir" >&2
+        echo "Set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR to a real external drive path." >&2
+        exit 2
+        ;;
+    esac
+  fi
+}
+
+resolve_cargo_metadata_target_dir() {
+  local metadata
+  metadata="$(cargo metadata --no-deps --format-version 1)"
+  printf '%s\n' "$metadata" | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+if [[ -z "$target_dir" ]]; then
+  if ! target_dir="$(resolve_cargo_metadata_target_dir)" || [[ -z "$target_dir" ]]; then
+    echo "Could not resolve Cargo target directory." >&2
+    echo "Set CARGO_TARGET_DIR or NANOCAMELID_TARGET_DIR explicitly." >&2
+    exit 2
+  fi
+fi
+
+validate_target_dir "$target_dir"
+expected_version_output="nanocamelid $version"
+
 if [[ "$dry_run" == "1" ]]; then
   echo "NanoCamelid release package dry run"
   echo "version: $version_tag"
@@ -62,7 +150,8 @@ if [[ "$dry_run" == "1" ]]; then
   echo "version_manifest: $stage_dir/VERSION"
   echo "cargo_command: cargo build --release --bins --target $target_triple"
   echo "binary: $target_dir/$target_triple/release/nanocamelid"
-  echo "steps: cargo build --release --bins --target $target_triple; stage binary VERSION README docs LICENSE CHANGELOG RELEASE_NOTES service installer; tar; sha256"
+  echo "version_check: nanocamelid --version == $expected_version_output"
+  echo "steps: cargo build --release --bins --target $target_triple; verify nanocamelid --version; stage binary VERSION README docs LICENSE CHANGELOG RELEASE_NOTES service installer; tar; sha256"
   exit 0
 fi
 
@@ -74,6 +163,11 @@ CARGO_TARGET_DIR="$target_dir" cargo build --release --bins --target "$target_tr
 binary="$target_dir/$target_triple/release/nanocamelid"
 if [[ ! -x "$binary" ]]; then
   echo "Release binary not found at $binary" >&2
+  exit 1
+fi
+actual_version_output="$("$binary" --version 2>/dev/null || true)"
+if [[ "$actual_version_output" != "$expected_version_output" ]]; then
+  echo "Release binary version mismatch: expected '$expected_version_output', got '${actual_version_output:-<no output>}'" >&2
   exit 1
 fi
 

@@ -1219,8 +1219,10 @@ expect_output "release package version manifest" "version_manifest: " ./scripts/
 expect_output "release package explicit cargo target" "cargo_command: cargo build --release --bins --target aarch64-unknown-linux-gnu" ./scripts/package-release.sh --dry-run
 expect_output "release package target-scoped binary" "binary: " ./scripts/package-release.sh --dry-run
 expect_output "release package target-scoped binary path" "/aarch64-unknown-linux-gnu/release/nanocamelid" ./scripts/package-release.sh --dry-run
+expect_output "release package version check" "version_check: nanocamelid --version == nanocamelid 0.1.0" ./scripts/package-release.sh --dry-run
 expect_output "release package stages changelog" "stage binary VERSION README docs LICENSE CHANGELOG RELEASE_NOTES service installer" ./scripts/package-release.sh --dry-run
 expect_failure_output "release package rejects version mismatch" "does not match Cargo.toml version" env NANOCAMELID_VERSION=v9.9.9 ./scripts/package-release.sh --dry-run
+expect_failure_output "release package rejects relative target dir" "Refusing to use a relative repo-local Cargo target dir" env CARGO_TARGET_DIR=target ./scripts/package-release.sh --dry-run
 
 echo "==> Checking systemd user service installer dry run..."
 ./scripts/install-systemd-user-service.sh --dry-run
