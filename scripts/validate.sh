@@ -639,6 +639,8 @@ expect_failure "generate 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH
 expect_failure "generate 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- generate 1b --dry-run
 expect_failure "generate 1b invalid alias model path" cargo run -- generate 1b /models/not-a-gguf --dry-run
+expect_failure_output "generate invalid explicit model path" "model argument must be a .gguf path" cargo run -- generate /models/not-a-gguf hi --dry-run
+expect_failure_output "generate prompt without env needs model" "missing GGUF model path" cargo run -- generate "Say hello" --dry-run
 
 echo "==> Checking 1B chat CLI dry run..."
 cargo run -- chat 1b --dry-run
@@ -659,6 +661,8 @@ expect_failure "chat 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad
 expect_failure "chat 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- chat 1b --dry-run
 expect_failure "chat 1b invalid alias model path" cargo run -- chat 1b /models/not-a-gguf --dry-run
+expect_failure_output "chat invalid explicit model path" "model argument must be a .gguf path" cargo run -- chat /models/not-a-gguf hi --dry-run
+expect_failure_output "chat prompt without env needs model" "missing GGUF model path" cargo run -- chat "Say hello" --dry-run
 
 echo "==> Checking 1B smoke CLI dry run..."
 cargo run -- smoke 1b --dry-run
@@ -791,6 +795,7 @@ expect_failure "tui 1b invalid prefill batch" env NANOCAMELID_PREFILL_BATCH=bad 
 expect_failure "tui 1b invalid smoke env model path" env NANOCAMELID_SMOKE_GGUF=not-a-model cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid env model path" env -u NANOCAMELID_SMOKE_GGUF NANOCAMELID_MODEL_GGUF=not-a-model cargo run -- tui 1b --dry-run
 expect_failure "tui 1b invalid alias model path" cargo run -- tui 1b /models/not-a-gguf --dry-run
+expect_failure_output "tui invalid explicit model path" "model argument must be a .gguf path" cargo run -- tui /models/not-a-gguf --dry-run
 
 echo "==> Checking 1B prefill benchmark CLI dry run..."
 cargo run -- bench 1b --dry-run

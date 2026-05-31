@@ -2246,6 +2246,7 @@ fn parse_tui_args_with_env_and_alias_env_and_workspace(
             env_path: "model env path must be a .gguf path",
             alias_env_path: "model alias env path must be a .gguf path",
             missing: "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
+            explicit_path: "model argument must be a .gguf path",
             alias_path: "model alias argument must not be a path; use `tui <model.gguf>` for explicit models",
         },
     )?;
@@ -2327,6 +2328,7 @@ fn parse_generate_args_with_env_and_alias_env_and_workspace(
             env_path: "model env path must be a .gguf path",
             alias_env_path: "model alias env path must be a .gguf path",
             missing: "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF",
+            explicit_path: "model argument must be a .gguf path",
             alias_path: "model alias prompt must not look like a model path; omit the alias when passing an explicit model",
         },
     )?;
@@ -2426,7 +2428,8 @@ fn parse_model_path_position(
                 ))
             }
         }
-        (Some(path), None) => Ok((path.clone(), "explicit argument", 1, false)),
+        (Some(path), None) if looks_like_model_path_argument(path) => Err(errors.explicit_path),
+        (Some(_), None) => Err(errors.missing),
         (_, Some((path, source))) => {
             if !looks_like_gguf_path(&path) {
                 return Err(errors.env_path);
@@ -2442,6 +2445,7 @@ struct ModelPathPositionErrors {
     env_path: &'static str,
     alias_env_path: &'static str,
     missing: &'static str,
+    explicit_path: &'static str,
     alias_path: &'static str,
 }
 
@@ -11706,6 +11710,28 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn generate_args_reject_missing_or_non_gguf_explicit_model_without_env() {
+        let missing =
+            parse_generate_args_with_env(&["Say hello".to_owned(), "--dry-run".to_owned()], None)
+                .expect_err("prompt-only generate dry-run should need a model without env");
+        assert_eq!(
+            missing,
+            "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF"
+        );
+
+        let non_gguf = parse_generate_args_with_env(
+            &[
+                "/models/not-a-gguf".to_owned(),
+                "Hello".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("path-like non-GGUF generate model should fail");
+        assert_eq!(non_gguf, "model argument must be a .gguf path");
+    }
+
+    #[test]
     fn generate_args_reject_invalid_temp_token_count_and_extra_args() {
         let bad_temp = parse_generate_args_with_env(
             &[
@@ -11906,6 +11932,17 @@ flags\t\t: sse4_2 avx2
             err,
             "missing GGUF model path; pass one or set NANOCAMELID_MODEL_GGUF"
         );
+    }
+
+    #[test]
+    fn tui_args_reject_non_gguf_explicit_model_without_env() {
+        let err = parse_tui_args_with_env(
+            &["/models/not-a-gguf".to_owned(), "--dry-run".to_owned()],
+            None,
+        )
+        .expect_err("path-like non-GGUF TUI model should fail");
+
+        assert_eq!(err, "model argument must be a .gguf path");
     }
 
     #[test]
