@@ -19,6 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install release target
+        run: rustup target add aarch64-unknown-linux-gnu
       - name: Package release
         env:
           NANOCAMELID_VERSION: ${{ github.event.inputs.version || github.ref_name }}

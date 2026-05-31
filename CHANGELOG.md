@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Made release packaging build the named release target explicitly
+  (`aarch64-unknown-linux-gnu` by default), stage the target-scoped binary, and
+  validate that dry-run contract.
 - Promoted the local API server support matrix row to supported and expanded
   live validation coverage for structured POST errors on completion and chat
   endpoints, including output-cap enforcement.

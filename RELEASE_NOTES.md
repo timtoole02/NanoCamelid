@@ -36,5 +36,6 @@ See `docs/MODEL_CATALOG.md` and `docs/SUPPORT_MATRIX.md`.
 - `cargo fmt -- --check`
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
-- `cargo build --release --bins`
+- `cargo build --release --bins --target aarch64-unknown-linux-gnu`
+- `./scripts/package-release.sh --dry-run`
 - `./scripts/validate.sh --dry-run`

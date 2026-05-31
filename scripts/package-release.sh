@@ -52,16 +52,18 @@ if [[ "$dry_run" == "1" ]]; then
   echo "dist_dir: $dist_dir"
   echo "cargo_target_dir: $target_dir"
   echo "artifact: $dist_dir/$package_name.tar.gz"
-  echo "steps: cargo build --release --bins; stage binary README docs LICENSE RELEASE_NOTES service installer; tar; sha256"
+  echo "cargo_command: cargo build --release --bins --target $target_triple"
+  echo "binary: $target_dir/$target_triple/release/nanocamelid"
+  echo "steps: cargo build --release --bins --target $target_triple; stage binary README docs LICENSE RELEASE_NOTES service installer; tar; sha256"
   exit 0
 fi
 
 rm -rf "$stage_dir"
 mkdir -p "$stage_dir" "$dist_dir"
 
-CARGO_TARGET_DIR="$target_dir" cargo build --release --bins
+CARGO_TARGET_DIR="$target_dir" cargo build --release --bins --target "$target_triple"
 
-binary="$target_dir/release/nanocamelid"
+binary="$target_dir/$target_triple/release/nanocamelid"
 if [[ ! -x "$binary" ]]; then
   echo "Release binary not found at $binary" >&2
   exit 1

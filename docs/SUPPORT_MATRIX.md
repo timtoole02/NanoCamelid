@@ -9,7 +9,7 @@ today. Model-row evidence and promotion rules live in
 | Surface | v0.1 status | Validation evidence |
 | --- | --- | --- |
 | Release installer | Supported for published aarch64 Linux releases | `scripts/install.sh` defaults to versioned GitHub release artifacts and verifies `SHA256SUMS`; dev/source mode is explicit |
-| Release package | Supported for aarch64 Linux | GitHub release workflow and `scripts/package-release.sh` package the binary, README, license, release notes, and checksums |
+| Release package | Supported for aarch64 Linux | GitHub release workflow and `scripts/package-release.sh` build the explicit `aarch64-unknown-linux-gnu` target, then package the binary, README, license, release notes, and checksums |
 | Version output | Supported | `nanocamelid --version` prints the Cargo package version and is covered by validation |
 | Stable CLI contract | Supported | `docs/CLI_CONTRACT.md` defines the v0.1 product command surface: `doctor`, `probe`, `models list`, `models scan`, `models inspect`, `ready`, `chat`, `tui`, and `serve`; compatibility commands remain available for validation and lab workflows |
 | Doctor preflight | Supported | `nanocamelid doctor` reports version, host summary, model directory, default 1B/3B paths, and next action without loading a GGUF |
