@@ -922,6 +922,10 @@ fn print_serve_usage() {
     println!("  POST /v1/chat/completions");
     println!("  GET  /metrics");
     println!();
+    println!(
+        "/v1/completions accepts a model id from /v1/models, a model filename/stem, 1b/3b aliases, or an explicit .gguf path."
+    );
+    println!();
     println!("Options:");
     println!("  --host <addr>                            Bind address, default {DEFAULT_API_HOST}");
     println!("  --port <port>                            Bind port, default {DEFAULT_API_PORT}");
@@ -3720,11 +3724,30 @@ struct HttpRequest {
     body: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct ValidatedApiCompletionRequest {
     model: String,
+    prompts: Vec<String>,
     input_tokens: usize,
     requested_output_tokens: usize,
+    temperature: f32,
+}
+
+#[derive(Debug, PartialEq)]
+struct ApiCompletionChoice {
+    index: usize,
+    text: String,
+    prompt_tokens: usize,
+    generated_tokens: usize,
+    finish_reason: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct ApiGenerationRuntime<'a> {
+    config: &'a model::LlamaModelConfig,
+    weights: &'a model::LlamaWeights,
+    tokenizer: &'a tokenizer::Tokenizer,
+    runtime_options: inference::LlamaRuntimeOptions,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -3792,17 +3815,16 @@ fn handle_serve_connection(
             &serve_metrics_text(request_count, uptime_seconds, parsed),
             "text/plain; charset=utf-8",
         ),
-        ("POST", "/v1/completions") => match validate_api_completion_request(&request.body, parsed)
-        {
-            Ok(_request) => write_json_error(
-                stream,
-                501,
-                "not_implemented_error",
-                "completion_runtime_not_wired",
-                "HTTP completion generation is not implemented yet; request JSON and caps were accepted. Use nanocamelid generate locally.",
-            ),
-            Err(err) => write_json_error(stream, err.status, err.error_type, err.code, err.message),
-        },
+        ("POST", "/v1/completions") => {
+            match validate_api_completion_request(&request.body, parsed)
+                .and_then(|request| serve_completion_response_json(&request, parsed))
+            {
+                Ok(response) => write_json_response(stream, 200, &response),
+                Err(err) => {
+                    write_json_error(stream, err.status, err.error_type, err.code, err.message)
+                }
+            }
+        }
         ("POST", "/v1/chat/completions") => {
             match validate_api_chat_completion_request(&request.body, parsed) {
                 Ok(_request) => write_json_error(
@@ -3981,11 +4003,23 @@ fn validate_api_completion_request(
             )
         })?
         .unwrap_or(parsed.max_output_tokens);
+    let temperature = json_f32_field(body, "temperature")
+        .map_err(|_| {
+            serve_api_error(
+                400,
+                "invalid_request_error",
+                "invalid_temperature",
+                "temperature must be a non-negative number.",
+            )
+        })?
+        .unwrap_or(0.0);
     validate_api_caps(input_tokens, requested_output_tokens, parsed)?;
     Ok(ValidatedApiCompletionRequest {
         model,
+        prompts,
         input_tokens,
         requested_output_tokens,
+        temperature,
     })
 }
 
@@ -4020,11 +4054,23 @@ fn validate_api_chat_completion_request(
             )
         })?
         .unwrap_or(parsed.max_output_tokens);
+    let temperature = json_f32_field(body, "temperature")
+        .map_err(|_| {
+            serve_api_error(
+                400,
+                "invalid_request_error",
+                "invalid_temperature",
+                "temperature must be a non-negative number.",
+            )
+        })?
+        .unwrap_or(0.0);
     validate_api_caps(input_tokens, requested_output_tokens, parsed)?;
     Ok(ValidatedApiCompletionRequest {
         model,
+        prompts: messages,
         input_tokens,
         requested_output_tokens,
+        temperature,
     })
 }
 
@@ -4203,6 +4249,23 @@ fn json_usize_field(body: &str, field: &str) -> Result<Option<usize>, ()> {
     (parsed > 0).then_some(Some(parsed)).ok_or(())
 }
 
+fn json_f32_field(body: &str, field: &str) -> Result<Option<f32>, ()> {
+    let Some(value_start) = json_field_value_start(body, field) else {
+        return Ok(None);
+    };
+    let value = body[value_start..].trim_start();
+    let end = value
+        .find(|ch: char| !(ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | 'e' | 'E')))
+        .unwrap_or(value.len());
+    if end == 0 {
+        return Err(());
+    }
+    let parsed = value[..end].parse::<f32>().map_err(|_| ())?;
+    (parsed.is_finite() && parsed >= 0.0)
+        .then_some(Some(parsed))
+        .ok_or(())
+}
+
 fn json_string_or_string_array_at(body: &str, value_start: usize) -> Option<Vec<String>> {
     let value = body[value_start..].trim_start();
     if value.starts_with('"') {
@@ -4324,6 +4387,239 @@ fn serve_models_json(parsed: &ServeArgs) -> String {
     )
 }
 
+fn serve_completion_response_json(
+    request: &ValidatedApiCompletionRequest,
+    parsed: &ServeArgs,
+) -> Result<String, ServeApiError> {
+    let model_path = resolve_api_model_path(&request.model, parsed)?;
+    let choices = generate_api_completion_choices(
+        &model_path,
+        &request.prompts,
+        request.temperature,
+        request.requested_output_tokens,
+    )
+    .map_err(|_| {
+        serve_api_error(
+            500,
+            "server_error",
+            "generation_failed",
+            "Model generation failed. Run nanocamelid inspect or nanocamelid generate for the same model and prompt.",
+        )
+    })?;
+    Ok(api_completion_response_json(&request.model, &choices))
+}
+
+fn resolve_api_model_path(model_id: &str, parsed: &ServeArgs) -> Result<PathBuf, ServeApiError> {
+    let explicit = Path::new(model_id);
+    if looks_like_model_path_argument(model_id) {
+        return explicit
+            .is_file()
+            .then(|| explicit.to_path_buf())
+            .ok_or_else(|| {
+                serve_api_error(
+                    404,
+                    "invalid_request_error",
+                    "model_not_found",
+                    "Requested model path does not exist or is not a file.",
+                )
+            });
+    }
+
+    if is_llama32_1b_alias(model_id) {
+        for filename in [LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL] {
+            let path = Path::new(&parsed.model_dir).join(filename);
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+    } else if is_llama32_3b_alias(model_id) {
+        let path = Path::new(&parsed.model_dir).join(LLAMA32_3B_Q4_MODEL);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+
+    let entries = scan_model_dir(Path::new(&parsed.model_dir), false).unwrap_or_default();
+    entries
+        .into_iter()
+        .find(|entry| api_model_entry_matches(&entry.path, model_id))
+        .map(|entry| entry.path)
+        .ok_or_else(|| {
+            serve_api_error(
+                404,
+                "invalid_request_error",
+                "model_not_found",
+                "Requested model was not found in the configured model directory.",
+            )
+        })
+}
+
+fn api_model_entry_matches(path: &Path, model_id: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|filename| filename == model_id)
+        || path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|stem| stem == model_id)
+}
+
+fn generate_api_completion_choices(
+    model_path: &Path,
+    prompts: &[String],
+    temp: f32,
+    max_tokens: usize,
+) -> Result<Vec<ApiCompletionChoice>, String> {
+    prefill_batch_size_from_env().map_err(str::to_owned)?;
+
+    let gguf = gguf::read_file(model_path).map_err(|err| format!("failed to read GGUF: {err}"))?;
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf)
+        .map_err(|err| format!("failed to parse config: {err}"))?;
+    apply_context_limit(&mut config)?;
+    let tokenizer = tokenizer::Tokenizer::from_gguf(&gguf)
+        .map_err(|err| format!("failed to load tokenizer: {err}"))?;
+    let weights = model::LlamaWeights::load(model_path, &config, &gguf)
+        .map_err(|err| format!("failed to load weights: {err}"))?;
+    let runtime_options = runtime_options_from_gguf(&gguf, q8::Q8DotKernelSelector::from_env());
+
+    prompts
+        .iter()
+        .enumerate()
+        .map(|(index, prompt)| {
+            let runtime = ApiGenerationRuntime {
+                config: &config,
+                weights: &weights,
+                tokenizer: &tokenizer,
+                runtime_options,
+            };
+            generate_api_completion_choice(index, prompt, temp, max_tokens, runtime)
+        })
+        .collect()
+}
+
+fn generate_api_completion_choice(
+    index: usize,
+    prompt: &str,
+    temp: f32,
+    max_tokens: usize,
+    runtime: ApiGenerationRuntime<'_>,
+) -> Result<ApiCompletionChoice, String> {
+    let prompt_tokens = runtime.tokenizer.encode(prompt, true, true)?;
+    if prompt_tokens.is_empty() {
+        return Err("prompt tokenized to an empty sequence".to_owned());
+    }
+    validate_generation_budget(
+        prompt_tokens.len(),
+        max_tokens,
+        runtime.config.context_length,
+    )?;
+
+    let mut cache = inference::LlamaKvCache::new(
+        runtime.config.block_count,
+        runtime.config.context_length,
+        runtime.config.kv_width,
+    );
+    let mut ws = inference::LlamaWorkspace::new(runtime.config);
+    let mut batch_ws = inference::LlamaBatchWorkspace::new(runtime.config, prefill_batch_size());
+    let mut pos = 0usize;
+
+    if let Some((&last_token, prefix_tokens)) = prompt_tokens.split_last() {
+        let mut context_tokens = Vec::with_capacity(prompt_tokens.len());
+        prefill_tokens(
+            prefix_tokens,
+            runtime.config,
+            runtime.weights,
+            PrefillTokenState {
+                cache: &mut cache,
+                ws: &mut ws,
+                batch_ws: Some(&mut batch_ws),
+                context_tokens: &mut context_tokens,
+                pos: &mut pos,
+            },
+            runtime.runtime_options,
+        );
+        inference::forward_pass(
+            last_token as usize,
+            pos,
+            runtime.config,
+            runtime.weights,
+            &mut cache,
+            &mut ws,
+            runtime.runtime_options,
+        );
+        pos += 1;
+    }
+
+    let mut generated_tokens = Vec::new();
+    let mut finish_reason = "length";
+    loop {
+        let next_token = inference::sample_logits(&ws.logits, temp);
+
+        if is_generation_stop_token(&runtime.tokenizer.special, next_token as u32) {
+            finish_reason = "stop";
+            break;
+        }
+        if pos >= runtime.config.context_length || generated_tokens.len() >= max_tokens {
+            break;
+        }
+
+        generated_tokens.push(next_token as u32);
+        if generated_tokens.len() >= max_tokens {
+            break;
+        }
+
+        inference::forward_pass(
+            next_token,
+            pos,
+            runtime.config,
+            runtime.weights,
+            &mut cache,
+            &mut ws,
+            runtime.runtime_options,
+        );
+        pos += 1;
+    }
+
+    Ok(ApiCompletionChoice {
+        index,
+        text: runtime.tokenizer.decode(&generated_tokens, true)?,
+        prompt_tokens: prompt_tokens.len(),
+        generated_tokens: generated_tokens.len(),
+        finish_reason,
+    })
+}
+
+fn api_completion_response_json(model: &str, choices: &[ApiCompletionChoice]) -> String {
+    let choices_json = choices
+        .iter()
+        .map(|choice| {
+            format!(
+                "{{\"index\":{},\"text\":{},\"finish_reason\":{}}}",
+                choice.index,
+                json_string(&choice.text),
+                json_string(choice.finish_reason)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let prompt_tokens = choices
+        .iter()
+        .map(|choice| choice.prompt_tokens)
+        .sum::<usize>();
+    let completion_tokens = choices
+        .iter()
+        .map(|choice| choice.generated_tokens)
+        .sum::<usize>();
+    format!(
+        "{{\"id\":\"cmpl-nanocamelid\",\"object\":\"text_completion\",\"model\":{},\"choices\":[{}],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}",
+        json_string(model),
+        choices_json,
+        prompt_tokens,
+        completion_tokens,
+        prompt_tokens + completion_tokens
+    )
+}
+
 fn serve_metrics_text(request_count: usize, uptime_seconds: f64, parsed: &ServeArgs) -> String {
     format!(
         "nanocamelid_requests_total {}\nnanocamelid_uptime_seconds {:.3}\nnanocamelid_max_request_bytes {}\nnanocamelid_max_input_tokens {}\nnanocamelid_max_output_tokens {}\n",
@@ -4380,6 +4676,7 @@ fn http_status_text(status: u16) -> &'static str {
         413 => "Payload Too Large",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        500 => "Internal Server Error",
         501 => "Not Implemented",
         _ => "Internal Server Error",
     }
@@ -9229,6 +9526,7 @@ fn runtime_dotprod() -> bool {
 mod tests {
     use std::{
         collections::BTreeMap,
+        fs,
         path::{Path, PathBuf},
     };
 
@@ -9238,13 +9536,14 @@ mod tests {
     use nanocamelid::tokenizer::{SpecialTokens, TokenizerModel};
 
     use super::{
-        ChatTurn, DEFAULT_1B_PREFILL_PROMPT, DEFAULT_1B_PREFILL_TEMP, DEFAULT_1B_PREFILL_TOKENS,
-        DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS, DEFAULT_MODEL_GGUF_ENV,
-        DEFAULT_Q4_PREFILL_BATCH, DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS,
-        DoctorArgs, GenerationStatusJson, HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL,
-        LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, ModelsAction, PERFORMANCE_GOVERNOR_COMMAND,
-        PrefillBenchBatchMetrics, ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs,
-        Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV, TuiCommand, classify_model_quantization,
+        ApiCompletionChoice, ChatTurn, DEFAULT_1B_PREFILL_PROMPT, DEFAULT_1B_PREFILL_TEMP,
+        DEFAULT_1B_PREFILL_TOKENS, DEFAULT_1B_SMOKE_PROMPT, DEFAULT_1B_SMOKE_TOKENS,
+        DEFAULT_MODEL_GGUF_ENV, DEFAULT_Q4_PREFILL_BATCH, DEFAULT_Q4_PREFILL_PROMPT_LEN,
+        DEFAULT_Q4_PREFILL_RUNS, DoctorArgs, GenerationStatusJson, HelpTopic, InspectTarget,
+        LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL, ModelsAction,
+        PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics, ReadyDirectChatStatus,
+        SMOKE_MODEL_GGUF_ENV, ServeArgs, Smoke1BArgs, SmokeDefaults, SmokeKind, TRACE_ENV,
+        TuiCommand, api_completion_response_json, classify_model_quantization,
         classify_model_target, cpu_features, cpu_governor_recommendation, cpu_model,
         default_llama32_1b_model_path, default_llama32_3b_model_path, device_model,
         evidence_1b_status_json, evidence_context_pack_command, evidence_model_command,
@@ -9275,9 +9574,10 @@ mod tests {
         print_runtime_trace_summary, ready_1b_status_json, ready_chat_enabled_default_for_args,
         ready_chat_enabled_from_env_value, ready_chat_prompt_from_env_value,
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value, request_too_large_error,
-        resolve_llama32_1b_model_path_with_workspace, resolve_llama32_3b_model_path_with_workspace,
-        runtime_options_from_gguf, serve_metrics_text, serve_models_json, shared_token_prefix_len,
-        shell_command, shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
+        resolve_api_model_path, resolve_llama32_1b_model_path_with_workspace,
+        resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
+        serve_metrics_text, serve_models_json, shared_token_prefix_len, shell_command,
+        shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
         smoke_plan_command_with_context, smoke_plan_command_with_env, trim_tui_history,
         tui_prompt_history, validate_api_chat_completion_request, validate_api_completion_request,
         validate_generation_budget,
@@ -9894,8 +10194,17 @@ flags\t\t: sse4_2 avx2
         )
         .expect("completion request should validate");
         assert_eq!(request.model, "tiny");
+        assert_eq!(request.prompts, vec!["hello", "small prompt"]);
         assert_eq!(request.input_tokens, 5);
         assert_eq!(request.requested_output_tokens, 4);
+        assert_eq!(request.temperature, 0.0);
+
+        let request = validate_api_completion_request(
+            r#"{"model":"tiny","prompt":"hello","temperature":0.2}"#,
+            &parsed,
+        )
+        .expect("completion request with temperature should validate");
+        assert_eq!(request.temperature, 0.2);
 
         let err = validate_api_completion_request(
             r#"{"model":"tiny","prompt":"hello","max_tokens":9}"#,
@@ -9918,6 +10227,13 @@ flags\t\t: sse4_2 avx2
         let err = validate_api_completion_request(r#""model":"tiny","prompt":"hello""#, &parsed)
             .expect_err("non-object body should fail");
         assert_eq!(err.code, "invalid_json");
+
+        let err = validate_api_completion_request(
+            r#"{"model":"tiny","prompt":"hello","temperature":-0.1}"#,
+            &parsed,
+        )
+        .expect_err("negative temperature should fail");
+        assert_eq!(err.code, "invalid_temperature");
     }
 
     #[test]
@@ -9939,6 +10255,7 @@ flags\t\t: sse4_2 avx2
         )
         .expect("chat request should validate");
         assert_eq!(request.model, "tiny");
+        assert_eq!(request.prompts, vec!["be brief", "say hi"]);
         assert_eq!(request.input_tokens, 4);
         assert_eq!(request.requested_output_tokens, 2);
 
@@ -9955,6 +10272,84 @@ flags\t\t: sse4_2 avx2
         )
         .expect_err("zero max_tokens should fail");
         assert_eq!(err.code, "invalid_max_tokens");
+    }
+
+    #[test]
+    fn serve_resolves_api_model_ids_from_model_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("nanocamelid-api-model-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp model dir should be created");
+        let q4_path = dir.join(LLAMA32_1B_Q4_MODEL);
+        let qwen_path = dir.join("qwen2.5-coder-0.5b-instruct-q4_0.gguf");
+        fs::write(&q4_path, b"placeholder").expect("q4 placeholder should be written");
+        fs::write(&qwen_path, b"placeholder").expect("qwen placeholder should be written");
+
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: dir.to_string_lossy().into_owned(),
+            api_key: None,
+            max_request_bytes: 65_536,
+            max_input_tokens: 2048,
+            max_output_tokens: 256,
+            dry_run: false,
+        };
+
+        assert_eq!(
+            resolve_api_model_path("1b", &parsed).expect("1b alias should resolve"),
+            q4_path
+        );
+        assert_eq!(
+            resolve_api_model_path("qwen2.5-coder-0.5b-instruct-q4_0", &parsed)
+                .expect("stem id should resolve"),
+            qwen_path
+        );
+        assert_eq!(
+            resolve_api_model_path(
+                &dir.join("qwen2.5-coder-0.5b-instruct-q4_0.gguf")
+                    .to_string_lossy(),
+                &parsed,
+            )
+            .expect("explicit path should resolve"),
+            qwen_path
+        );
+        let err =
+            resolve_api_model_path("missing", &parsed).expect_err("missing model should fail");
+        assert_eq!(err.status, 404);
+        assert_eq!(err.code, "model_not_found");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn api_completion_response_json_reports_choices_and_usage() {
+        let json = api_completion_response_json(
+            "tiny",
+            &[
+                ApiCompletionChoice {
+                    index: 0,
+                    text: "hello".to_owned(),
+                    prompt_tokens: 2,
+                    generated_tokens: 1,
+                    finish_reason: "stop",
+                },
+                ApiCompletionChoice {
+                    index: 1,
+                    text: "world".to_owned(),
+                    prompt_tokens: 3,
+                    generated_tokens: 2,
+                    finish_reason: "length",
+                },
+            ],
+        );
+        assert!(json.contains("\"object\":\"text_completion\""));
+        assert!(json.contains("\"model\":\"tiny\""));
+        assert!(json.contains("\"text\":\"hello\""));
+        assert!(json.contains("\"finish_reason\":\"length\""));
+        assert!(json.contains("\"prompt_tokens\":5"));
+        assert!(json.contains("\"completion_tokens\":3"));
+        assert!(json.contains("\"total_tokens\":8"));
     }
 
     #[test]

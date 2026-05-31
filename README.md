@@ -11,7 +11,7 @@ checks, and Pi-side evidence for supported model rows.
   `SHA256SUMS`.
 - `nanocamelid --version` prints the package version.
 - GGUF model discovery, inspection, direct generation, single-turn chat,
-  terminal TUI, 1B readiness, a local HTTP API skeleton, and model-backed
+  terminal TUI, 1B readiness, local HTTP text completions, and model-backed
   smoke/evidence paths are available from the CLI.
 - The default Pi model directory is `/mnt/nanocamelid/models`.
 - Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma prompt rendering is
@@ -58,6 +58,14 @@ Inspect the local API server plan:
 ```bash
 nanocamelid serve --dry-run
 nanocamelid serve --max-request-bytes 65536 --max-input-tokens 2048 --max-output-tokens 256 --dry-run
+```
+
+Run a local completion once the server is listening and a model is present:
+
+```bash
+curl http://127.0.0.1:8080/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"1b","prompt":"Say hello in one sentence.","max_tokens":8,"temperature":0.0}'
 ```
 
 ## Install Modes
