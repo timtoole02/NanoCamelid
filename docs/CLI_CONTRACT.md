@@ -12,8 +12,8 @@ below.
 | `nanocamelid --version` | Print the packaged NanoCamelid version and exit without loading model files | Plain version text |
 | `nanocamelid doctor` | Check install readiness, host summary, model directory, default model paths, and next action without loading a GGUF | Human-readable preflight; `--json` adds a machine-readable JSON status line |
 | `nanocamelid probe` | Print host CPU and runtime feature detection | Human-readable host/runtime feature report |
-| `nanocamelid models list` | List `.gguf` files directly under the configured model directory | Human-readable list; `--json` emits JSON lines |
-| `nanocamelid models scan` | Recursively find `.gguf` files and classify filename target/quantization hints | Human-readable scan; `--json` emits JSON lines |
+| `nanocamelid models list` | List `.gguf` files directly under the configured model directory | Human-readable list with active `1b`/`3b` aliases when a default row is present; `--json` emits JSON lines |
+| `nanocamelid models scan` | Recursively find `.gguf` files and classify filename target/quantization hints | Human-readable scan with active `1b`/`3b` aliases for default rows; `--json` emits JSON lines |
 | `nanocamelid models inspect <model.gguf\|1b\|3b>` | Inspect GGUF metadata through the stable models namespace | Human-readable model audit; `--dry-run` prints the resolved plan |
 | `nanocamelid ready 1b` | Run the bounded 1B readiness gate: probe, strict audit, inspect, smoke, and optional direct chat | Human-readable gate steps plus JSON status lines |
 | `nanocamelid chat <model.gguf\|1b\|3b> <prompt>` | Run one chat-template-rendered generation turn | Generated text plus machine-readable status |
@@ -30,6 +30,9 @@ below.
 - Explicit `.gguf` paths override aliases and environment defaults for commands
   that accept a model argument.
 - `1b` and `3b` aliases resolve to documented Llama 3.2 default rows.
+- `models list`, `models scan`, and `/v1/models` report `aliases` for rows
+  that currently resolve from the stable `1b` or `3b` aliases. `1b` prefers the
+  configured directory's Q4_0 row and falls back to Q8_0 when Q4_0 is absent.
 
 ## Exit and Error Behavior
 

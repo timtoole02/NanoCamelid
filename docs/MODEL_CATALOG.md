@@ -13,6 +13,19 @@ paths, but rows only move to supported after Pi-local smoke/parity evidence.
 Long-context GGUFs should be smoke-tested with `NANOCAMELID_CONTEXT_LIMIT`
 until full advertised-context memory behavior is validated.
 
+## Default Aliases
+
+The stable `1b` and `3b` aliases are intentionally narrow product defaults, not
+general model-family selectors:
+
+| Alias | Resolution |
+| --- | --- |
+| `1b` | `$NANOCAMELID_MODEL_DIR/Llama-3.2-1B-Instruct-Q4_0.gguf` when present, otherwise `$NANOCAMELID_MODEL_DIR/Llama-3.2-1B-Instruct-Q8_0.gguf` |
+| `3b` | `$NANOCAMELID_MODEL_DIR/Llama-3.2-3B-Instruct-Q4_0.gguf` |
+
+`nanocamelid models list`, `nanocamelid models scan`, and `/v1/models` report
+an `aliases` field for rows that currently resolve from those aliases.
+
 ## Quantization Compatibility
 
 | Quant family | Runtime status | Promotion status |

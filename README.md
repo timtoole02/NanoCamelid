@@ -45,6 +45,9 @@ nanocamelid models list
 nanocamelid ready 1b --dry-run
 ```
 
+`models list` marks rows that currently resolve from the stable `1b` and `3b`
+aliases.
+
 Then run the readiness gate and open chat:
 
 ```bash

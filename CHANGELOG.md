@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Made model discovery expose active `1b`/`3b` aliases in `models list`,
+  `models scan`, and `/v1/models`, with catalog docs for the default alias
+  resolution rules.
 - Made release installs persist the bundled README, docs, release notes, and
   service installer in a versioned companion directory while still installing
   the executable onto `PATH`.

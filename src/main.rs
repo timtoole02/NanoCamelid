@@ -4326,18 +4326,20 @@ fn serve_models_json(parsed: &ServeArgs) -> String {
     let data = entries
         .iter()
         .map(|entry| {
+            let aliases = model_entry_aliases(dir, entry, &entries);
             let id = entry
                 .path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("unknown.gguf");
             format!(
-                "{{\"id\":{},\"object\":\"model\",\"path\":{},\"bytes\":{},\"target\":{},\"quantization\":{}}}",
+                "{{\"id\":{},\"object\":\"model\",\"path\":{},\"bytes\":{},\"target\":{},\"quantization\":{},\"aliases\":{}}}",
                 json_string(id),
                 json_string(&entry.path.display().to_string()),
                 entry.bytes,
                 json_optional_string(entry.target),
-                json_optional_string(entry.quantization)
+                json_optional_string(entry.quantization),
+                json_string_array(&aliases)
             )
         })
         .collect::<Vec<_>>()
@@ -4818,12 +4820,21 @@ fn run_models_list(dir: &str, recursive: bool, json: bool, dry_run: bool) -> Exi
         println!("  no GGUF files found");
     }
     for entry in &entries {
+        let aliases = model_entry_aliases(dir, entry, &entries);
         println!("  {}", entry.path.display());
         println!("    bytes: {}", entry.bytes);
         println!("    target: {}", entry.target.unwrap_or("unknown"));
         println!(
             "    quantization: {}",
             entry.quantization.unwrap_or("unknown")
+        );
+        println!(
+            "    aliases: {}",
+            if aliases.is_empty() {
+                "none".to_owned()
+            } else {
+                aliases.join(",")
+            }
         );
         println!(
             "    inspect_command: {}",
@@ -4836,11 +4847,12 @@ fn run_models_list(dir: &str, recursive: bool, json: bool, dry_run: bool) -> Exi
         );
         if json {
             println!(
-                "json_model: {{\"path\":{},\"bytes\":{},\"target\":{},\"quantization\":{}}}",
+                "json_model: {{\"path\":{},\"bytes\":{},\"target\":{},\"quantization\":{},\"aliases\":{}}}",
                 json_string(&entry.path.display().to_string()),
                 entry.bytes,
                 json_optional_string(entry.target),
-                json_optional_string(entry.quantization)
+                json_optional_string(entry.quantization),
+                json_string_array(&aliases)
             );
         }
     }
@@ -4882,6 +4894,26 @@ fn scan_model_dir(dir: &Path, recursive: bool) -> io::Result<Vec<ModelEntry>> {
     }
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(entries)
+}
+
+fn model_entry_aliases(
+    model_dir: &Path,
+    entry: &ModelEntry,
+    entries: &[ModelEntry],
+) -> Vec<&'static str> {
+    let q4_path = model_dir.join(LLAMA32_1B_Q4_MODEL);
+    let q8_path = model_dir.join(LLAMA32_1B_Q8_MODEL);
+    let three_b_path = model_dir.join(LLAMA32_3B_Q4_MODEL);
+    let q4_present = entries.iter().any(|candidate| candidate.path == q4_path);
+
+    let mut aliases = Vec::new();
+    if entry.path == q4_path || (!q4_present && entry.path == q8_path) {
+        aliases.push("1b");
+    }
+    if entry.path == three_b_path {
+        aliases.push("3b");
+    }
+    aliases
 }
 
 fn classify_model_target(path: &Path) -> Option<&'static str> {
@@ -7422,6 +7454,17 @@ fn json_optional_string(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_owned())
 }
 
+fn json_string_array(values: &[&str]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| json_string(value))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 fn smoke_plan_command(target: &str, model_path: &Path, parsed: &Smoke1BArgs) -> String {
     let context_limit = context_limit_env_value();
     let prefill_batch = prefill_batch_env_value();
@@ -9617,7 +9660,7 @@ mod tests {
         DEFAULT_1B_SMOKE_TOKENS, DEFAULT_MODEL_GGUF_ENV, DEFAULT_Q4_PREFILL_BATCH,
         DEFAULT_Q4_PREFILL_PROMPT_LEN, DEFAULT_Q4_PREFILL_RUNS, DoctorArgs, GenerationStatusJson,
         HelpTopic, InspectTarget, LLAMA32_1B_Q4_MODEL, LLAMA32_1B_Q8_MODEL, LLAMA32_3B_Q4_MODEL,
-        ModelsAction, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
+        ModelEntry, ModelsAction, PERFORMANCE_GOVERNOR_COMMAND, PrefillBenchBatchMetrics,
         ReadyDirectChatStatus, SMOKE_MODEL_GGUF_ENV, ServeArgs, Smoke1BArgs, SmokeDefaults,
         SmokeKind, TRACE_ENV, TuiCommand, api_chat_completion_response_json,
         api_completion_response_json, classify_model_quantization, classify_model_target,
@@ -9627,9 +9670,10 @@ mod tests {
         evidence_prefill_bench_command_with_env, evidence_ready_no_chat_command,
         generation_status_json, help_topic_for_args, help_topic_named, http_status_text,
         inspect_1b_status_json, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
-        json_string, llama32_1b_model_not_found_message, llama32_1b_quantization_for_path,
-        llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
-        looks_like_non_gguf_model_path, model_1b_status_json, parse_bench_1b_args_with_env,
+        json_string, json_string_array, llama32_1b_model_not_found_message,
+        llama32_1b_quantization_for_path, llama32_1b_shape_audit,
+        llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
+        model_1b_status_json, model_entry_aliases, parse_bench_1b_args_with_env,
         parse_bench_1b_args_with_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
         parse_bench_q8_dot_args, parse_content_length, parse_context_packs, parse_cpu_list,
         parse_doctor_args, parse_evidence_1b_args_with_env, parse_evidence_1b_args_with_path,
@@ -10652,6 +10696,50 @@ flags\t\t: sse4_2 avx2
         let unknown_path = Path::new("/models/custom.gguf");
         assert_eq!(classify_model_target(unknown_path), None);
         assert_eq!(classify_model_quantization(unknown_path), None);
+    }
+
+    #[test]
+    fn model_scan_reports_active_aliases_for_default_rows() {
+        let model_dir = Path::new("/models");
+        let q4_entry = ModelEntry {
+            path: model_dir.join(LLAMA32_1B_Q4_MODEL),
+            bytes: 1,
+            target: Some("llama32-1b"),
+            quantization: Some("Q4_0"),
+        };
+        let q8_entry = ModelEntry {
+            path: model_dir.join(LLAMA32_1B_Q8_MODEL),
+            bytes: 1,
+            target: Some("llama32-1b"),
+            quantization: Some("Q8_0"),
+        };
+        let three_b_entry = ModelEntry {
+            path: model_dir.join(LLAMA32_3B_Q4_MODEL),
+            bytes: 1,
+            target: Some("llama32-3b"),
+            quantization: Some("Q4_0"),
+        };
+
+        let entries = vec![q4_entry.clone(), q8_entry.clone(), three_b_entry.clone()];
+        assert_eq!(
+            model_entry_aliases(model_dir, &q4_entry, &entries),
+            vec!["1b"]
+        );
+        assert_eq!(
+            model_entry_aliases(model_dir, &q8_entry, &entries),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            model_entry_aliases(model_dir, &three_b_entry, &entries),
+            vec!["3b"]
+        );
+
+        let q8_only_entries = vec![q8_entry.clone()];
+        assert_eq!(
+            model_entry_aliases(model_dir, &q8_entry, &q8_only_entries),
+            vec!["1b"]
+        );
+        assert_eq!(json_string_array(&["1b", "3b"]), "[\"1b\",\"3b\"]");
     }
 
     #[test]
