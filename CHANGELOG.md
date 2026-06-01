@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Hardened the release installer so `NANOCAMELID_INSTALL_MODE` must be an
+  explicit `release`, `source`, or `dev` value instead of silently falling back
+  to release behavior for typos.
 - Added release-facing Cargo package metadata so the packaged binary has a
   public description, repository URL, README pointer, keywords, and category.
 - Synced the public release notes validation checklist with the actual release

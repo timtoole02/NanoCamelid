@@ -82,6 +82,13 @@ done
 
 version="${version#v}"
 version="v$version"
+case "$install_mode" in
+  release | source | dev) ;;
+  *)
+    echo "NANOCAMELID_INSTALL_MODE must be release, source, or dev." >&2
+    exit 2
+    ;;
+esac
 if [[ -z "$release_install_dir" ]]; then
   release_install_dir="$install_dir/releases/$version-$release_target"
 fi

@@ -1303,6 +1303,7 @@ expect_output "installer release companion dir includes version and target" "rel
 expect_output "installer release verifies version manifest" "verify VERSION manifest and nanocamelid --version" ./scripts/install.sh --dry-run
 expect_output "installer release installs bundled files" "install bundled README docs changelog release notes service script and nanocamelid" ./scripts/install.sh --dry-run
 expect_failure_output "installer rejects unsafe release companion dir" "Refusing unsafe release install dir" env NANOCAMELID_RELEASE_INSTALL_DIR=/ ./scripts/install.sh --dry-run
+expect_failure_output "installer rejects unknown install mode" "NANOCAMELID_INSTALL_MODE must be release, source, or dev." env NANOCAMELID_INSTALL_MODE=banana ./scripts/install.sh --dry-run
 expect_output "installer dev mode skips release URL" "release_url: not used" ./scripts/install.sh --dev --dry-run
 expect_output "installer dev mode skips companion dir" "release_install_dir: not used" ./scripts/install.sh --dev --dry-run
 
