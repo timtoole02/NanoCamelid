@@ -496,6 +496,12 @@ check_local_api_smoke() {
   expect_file_contains "unauthenticated health rejection" "\"code\":\"unauthorized\"" "$api_smoke_body"
 
   status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer $api_key" "$base_url/health" || true)"
+  expect_http_status "health method guard" "405" "$status" "$api_smoke_body"
+  expect_file_contains "health method guard" "\"code\":\"method_not_allowed\"" "$api_smoke_body"
+
+  status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
     -X OPTIONS \
     -H "Origin: http://127.0.0.1" \
     -H "Access-Control-Request-Method: POST" \

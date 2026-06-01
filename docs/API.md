@@ -251,7 +251,7 @@ Common status codes and error codes:
 | `401` | `unauthorized` | Missing or invalid bearer token |
 | `404` | `model_not_found` | Requested model cannot be resolved |
 | `404` | `not_found` | Endpoint path is unknown |
-| `405` | `method_not_allowed` | Completion endpoints require `POST` |
+| `405` | `method_not_allowed` | Known endpoint path was called with an unsupported HTTP method |
 | `413` | `request_too_large` | HTTP request exceeds `--max-request-bytes` |
 | `500` | `generation_failed` | Model load, tokenization, or generation failed |
 

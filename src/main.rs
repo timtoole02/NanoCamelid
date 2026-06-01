@@ -4178,14 +4178,11 @@ fn handle_serve_connection(
                 }
             }
         }
-        ("GET", "/v1/completions") | ("GET", "/v1/chat/completions") => write_json_error(
-            stream,
-            405,
-            "invalid_request_error",
-            "method_not_allowed",
-            "Use POST for completion endpoints.",
-        )
-        .map(|()| Some(405)),
+        (_, path) if is_known_api_path(path) => {
+            let err = method_not_allowed_error(path);
+            write_json_error(stream, err.status, err.error_type, err.code, err.message)
+                .map(|()| Some(err.status))
+        }
         _ => write_json_error(
             stream,
             404,
@@ -4202,6 +4199,15 @@ fn is_known_api_path(path: &str) -> bool {
         path,
         "/health" | "/v1/models" | "/metrics" | "/v1/completions" | "/v1/chat/completions"
     )
+}
+
+fn method_not_allowed_error(path: &str) -> ServeApiError {
+    let message = if matches!(path, "/v1/completions" | "/v1/chat/completions") {
+        "Use POST for completion endpoints."
+    } else {
+        "Use GET for this endpoint."
+    };
+    serve_api_error(405, "invalid_request_error", "method_not_allowed", message)
 }
 
 fn read_http_request_text(
@@ -10030,11 +10036,12 @@ mod tests {
         is_known_api_path, json_string, json_string_array, llama32_1b_model_not_found_message,
         llama32_1b_quantization_for_path, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
-        model_1b_status_json, model_entry_aliases, parse_bench_1b_args_with_env,
-        parse_bench_1b_args_with_path, parse_bench_q4_layout_args, parse_bench_q4_prefill_args,
-        parse_bench_q8_dot_args, parse_content_length, parse_context_packs, parse_cpu_list,
-        parse_doctor_args, parse_evidence_1b_args_with_env, parse_evidence_1b_args_with_path,
-        parse_generate_args_with_env, parse_generate_args_with_env_and_alias_env_and_workspace,
+        method_not_allowed_error, model_1b_status_json, model_entry_aliases,
+        parse_bench_1b_args_with_env, parse_bench_1b_args_with_path, parse_bench_q4_layout_args,
+        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_content_length,
+        parse_context_packs, parse_cpu_list, parse_doctor_args, parse_evidence_1b_args_with_env,
+        parse_evidence_1b_args_with_path, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_http_request,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_models_args,
         parse_prefill_batches, parse_prefill_bench_1b_batch_metrics, parse_probe_args,
@@ -10779,6 +10786,16 @@ flags\t\t: sse4_2 avx2
         assert!(is_known_api_path("/metrics"));
         assert!(!is_known_api_path("/not-found"));
         assert_eq!(http_status_text(204), "No Content");
+
+        let err = method_not_allowed_error("/health");
+        assert_eq!(err.status, 405);
+        assert_eq!(err.code, "method_not_allowed");
+        assert_eq!(err.message, "Use GET for this endpoint.");
+
+        let err = method_not_allowed_error("/v1/chat/completions");
+        assert_eq!(err.status, 405);
+        assert_eq!(err.code, "method_not_allowed");
+        assert_eq!(err.message, "Use POST for completion endpoints.");
     }
 
     #[test]

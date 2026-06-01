@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Tightened local API method handling so every known endpoint path returns a
+  structured `method_not_allowed` error for unsupported HTTP methods, while
+  unknown paths remain structured `not_found` errors.
 - Made the local API server drain a bounded oversized request body before
   returning `request_too_large`, and extended the live validation smoke to
   exercise that configured HTTP request byte cap.
