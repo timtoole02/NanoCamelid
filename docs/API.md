@@ -37,6 +37,15 @@ When a token is configured, every endpoint requires:
 Authorization: Bearer <token>
 ```
 
+Browser-style `OPTIONS` preflight requests are accepted without a bearer token
+for the known API paths and return `204 No Content` with CORS headers:
+
+```text
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Authorization, Content-Type
+```
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -46,6 +55,7 @@ Authorization: Bearer <token>
 | `POST` | `/v1/completions` | OpenAI-shaped text completion response |
 | `POST` | `/v1/chat/completions` | OpenAI-shaped chat completion response |
 | `GET` | `/metrics` | Prometheus-style request, response-status, uptime, and cap metrics |
+| `OPTIONS` | Known paths above | Browser preflight response for local tools |
 
 ### Health
 

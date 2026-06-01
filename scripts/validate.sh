@@ -496,6 +496,14 @@ check_local_api_smoke() {
   expect_file_contains "unauthenticated health rejection" "\"code\":\"unauthorized\"" "$api_smoke_body"
 
   status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
+    -X OPTIONS \
+    -H "Origin: http://127.0.0.1" \
+    -H "Access-Control-Request-Method: POST" \
+    -H "Access-Control-Request-Headers: authorization,content-type" \
+    "$base_url/v1/chat/completions" || true)"
+  expect_http_status "unauthenticated browser preflight" "204" "$status" "$api_smoke_body"
+
+  status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
     -H "Authorization: Bearer $api_key" "$base_url/v1/models" || true)"
   expect_http_status "model list endpoint" "200" "$status" "$api_smoke_body"
   expect_file_contains "model list endpoint" "\"object\":\"list\"" "$api_smoke_body"

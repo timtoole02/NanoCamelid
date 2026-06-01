@@ -4116,6 +4116,10 @@ fn handle_serve_connection(
         .map(|()| Some(400));
     };
 
+    if request.method == "OPTIONS" && is_known_api_path(&request.path) {
+        return write_empty_response(stream, 204).map(|()| Some(204));
+    }
+
     if let Some(api_key) = &parsed.api_key {
         let expected = format!("Bearer {api_key}");
         if request.authorization.as_deref() != Some(expected.as_str()) {
@@ -4191,6 +4195,13 @@ fn handle_serve_connection(
         )
         .map(|()| Some(404)),
     }
+}
+
+fn is_known_api_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/health" | "/v1/models" | "/metrics" | "/v1/completions" | "/v1/chat/completions"
+    )
 }
 
 fn read_http_request_text(
@@ -5033,6 +5044,10 @@ fn write_json_response(stream: &mut TcpStream, status: u16, body: &str) -> io::R
     write_text_response(stream, status, body, "application/json; charset=utf-8")
 }
 
+fn write_empty_response(stream: &mut TcpStream, status: u16) -> io::Result<()> {
+    write_text_response(stream, status, "", "text/plain; charset=utf-8")
+}
+
 fn write_text_response(
     stream: &mut TcpStream,
     status: u16,
@@ -5042,7 +5057,7 @@ fn write_text_response(
     let status_text = http_status_text(status);
     write!(
         stream,
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
 }
@@ -5050,6 +5065,7 @@ fn write_text_response(
 fn http_status_text(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
         413 => "Payload Too Large",
@@ -9972,7 +9988,7 @@ mod tests {
         evidence_prefill_bench_command_with_env, evidence_ready_no_chat_command,
         generation_status_json, help_topic_for_args, help_topic_named, http_status_text,
         inspect_1b_status_json, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
-        json_string, json_string_array, llama32_1b_model_not_found_message,
+        is_known_api_path, json_string, json_string_array, llama32_1b_model_not_found_message,
         llama32_1b_quantization_for_path, llama32_1b_shape_audit,
         llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
         model_1b_status_json, model_entry_aliases, parse_bench_1b_args_with_env,
@@ -10713,6 +10729,17 @@ flags\t\t: sse4_2 avx2
         let err = request_too_large_error();
         assert_eq!(err.status, 413);
         assert_eq!(err.code, "request_too_large");
+    }
+
+    #[test]
+    fn serve_api_known_paths_allow_browser_preflight() {
+        assert!(is_known_api_path("/health"));
+        assert!(is_known_api_path("/v1/models"));
+        assert!(is_known_api_path("/v1/completions"));
+        assert!(is_known_api_path("/v1/chat/completions"));
+        assert!(is_known_api_path("/metrics"));
+        assert!(!is_known_api_path("/not-found"));
+        assert_eq!(http_status_text(204), "No Content");
     }
 
     #[test]
