@@ -585,6 +585,9 @@ fi
 echo "==> Checking public docs and examples for private paths/IPs..."
 check_public_hygiene
 expect_file_contains "release workflow standard validation gate" "run: ./scripts/validate.sh" .github/workflows/release.yml
+expect_file_contains "release notes standard validation gate" "- \`./scripts/validate.sh\`" RELEASE_NOTES.md
+expect_file_contains "release notes dry-run packaging check" "- \`./scripts/package-release.sh --dry-run\`" RELEASE_NOTES.md
+expect_file_contains "release notes checksum artifact" "SHA256SUMS" RELEASE_NOTES.md
 
 echo "==> Checking format..."
 cargo fmt -- --check

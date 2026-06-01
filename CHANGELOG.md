@@ -4,6 +4,8 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Synced the public release notes validation checklist with the actual release
+  workflow, including the full standard validation gate before packaging.
 - Tightened the systemd user-service installer so model, unit, and config
   directory overrides must be absolute paths before a dry-run or install plan
   is accepted.
