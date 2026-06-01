@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added `model_ready` and `next_action` to the local API `/health` response so
+  local tools can distinguish an up server from a generation-ready model
+  directory and show an actionable fix when no GGUF is discoverable.
 - Added the configured request/input/output caps to the local API `/health`
   response so local tools can preflight server limits without scraping metrics.
 - Hardened the release installer so `NANOCAMELID_INSTALL_MODE` must be an

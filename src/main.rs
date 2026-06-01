@@ -4690,6 +4690,8 @@ fn serve_health_json(parsed: &ServeArgs) -> String {
     } else {
         0
     };
+    let model_ready = model_dir_exists && model_count > 0;
+    let next_action = serve_health_next_action(parsed, model_dir_exists, model_count);
 
     format!(
         concat!(
@@ -4699,21 +4701,45 @@ fn serve_health_json(parsed: &ServeArgs) -> String {
             "\"model_dir\":{},",
             "\"model_dir_exists\":{},",
             "\"model_count\":{},",
+            "\"model_ready\":{},",
             "\"api_key_required\":{},",
             "\"max_request_bytes\":{},",
             "\"max_input_tokens\":{},",
-            "\"max_output_tokens\":{}",
+            "\"max_output_tokens\":{},",
+            "\"next_action\":{}",
             "}}"
         ),
         json_string(env!("CARGO_PKG_VERSION")),
         json_string(&parsed.model_dir),
         model_dir_exists,
         model_count,
+        model_ready,
         parsed.api_key.is_some(),
         parsed.max_request_bytes,
         parsed.max_input_tokens,
-        parsed.max_output_tokens
+        parsed.max_output_tokens,
+        json_optional_string(next_action.as_deref())
     )
+}
+
+fn serve_health_next_action(
+    parsed: &ServeArgs,
+    model_dir_exists: bool,
+    model_count: usize,
+) -> Option<String> {
+    if !model_dir_exists {
+        Some(format!(
+            "create {}, set {MODEL_DIR_ENV}, or start with --model-dir <path>.",
+            parsed.model_dir
+        ))
+    } else if model_count == 0 {
+        Some(format!(
+            "place a .gguf model under {} or request an explicit .gguf path.",
+            parsed.model_dir
+        ))
+    } else {
+        None
+    }
 }
 
 fn serve_completion_response_json(
@@ -11156,11 +11182,46 @@ flags\t\t: sse4_2 avx2
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"model_dir_exists\":false"));
         assert!(json.contains("\"model_count\":0"));
+        assert!(json.contains("\"model_ready\":false"));
         assert!(json.contains("\"api_key_required\":true"));
         assert!(json.contains("\"max_request_bytes\":4096"));
         assert!(json.contains("\"max_input_tokens\":1024"));
         assert!(json.contains("\"max_output_tokens\":64"));
+        assert!(json.contains("\"next_action\":\"create /models"));
         assert!(!json.contains("redacted"));
+    }
+
+    #[test]
+    fn serve_health_json_reports_empty_and_ready_model_actions() {
+        let dir =
+            std::env::temp_dir().join(format!("nanocamelid-health-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp model dir should be created");
+
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: dir.to_string_lossy().into_owned(),
+            api_key: None,
+            max_request_bytes: 65_536,
+            max_input_tokens: 2048,
+            max_output_tokens: 256,
+            dry_run: false,
+        };
+
+        let json = serve_health_json(&parsed);
+        assert!(json.contains("\"model_dir_exists\":true"));
+        assert!(json.contains("\"model_count\":0"));
+        assert!(json.contains("\"model_ready\":false"));
+        assert!(json.contains("\"next_action\":\"place a .gguf model under "));
+
+        fs::write(dir.join("tiny.gguf"), b"placeholder").expect("placeholder model");
+        let json = serve_health_json(&parsed);
+        assert!(json.contains("\"model_count\":1"));
+        assert!(json.contains("\"model_ready\":true"));
+        assert!(json.contains("\"next_action\":null"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

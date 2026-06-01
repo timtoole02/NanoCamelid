@@ -76,12 +76,17 @@ Response:
   "model_dir": "/mnt/nanocamelid/models",
   "model_dir_exists": true,
   "model_count": 1,
+  "model_ready": true,
   "api_key_required": false,
   "max_request_bytes": 65536,
   "max_input_tokens": 2048,
-  "max_output_tokens": 256
+  "max_output_tokens": 256,
+  "next_action": null
 }
 ```
+
+When the model directory is missing or empty, `model_ready` is `false` and
+`next_action` explains the exact directory or override to fix before generation.
 
 ### Models
 

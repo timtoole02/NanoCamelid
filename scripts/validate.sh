@@ -492,6 +492,8 @@ check_local_api_smoke() {
   expect_file_contains "authenticated health readiness" "\"status\":\"ok\"" "$api_smoke_body"
   expect_file_contains "authenticated health model dir exists" "\"model_dir_exists\":true" "$api_smoke_body"
   expect_file_contains "authenticated health model count" "\"model_count\":0" "$api_smoke_body"
+  expect_file_contains "authenticated health model readiness" "\"model_ready\":false" "$api_smoke_body"
+  expect_file_contains "authenticated health next action" "\"next_action\":\"place a .gguf model under" "$api_smoke_body"
   expect_file_contains "authenticated health request cap" "\"max_request_bytes\":4096" "$api_smoke_body"
   expect_file_contains "authenticated health input cap" "\"max_input_tokens\":64" "$api_smoke_body"
   expect_file_contains "authenticated health output cap" "\"max_output_tokens\":8" "$api_smoke_body"
@@ -644,6 +646,8 @@ check_local_api_smoke
 expect_file_contains "API docs missing body error" '| `400` | `missing_body` |' docs/API.md
 expect_file_contains "API docs invalid content length error" '| `400` | `invalid_content_length` |' docs/API.md
 expect_file_contains "API docs request byte cap error" '| `413` | `request_too_large` |' docs/API.md
+expect_file_contains "API docs health model readiness" '"model_ready": true' docs/API.md
+expect_file_contains "API docs health next action" '"next_action": null' docs/API.md
 
 expect_output "models help lists scan" "nanocamelid models scan" cargo run -- models --help
 expect_output "models list dry-run command" "list_command: nanocamelid models list --dir /mnt/nanocamelid/models" cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json
