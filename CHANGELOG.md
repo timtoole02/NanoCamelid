@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added `scripts/release-preflight.sh` so the v0.1 release publish path has a
+  local clean-tree/version/tag preflight with an optional remote tag check and
+  an exact GitHub release tag push action.
 - Tightened stable CLI option handling so `ready 1b` and `tui` reject unknown
   `--flag` values with command-specific actionable errors before interpreting
   them as prompt or numeric arguments.

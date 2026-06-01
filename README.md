@@ -102,6 +102,17 @@ and service installer under
 Set `NANOCAMELID_RELEASE_INSTALL_DIR` to choose a different companion-file
 location.
 
+Before publishing a release tag, run the local release preflight:
+
+```bash
+./scripts/release-preflight.sh --dry-run
+./scripts/release-preflight.sh --check-remote --require-unpublished
+```
+
+The preflight verifies the Cargo version, clean-tree state, release target,
+package dry-run, installer dry-run, and prints the exact tag push action for
+the GitHub release workflow.
+
 Source installs are explicit dev mode:
 
 ```bash

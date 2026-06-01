@@ -41,8 +41,10 @@ See `docs/MODEL_CATALOG.md` and `docs/SUPPORT_MATRIX.md`.
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo build --release --bins --target aarch64-unknown-linux-gnu`
 - `./scripts/package-release.sh --dry-run`
+- `./scripts/release-preflight.sh --check-remote --require-unpublished`
 - `./scripts/validate.sh --dry-run`
 
 GitHub releases run the standard validation gate before packaging the aarch64
 Linux release archive, then publish the archive and `SHA256SUMS` from
-`scripts/package-release.sh`.
+`scripts/package-release.sh`. The final publish step is to tag and push the
+validated commit named by `scripts/release-preflight.sh`.
