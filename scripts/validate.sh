@@ -607,6 +607,11 @@ expect_file_contains "Cargo package README" 'readme = "README.md"' Cargo.toml
 expect_file_contains "Cargo package category" 'categories = ["command-line-utilities"]' Cargo.toml
 expect_file_contains "release workflow preflight gate" "run: ./scripts/release-preflight.sh --dry-run" .github/workflows/release.yml
 expect_file_contains "release workflow standard validation gate" "run: ./scripts/validate.sh" .github/workflows/release.yml
+expect_file_contains "release workflow arm runner" "runs-on: ubuntu-24.04-arm" .github/workflows/release.yml
+expect_file_contains "release workflow target install" "run: rustup target add aarch64-unknown-linux-gnu" .github/workflows/release.yml
+expect_file_contains "release workflow package script" "run: ./scripts/package-release.sh" .github/workflows/release.yml
+expect_file_contains "release workflow release notes body" "body_path: RELEASE_NOTES.md" .github/workflows/release.yml
+expect_file_contains "release workflow checksum upload" "dist/SHA256SUMS" .github/workflows/release.yml
 expect_file_contains "release notes preflight gate" "- \`./scripts/release-preflight.sh --dry-run\`" RELEASE_NOTES.md
 expect_file_contains "release notes standard validation gate" "- \`./scripts/validate.sh\`" RELEASE_NOTES.md
 expect_file_contains "release notes dry-run packaging check" "- \`./scripts/package-release.sh --dry-run\`" RELEASE_NOTES.md

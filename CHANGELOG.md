@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added validation coverage for the GitHub release workflow runner, explicit
+  aarch64 target install, release packaging script, release-notes body, and
+  `SHA256SUMS` upload contract.
 - Tightened release preflight so it now verifies the default release installer
   dry-run still resolves to the Cargo version and aarch64 Linux target being
   published.
