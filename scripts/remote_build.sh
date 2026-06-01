@@ -182,6 +182,16 @@ require_absolute_path() {
   esac
 }
 
+require_remote_cargo_target_dir() {
+  case "$PI_TARGET_DIR" in
+    "$PI_REPO"/target | "$PI_REPO"/target/*)
+      echo "Refusing to use a remote repo-local Cargo target dir: $PI_TARGET_DIR" >&2
+      echo "Set NANOCAMELID_REMOTE_TARGET_DIR outside the remote checkout." >&2
+      exit 2
+      ;;
+  esac
+}
+
 is_non_negative_float() {
   [[ "${1:-}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]
 }
@@ -399,6 +409,7 @@ require_toggle "NANOCAMELID_REMOTE_PREFILL_BENCH" "$REMOTE_PREFILL_BENCH"
 require_toggle "NANOCAMELID_REMOTE_EVIDENCE" "$REMOTE_EVIDENCE"
 require_absolute_path "NANOCAMELID_REMOTE_WORKSPACE" "$PI_WORKSPACE"
 require_absolute_path "NANOCAMELID_REMOTE_TARGET_DIR" "$PI_TARGET_DIR"
+require_remote_cargo_target_dir
 require_non_negative_integer "NANOCAMELID_REMOTE_MIN_FREE_KB" "$REMOTE_MIN_FREE_KB"
 case "$REMOTE_DIRTY_POLICY" in
   fail | archive) ;;
