@@ -4,6 +4,8 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added release-facing Cargo package metadata so the packaged binary has a
+  public description, repository URL, README pointer, keywords, and category.
 - Synced the public release notes validation checklist with the actual release
   workflow, including the full standard validation gate before packaging.
 - Tightened the systemd user-service installer so model, unit, and config

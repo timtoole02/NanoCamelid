@@ -3,6 +3,11 @@ name = "nanocamelid"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "A compact local GGUF inference runtime for Raspberry Pi-class ARM64 hardware."
+repository = "https://github.com/timtoole02/NanoCamelid"
+readme = "README.md"
+keywords = ["gguf", "llm", "inference", "raspberry-pi", "arm64"]
+categories = ["command-line-utilities"]
 default-run = "nanocamelid"
 
 [dependencies]

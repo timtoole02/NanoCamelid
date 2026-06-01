@@ -584,6 +584,10 @@ fi
 
 echo "==> Checking public docs and examples for private paths/IPs..."
 check_public_hygiene
+expect_file_contains "Cargo package description" 'description = "A compact local GGUF inference runtime for Raspberry Pi-class ARM64 hardware."' Cargo.toml
+expect_file_contains "Cargo package repository" 'repository = "https://github.com/timtoole02/NanoCamelid"' Cargo.toml
+expect_file_contains "Cargo package README" 'readme = "README.md"' Cargo.toml
+expect_file_contains "Cargo package category" 'categories = ["command-line-utilities"]' Cargo.toml
 expect_file_contains "release workflow standard validation gate" "run: ./scripts/validate.sh" .github/workflows/release.yml
 expect_file_contains "release notes standard validation gate" "- \`./scripts/validate.sh\`" RELEASE_NOTES.md
 expect_file_contains "release notes dry-run packaging check" "- \`./scripts/package-release.sh --dry-run\`" RELEASE_NOTES.md
