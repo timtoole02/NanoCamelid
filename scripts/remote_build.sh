@@ -15,7 +15,7 @@ Useful env:
   NANOCAMELID_REMOTE_CONTEXT_LIMIT Optional single context cap for readiness and prefill sweep
   NANOCAMELID_REMOTE_CONTEXT_PACKS  Optional comma-separated 1B context caps to run after readiness
   NANOCAMELID_REMOTE_PREFILL_BATCH   Optional prompt prefill batch for remote readiness/smoke gates
-  NANOCAMELID_REMOTE_TARGET_DIR      Optional Cargo target dir; defaults to <remote-workspace>/target
+  NANOCAMELID_REMOTE_TARGET_DIR      Optional absolute Cargo target dir; defaults to <remote-workspace>/target
   NANOCAMELID_REMOTE_MIN_FREE_KB     Optional minimum free KiB required before deploy; defaults to 262144
   NANOCAMELID_REMOTE_DIRTY_POLICY    fail/archive policy for dirty git-ff Pi checkouts; defaults to fail
   NANOCAMELID_REMOTE_1B_QUANT       Optional q4/q8 selector for Pi-local default 1B rows
@@ -167,6 +167,19 @@ require_non_negative_integer() {
     echo "$label must be a non-negative integer: $value" >&2
     exit 2
   fi
+}
+
+require_absolute_path() {
+  local label="$1"
+  local value="$2"
+
+  case "$value" in
+    /*) ;;
+    *)
+      echo "$label must be an absolute path: $value" >&2
+      exit 2
+      ;;
+  esac
 }
 
 is_non_negative_float() {
@@ -384,6 +397,8 @@ print_evidence_command() {
 require_toggle "NANOCAMELID_REMOTE_SMOKE" "$REMOTE_SMOKE_ENABLED"
 require_toggle "NANOCAMELID_REMOTE_PREFILL_BENCH" "$REMOTE_PREFILL_BENCH"
 require_toggle "NANOCAMELID_REMOTE_EVIDENCE" "$REMOTE_EVIDENCE"
+require_absolute_path "NANOCAMELID_REMOTE_WORKSPACE" "$PI_WORKSPACE"
+require_absolute_path "NANOCAMELID_REMOTE_TARGET_DIR" "$PI_TARGET_DIR"
 require_non_negative_integer "NANOCAMELID_REMOTE_MIN_FREE_KB" "$REMOTE_MIN_FREE_KB"
 case "$REMOTE_DIRTY_POLICY" in
   fail | archive) ;;
