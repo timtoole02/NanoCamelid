@@ -1359,6 +1359,8 @@ expect_output "release preflight target" "release_target: aarch64-unknown-linux-
 expect_output "release preflight tree state" "working_tree: " ./scripts/release-preflight.sh --dry-run
 expect_output "release preflight changelog version" "changelog_entry: CHANGELOG.md has ## [0.1.0] -" ./scripts/release-preflight.sh --dry-run
 expect_output "release preflight release notes version" "release_notes: RELEASE_NOTES.md has NanoCamelid v0.1.0 Release Notes" ./scripts/release-preflight.sh --dry-run
+expect_output "release preflight installer default version" "installer_default: v0.1.0" ./scripts/release-preflight.sh --dry-run
+expect_output "release preflight installer target" "installer_target: aarch64-unknown-linux-gnu" ./scripts/release-preflight.sh --dry-run
 expect_output "release preflight checks" "checks: ./scripts/validate.sh; ./scripts/package-release.sh --dry-run; ./scripts/install.sh --dry-run" ./scripts/release-preflight.sh --dry-run
 expect_output "release preflight next action" "next_action: git tag -a v0.1.0" ./scripts/release-preflight.sh --dry-run
 expect_failure_output "release preflight rejects version mismatch" "does not match Cargo.toml version" env NANOCAMELID_VERSION=v9.9.9 ./scripts/release-preflight.sh --dry-run

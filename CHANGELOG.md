@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Tightened release preflight so it now verifies the default release installer
+  dry-run still resolves to the Cargo version and aarch64 Linux target being
+  published.
 - Added `docs/RELEASE_PROCESS.md` as a public-safe release runbook covering
   preflight, tag publication, GitHub workflow gates, artifacts, checksums,
   post-publish installer smoke, and release-document hygiene.

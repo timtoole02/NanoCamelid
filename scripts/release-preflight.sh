@@ -87,6 +87,23 @@ require_file_contains "release notes title" "$repo_root/RELEASE_NOTES.md" "NanoC
 
 cd "$repo_root"
 
+require_output_contains() {
+  local label="$1"
+  local output="$2"
+  local needle="$3"
+
+  if ! grep -F -- "$needle" <<<"$output" >/dev/null 2>&1; then
+    echo "Release preflight $label mismatch for $version_tag." >&2
+    echo "Expected to find: $needle" >&2
+    exit 2
+  fi
+}
+
+installer_dry_run="$(env -u NANOCAMELID_VERSION NANOCAMELID_RELEASE_TARGET="$release_target" ./scripts/install.sh --dry-run)"
+require_output_contains "installer default version" "$installer_dry_run" "version: $version_tag"
+require_output_contains "installer default target" "$installer_dry_run" "release_target: $release_target"
+require_output_contains "installer release URL" "$installer_dry_run" "release_url: https://github.com/timtoole02/NanoCamelid/releases/download/$version_tag/nanocamelid-$version_tag-$release_target.tar.gz"
+
 working_tree="clean"
 if ! git diff --quiet -- . || ! git diff --cached --quiet -- .; then
   working_tree="dirty"
@@ -158,6 +175,8 @@ echo "head: $head_sha"
 echo "working_tree: $working_tree"
 echo "changelog_entry: CHANGELOG.md has ## [$version] -"
 echo "release_notes: RELEASE_NOTES.md has NanoCamelid $version_tag Release Notes"
+echo "installer_default: $version_tag"
+echo "installer_target: $release_target"
 echo "local_tag: $local_tag_status"
 echo "remote: $remote"
 echo "remote_tag: $remote_tag_status"
