@@ -91,6 +91,10 @@ directory, unit directory, and EnvironmentFile directory. Relative overrides are
 rejected during dry-run and install so the unit that passes preflight is the
 same shape systemd will load.
 
+Literal `%` characters in generated systemd unit values are escaped before the
+unit is written, so systemd does not reinterpret user-provided paths or bind
+values as specifiers.
+
 When the service binds to the default loopback host, the generated unit keeps
 `IPAddressAllow=localhost`. Authenticated non-loopback binds switch that
 allowlist to `IPAddressAllow=any` so the systemd network policy matches the

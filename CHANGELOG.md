@@ -4,6 +4,8 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Hardened the systemd user-service installer so generated unit values escape
+  literal `%` characters before systemd can treat them as specifiers.
 - Added `model_ready` and `next_action` to the local API `/health` response so
   local tools can distinguish an up server from a generation-ready model
   directory and show an actionable fix when no GGUF is discoverable.

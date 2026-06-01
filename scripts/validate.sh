@@ -1343,3 +1343,5 @@ expect_failure_output "service installer rejects relative config dir" "config di
 expect_failure_output "service installer rejects unauthenticated network bind" "--host outside loopback requires --api-key or NANOCAMELID_API_KEY" ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
 expect_output "service installer allows authenticated network bind" "listen: http://0.0.0.0:8080" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
 expect_output "service installer network bind allowlist" "IPAddressAllow=any" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
+expect_output "service installer escapes systemd specifiers in binary path" 'ExecStart="/tmp/nanocamelid%%h" serve' ./scripts/install-systemd-user-service.sh --binary /tmp/nanocamelid%h --model-dir /models/%u --dry-run
+expect_output "service installer escapes systemd specifiers in model dir" 'ReadOnlyPaths=-"/models/%%u"' ./scripts/install-systemd-user-service.sh --binary /tmp/nanocamelid%h --model-dir /models/%u --dry-run

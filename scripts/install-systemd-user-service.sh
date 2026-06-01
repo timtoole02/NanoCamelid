@@ -108,6 +108,7 @@ systemd_quote() {
   local value="$1"
   value="${value//\\/\\\\}"
   value="${value//\"/\\\"}"
+  value="${value//%/%%}"
   printf '"%s"' "$value"
 }
 
