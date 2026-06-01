@@ -15,7 +15,7 @@ Runs NanoCamelid's standard local validation gate:
   7. cargo run -- doctor --dry-run --json
   8. cargo run -- serve --help
   9. cargo run -- serve --dry-run
-  10. local serve HTTP smoke on 127.0.0.1
+  10. local serve HTTP smoke on 127.0.0.1, including request/output caps
   11. cargo run -- models --help
   11a. cargo run -- models list --help
   11b. cargo run -- models scan --help
@@ -214,7 +214,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "cargo_incremental: ${CARGO_INCREMENTAL:-default}"
   fi
-  echo "steps: public doc/example hygiene scan; cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; stable v0.1 CLI help contract sweep; cargo run -- smoke --help; cargo run -- doctor --dry-run --json; cargo run -- serve --help; cargo run -- serve --dry-run; local serve HTTP smoke on 127.0.0.1; cargo run -- models --help; cargo run -- models list --help; cargo run -- models scan --help; cargo run -- models inspect --help; cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models inspect 1b --dry-run; cargo run -- models inspect 3b --dry-run; cargo run -- models inspect /models/custom.gguf --dry-run; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q8 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run; release installer companion-file dry-run checks; ./scripts/package-release.sh --dry-run; ./scripts/install-systemd-user-service.sh --dry-run"
+  echo "steps: public doc/example hygiene scan; cargo fmt -- --check; cargo test; cargo clippy --all-targets -- -D warnings; stable v0.1 CLI help contract sweep; cargo run -- smoke --help; cargo run -- doctor --dry-run --json; cargo run -- serve --help; cargo run -- serve --dry-run; local serve HTTP smoke on 127.0.0.1 with request/output caps; cargo run -- models --help; cargo run -- models list --help; cargo run -- models scan --help; cargo run -- models inspect --help; cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models scan --dry-run --dir /mnt/nanocamelid/models --json; cargo run -- models inspect 1b --dry-run; cargo run -- models inspect 3b --dry-run; cargo run -- models inspect /models/custom.gguf --dry-run; cargo run -- model 1b --dry-run; cargo run -- inspect 1b --dry-run; cargo run -- generate 1b --dry-run; cargo run -- chat 1b --dry-run; cargo run -- smoke 1b --dry-run; cargo run -- ready 1b --dry-run; cargo run -- evidence 1b --dry-run; cargo run -- tui 1b --dry-run; cargo run -- bench 1b --dry-run; cargo run -- bench 1b --help; ./scripts/pi/model-1b.sh --dry-run; ./scripts/pi/smoke-1b.sh --dry-run; ./scripts/pi/ready-1b.sh --dry-run; ./scripts/pi/chat-1b.sh --dry-run; ./scripts/pi/bench-1b-prefill.sh --dry-run; ./scripts/pi/context-pack-1b.sh --dry-run; ./scripts/pi/evidence-1b.sh --dry-run; ./scripts/pi/strand-cluster.sh --dry-run; ./scripts/pi/mixtral-cluster.sh --dry-run; ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_CONTEXT_PACKS=512,1024 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_PREFILL_BENCH=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_EVIDENCE=1 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q4 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; NANOCAMELID_REMOTE_1B_QUANT=q8 ./scripts/remote_build.sh <redacted-pi-host> --dry-run; ./scripts/install.sh --dry-run; release installer companion-file dry-run checks; ./scripts/package-release.sh --dry-run; ./scripts/install-systemd-user-service.sh --dry-run"
   exit 0
 fi
 
@@ -530,6 +530,18 @@ check_local_api_smoke() {
   expect_http_status "completion missing body" "400" "$status" "$api_smoke_body"
   expect_file_contains "completion missing body" "\"code\":\"missing_body\"" "$api_smoke_body"
 
+  status="$(
+    printf '{"model":"1b","prompt":"%05000d","max_tokens":1}' 0 | \
+      curl -sS -o "$api_smoke_body" -w "%{http_code}" \
+        -X POST \
+        -H "Authorization: Bearer $api_key" \
+        -H "Content-Type: application/json" \
+        --data-binary @- \
+        "$base_url/v1/completions" || true
+  )"
+  expect_http_status "completion request byte cap" "413" "$status" "$api_smoke_body"
+  expect_file_contains "completion request byte cap" "\"code\":\"request_too_large\"" "$api_smoke_body"
+
   status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
     -X POST \
     -H "Authorization: Bearer $api_key" \
@@ -613,6 +625,7 @@ echo "==> Checking local API server HTTP smoke..."
 check_local_api_smoke
 expect_file_contains "API docs missing body error" '| `400` | `missing_body` |' docs/API.md
 expect_file_contains "API docs invalid content length error" '| `400` | `invalid_content_length` |' docs/API.md
+expect_file_contains "API docs request byte cap error" '| `413` | `request_too_large` |' docs/API.md
 
 expect_output "models help lists scan" "nanocamelid models scan" cargo run -- models --help
 expect_output "models list dry-run command" "list_command: nanocamelid models list --dir /mnt/nanocamelid/models" cargo run -- models list --dry-run --dir /mnt/nanocamelid/models --json

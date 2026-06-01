@@ -4236,6 +4236,11 @@ fn read_http_request_text(
     };
     let target_len = header_end.saturating_add(content_length);
     if target_len > max_request_bytes {
+        drain_oversized_http_body(
+            stream,
+            target_len.saturating_sub(request_bytes.len()),
+            max_request_bytes,
+        )?;
         return Ok(Some(Err(request_too_large_error())));
     }
     while request_bytes.len() < target_len {
@@ -4251,6 +4256,40 @@ fn read_http_request_text(
     Ok(Some(Ok(
         String::from_utf8_lossy(&request_bytes).into_owned()
     )))
+}
+
+fn drain_oversized_http_body(
+    stream: &mut TcpStream,
+    remaining_bytes: usize,
+    max_request_bytes: usize,
+) -> io::Result<()> {
+    let previous_timeout = stream.read_timeout()?;
+    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+    let mut remaining_drain = remaining_bytes.min(max_request_bytes.clamp(1, 16 * 1024));
+    while remaining_drain > 0 {
+        let mut chunk = vec![0u8; remaining_drain.min(16 * 1024)];
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(err) => {
+                let _ = stream.set_read_timeout(previous_timeout);
+                return Err(err);
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        remaining_drain -= read;
+    }
+    stream.set_read_timeout(previous_timeout)?;
+    Ok(())
 }
 
 fn http_header_end(request_bytes: &[u8]) -> Option<usize> {

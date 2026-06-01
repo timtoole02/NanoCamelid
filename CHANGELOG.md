@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Made the local API server drain a bounded oversized request body before
+  returning `request_too_large`, and extended the live validation smoke to
+  exercise that configured HTTP request byte cap.
 - Tightened the stable `models inspect` namespace so it rejects missing,
   non-GGUF, or unknown shorthand model arguments before printing an inspect
   plan.
