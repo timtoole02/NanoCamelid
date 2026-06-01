@@ -5155,10 +5155,13 @@ fn write_text_response(
     body: &str,
     content_type: &str,
 ) -> io::Result<()> {
+    write!(stream, "{}", http_response_text(status, body, content_type))
+}
+
+fn http_response_text(status: u16, body: &str, content_type: &str) -> String {
     let status_text = http_status_text(status);
-    write!(
-        stream,
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type\r\nConnection: close\r\n\r\n{body}",
+    format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
 }
@@ -10139,17 +10142,17 @@ mod tests {
         default_llama32_3b_model_path, device_model, doctor_json, evidence_1b_status_json,
         evidence_context_pack_command, evidence_model_command, evidence_prefill_bench_command,
         evidence_prefill_bench_command_with_env, evidence_ready_no_chat_command,
-        generation_status_json, help_topic_for_args, help_topic_named, http_status_text,
-        inspect_1b_status_json, inspect_runtime_summary, is_generation_stop_token, is_help_flag,
-        is_known_api_path, json_string, json_string_array, llama32_1b_model_not_found_message,
-        llama32_1b_quantization_for_path, llama32_1b_shape_audit,
-        llama32_3b_model_not_found_message, looks_like_gguf_path, looks_like_non_gguf_model_path,
-        method_not_allowed_error, model_1b_status_json, model_entry_aliases,
-        parse_bench_1b_args_with_env, parse_bench_1b_args_with_path, parse_bench_q4_layout_args,
-        parse_bench_q4_prefill_args, parse_bench_q8_dot_args, parse_content_length,
-        parse_context_packs, parse_cpu_list, parse_doctor_args, parse_evidence_1b_args_with_env,
-        parse_evidence_1b_args_with_path, parse_generate_args_with_env,
-        parse_generate_args_with_env_and_alias_env_and_workspace,
+        generation_status_json, help_topic_for_args, help_topic_named, http_response_text,
+        http_status_text, inspect_1b_status_json, inspect_runtime_summary,
+        is_generation_stop_token, is_help_flag, is_known_api_path, json_string, json_string_array,
+        llama32_1b_model_not_found_message, llama32_1b_quantization_for_path,
+        llama32_1b_shape_audit, llama32_3b_model_not_found_message, looks_like_gguf_path,
+        looks_like_non_gguf_model_path, method_not_allowed_error, model_1b_status_json,
+        model_entry_aliases, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
+        parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
+        parse_content_length, parse_context_packs, parse_cpu_list, parse_doctor_args,
+        parse_evidence_1b_args_with_env, parse_evidence_1b_args_with_path,
+        parse_generate_args_with_env, parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_http_request,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_models_args,
         parse_prefill_batches, parse_prefill_bench_1b_batch_metrics, parse_probe_args,
@@ -10904,6 +10907,13 @@ flags\t\t: sse4_2 avx2
         assert_eq!(err.status, 405);
         assert_eq!(err.code, "method_not_allowed");
         assert_eq!(err.message, "Use POST for completion endpoints.");
+
+        let response = http_response_text(200, "{\"status\":\"ok\"}", "application/json");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("\r\nCache-Control: no-store\r\n"));
+        assert!(response.contains("\r\nX-Content-Type-Options: nosniff\r\n"));
+        assert!(response.contains("\r\nReferrer-Policy: no-referrer\r\n"));
+        assert!(response.contains("\r\nAccess-Control-Allow-Origin: *\r\n"));
     }
 
     #[test]

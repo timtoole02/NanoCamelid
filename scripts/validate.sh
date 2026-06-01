@@ -444,6 +444,9 @@ validate_api_smoke_cleanup() {
   if [[ -n "${api_smoke_body:-}" ]]; then
     rm -f "$api_smoke_body"
   fi
+  if [[ -n "${api_smoke_headers:-}" ]]; then
+    rm -f "$api_smoke_headers"
+  fi
 }
 
 check_local_api_smoke() {
@@ -462,6 +465,7 @@ check_local_api_smoke() {
   api_smoke_model_dir="$(mktemp -d "${TMPDIR:-/tmp}/nanocamelid-validate-models.XXXXXX")"
   api_smoke_log="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-validate-api.XXXXXX.log")"
   api_smoke_body="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-validate-api.XXXXXX.body")"
+  api_smoke_headers="$(mktemp "${TMPDIR:-/tmp}/nanocamelid-validate-api.XXXXXX.headers")"
   trap validate_api_smoke_cleanup EXIT
 
   cargo run -- serve \
@@ -481,7 +485,7 @@ check_local_api_smoke() {
       cat "$api_smoke_log" >&2
       exit 1
     fi
-    status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" \
+    status="$(curl -sS -D "$api_smoke_headers" -o "$api_smoke_body" -w "%{http_code}" \
       -H "Authorization: Bearer $api_key" "$base_url/health" || true)"
     if [[ "$status" == "200" ]]; then
       break
@@ -497,6 +501,9 @@ check_local_api_smoke() {
   expect_file_contains "authenticated health request cap" "\"max_request_bytes\":4096" "$api_smoke_body"
   expect_file_contains "authenticated health input cap" "\"max_input_tokens\":64" "$api_smoke_body"
   expect_file_contains "authenticated health output cap" "\"max_output_tokens\":8" "$api_smoke_body"
+  expect_file_contains "API response cache control" "Cache-Control: no-store" "$api_smoke_headers"
+  expect_file_contains "API response nosniff header" "X-Content-Type-Options: nosniff" "$api_smoke_headers"
+  expect_file_contains "API response referrer policy" "Referrer-Policy: no-referrer" "$api_smoke_headers"
 
   status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" "$base_url/health" || true)"
   expect_http_status "unauthenticated health rejection" "401" "$status" "$api_smoke_body"

@@ -46,6 +46,14 @@ Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Authorization, Content-Type
 ```
 
+All API responses include conservative local-tool security headers:
+
+```text
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+```
+
 ## Endpoints
 
 | Method | Path | Purpose |
