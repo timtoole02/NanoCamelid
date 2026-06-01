@@ -424,6 +424,16 @@ if evidence_enabled && remote_smoke_disabled; then
   exit 2
 fi
 
+if [[ -n "$REMOTE_CONTEXT_LIMIT" ]]; then
+  require_positive_integer "Remote context limit" "$REMOTE_CONTEXT_LIMIT"
+fi
+if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
+  require_positive_integer "Remote prefill batch" "$REMOTE_PREFILL_BATCH"
+fi
+if [[ -n "$REMOTE_CONTEXT_PACKS" ]]; then
+  require_context_caps "$REMOTE_CONTEXT_PACKS"
+fi
+
 if ! remote_smoke_disabled; then
   case "$REMOTE_1B_QUANT_LOWER" in
     "" | q4 | q4_0 | q8 | q8_0) ;;
@@ -444,15 +454,6 @@ if ! remote_smoke_disabled; then
   if [[ "$READY_CHAT_LOWER" != "0" && "$READY_CHAT_LOWER" != "false" && "$READY_CHAT_LOWER" != "no" && "$READY_CHAT_LOWER" != "off" ]]; then
     require_positive_integer "Readiness token count" "$READY_TOKENS"
     require_non_negative_float "Readiness temperature" "$READY_TEMP"
-  fi
-  if [[ -n "$REMOTE_CONTEXT_LIMIT" ]]; then
-    require_positive_integer "Remote context limit" "$REMOTE_CONTEXT_LIMIT"
-  fi
-  if [[ -n "$REMOTE_PREFILL_BATCH" ]]; then
-    require_positive_integer "Remote prefill batch" "$REMOTE_PREFILL_BATCH"
-  fi
-  if [[ -n "$REMOTE_CONTEXT_PACKS" ]]; then
-    require_context_caps "$REMOTE_CONTEXT_PACKS"
   fi
   if prefill_bench_enabled || evidence_enabled; then
     require_positive_integer "Prefill token count" "$PREFILL_TOKENS"

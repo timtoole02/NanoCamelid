@@ -1266,6 +1266,9 @@ echo "==> Checking remote Pi build launcher ignores smoke env when remote smoke 
 env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_SMOKE_TOKENS=bad NANOCAMELID_READY_TEMP=bad NANOCAMELID_READY_TOKENS=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_REMOTE_SMOKE_KIND=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 env NANOCAMELID_REMOTE_SMOKE=off NANOCAMELID_REMOTE_SMOKE_KIND=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build disabled smoke invalid context limit" env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_REMOTE_CONTEXT_LIMIT=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build disabled smoke invalid prefill batch" env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_REMOTE_PREFILL_BATCH=bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
+expect_failure "remote_build disabled smoke invalid context caps" env NANOCAMELID_REMOTE_SMOKE=0 NANOCAMELID_REMOTE_CONTEXT_PACKS=512,bad ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build disabled smoke skips shape audit" "readiness_shape_audit: skipped" env NANOCAMELID_REMOTE_SMOKE=0 ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 expect_output "remote_build smoke off skips shape audit" "readiness_shape_audit: skipped" env NANOCAMELID_REMOTE_SMOKE=off ./scripts/remote_build.sh "<redacted-pi-host>" --dry-run
 
