@@ -556,6 +556,7 @@ fi
 
 echo "==> Checking public docs and examples for private paths/IPs..."
 check_public_hygiene
+expect_file_contains "release workflow standard validation gate" "run: ./scripts/validate.sh" .github/workflows/release.yml
 
 echo "==> Checking format..."
 cargo fmt -- --check

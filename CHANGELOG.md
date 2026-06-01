@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Made the GitHub release workflow run the standard validation gate before
+  packaging/uploading versioned aarch64 Linux artifacts, with local validation
+  coverage for that release guard.
 - Added local API response-status counters to `/metrics`, documented the
   Prometheus-style output, and extended the live API validation smoke to verify
   status-bucket metrics.
