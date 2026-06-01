@@ -6780,25 +6780,7 @@ fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
                     config.rope_freq_base
                 ));
             }
-            check_metadata_f32(&mut mismatches, gguf, "llama.rope.scaling.factor", 32.0);
-            check_metadata_u32(
-                &mut mismatches,
-                gguf,
-                "llama.rope.scaling.original_context_length",
-                8_192,
-            );
-            check_metadata_f32(
-                &mut mismatches,
-                gguf,
-                "llama.rope.scaling.low_freq_factor",
-                1.0,
-            );
-            check_metadata_f32(
-                &mut mismatches,
-                gguf,
-                "llama.rope.scaling.high_freq_factor",
-                4.0,
-            );
+            check_llama32_1b_rope_scaling(&mut mismatches, gguf);
             Some(config)
         }
         Err(err) => {
@@ -6945,6 +6927,31 @@ fn check_optional_tensor_matrix_dimensions(
             direct, transposed, tensor.dimensions
         ));
     }
+}
+
+fn check_llama32_1b_rope_scaling(mismatches: &mut Vec<String>, gguf: &gguf::GgufFile) {
+    let factor = gguf.metadata_f32("llama.rope.scaling.factor");
+    let original_context_length = gguf.metadata_u32("llama.rope.scaling.original_context_length");
+    let low_freq_factor = gguf.metadata_f32("llama.rope.scaling.low_freq_factor");
+    let high_freq_factor = gguf.metadata_f32("llama.rope.scaling.high_freq_factor");
+
+    if factor.is_none()
+        && original_context_length.is_none()
+        && low_freq_factor.is_none()
+        && high_freq_factor.is_none()
+    {
+        return;
+    }
+
+    check_metadata_f32(mismatches, gguf, "llama.rope.scaling.factor", 32.0);
+    check_metadata_u32(
+        mismatches,
+        gguf,
+        "llama.rope.scaling.original_context_length",
+        8_192,
+    );
+    check_metadata_f32(mismatches, gguf, "llama.rope.scaling.low_freq_factor", 1.0);
+    check_metadata_f32(mismatches, gguf, "llama.rope.scaling.high_freq_factor", 4.0);
 }
 
 fn check_metadata_u32(
@@ -14116,7 +14123,26 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
-    fn llama32_1b_shape_audit_requires_llama3_rope_scaling() {
+    fn llama32_1b_shape_audit_allows_legacy_export_without_rope_scaling_metadata() {
+        let mut fixture = llama32_1b_shape_fixture();
+        fixture.metadata.remove("llama.rope.scaling.factor");
+        fixture
+            .metadata
+            .remove("llama.rope.scaling.original_context_length");
+        fixture
+            .metadata
+            .remove("llama.rope.scaling.low_freq_factor");
+        fixture
+            .metadata
+            .remove("llama.rope.scaling.high_freq_factor");
+
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert!(audit.ready, "{:?}", audit.mismatches);
+    }
+
+    #[test]
+    fn llama32_1b_shape_audit_checks_partial_llama3_rope_scaling() {
         let mut fixture = llama32_1b_shape_fixture();
         fixture
             .metadata
