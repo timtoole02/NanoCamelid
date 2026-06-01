@@ -1318,6 +1318,9 @@ expect_output "service installer localhost allowlist" "IPAddressAllow=localhost"
 expect_output "service installer api key redacted state" "api_key_required: true" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --dry-run
 expect_no_output "service installer does not print api key" "redacted-test-key" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --dry-run
 expect_failure_output "service installer rejects bad port" "--port must be an integer from 1 to 65535" ./scripts/install-systemd-user-service.sh --port 0 --dry-run
+expect_failure_output "service installer rejects relative model dir" "model-dir must be an absolute path" ./scripts/install-systemd-user-service.sh --model-dir models --dry-run
+expect_failure_output "service installer rejects relative systemd dir" "systemd user dir must be an absolute path" env NANOCAMELID_SYSTEMD_USER_DIR=systemd/user ./scripts/install-systemd-user-service.sh --dry-run
+expect_failure_output "service installer rejects relative config dir" "config dir must be an absolute path" env NANOCAMELID_CONFIG_DIR=config/nanocamelid ./scripts/install-systemd-user-service.sh --dry-run
 expect_failure_output "service installer rejects unauthenticated network bind" "--host outside loopback requires --api-key or NANOCAMELID_API_KEY" ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
 expect_output "service installer allows authenticated network bind" "listen: http://0.0.0.0:8080" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run
 expect_output "service installer network bind allowlist" "IPAddressAllow=any" env NANOCAMELID_API_KEY=redacted-test-key ./scripts/install-systemd-user-service.sh --host 0.0.0.0 --dry-run

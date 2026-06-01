@@ -46,6 +46,8 @@ Env:
   NANOCAMELID_MAX_INPUT_TOKENS
   NANOCAMELID_MAX_OUTPUT_TOKENS
   NANOCAMELID_SERVICE_NAME
+  NANOCAMELID_SYSTEMD_USER_DIR
+  NANOCAMELID_CONFIG_DIR
 USAGE
 }
 
@@ -88,6 +90,18 @@ validate_no_newline() {
     echo "$label must not contain newlines" >&2
     exit 2
   fi
+}
+
+validate_absolute_path() {
+  local label="$1"
+  local value="$2"
+  case "$value" in
+    /*) ;;
+    *)
+      echo "$label must be an absolute path: $value" >&2
+      exit 2
+      ;;
+  esac
 }
 
 systemd_quote() {
@@ -203,6 +217,11 @@ validate_no_newline "binary" "$binary"
 validate_no_newline "model-dir" "$model_dir"
 validate_no_newline "host" "$host"
 validate_no_newline "api-key" "$api_key"
+validate_no_newline "systemd user dir" "$unit_dir"
+validate_no_newline "config dir" "$config_dir"
+validate_absolute_path "model-dir" "$model_dir"
+validate_absolute_path "systemd user dir" "$unit_dir"
+validate_absolute_path "config dir" "$config_dir"
 
 if [[ -z "$api_key" ]] && ! is_loopback_host "$host"; then
   echo "--host outside loopback requires --api-key or NANOCAMELID_API_KEY" >&2
@@ -236,10 +255,7 @@ fi
 
 case "$binary" in
   /*) ;;
-  *)
-    echo "--binary must be an absolute path: $binary" >&2
-    exit 2
-    ;;
+  *) validate_absolute_path "--binary" "$binary" ;;
 esac
 
 unit_path="$unit_dir/$service_name.service"

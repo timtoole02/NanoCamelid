@@ -86,6 +86,11 @@ basic user-service hardening:
 The installer refuses non-loopback bind addresses unless bearer-token auth is
 configured with `--api-key` or `NANOCAMELID_API_KEY`.
 
+The generated systemd unit uses absolute paths for the binary, model
+directory, unit directory, and EnvironmentFile directory. Relative overrides are
+rejected during dry-run and install so the unit that passes preflight is the
+same shape systemd will load.
+
 When the service binds to the default loopback host, the generated unit keeps
 `IPAddressAllow=localhost`. Authenticated non-loopback binds switch that
 allowlist to `IPAddressAllow=any` so the systemd network policy matches the

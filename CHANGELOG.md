@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Tightened the systemd user-service installer so model, unit, and config
+  directory overrides must be absolute paths before a dry-run or install plan
+  is accepted.
 - Tightened local API method handling so every known endpoint path returns a
   structured `method_not_allowed` error for unsupported HTTP methods, while
   unknown paths remain structured `not_found` errors.
