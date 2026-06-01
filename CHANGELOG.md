@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Tightened stable CLI option handling so `ready 1b` and `tui` reject unknown
+  `--flag` values with command-specific actionable errors before interpreting
+  them as prompt or numeric arguments.
 - Hardened the systemd user-service installer so generated unit values escape
   literal `%` characters before systemd can treat them as specifiers.
 - Added `model_ready` and `next_action` to the local API `/health` response so

@@ -662,6 +662,8 @@ expect_failure_output "models missing command" "missing models command" cargo ru
 expect_failure_output "models inspect missing model" "models inspect requires <model.gguf|1b|3b>" cargo run -- models inspect --dry-run
 expect_failure_output "models inspect rejects unknown alias" "models inspect model argument must be a .gguf path or 1b/3b alias" cargo run -- models inspect badalias --dry-run
 expect_failure_output "models inspect rejects non-GGUF path" "models inspect model argument must be a .gguf path or 1b/3b alias" cargo run -- models inspect /models/not-a-gguf --dry-run
+expect_failure_output "ready rejects unknown stable option" "unknown ready 1B option" cargo run -- ready 1b --bogus --dry-run
+expect_failure_output "tui rejects unknown stable option" "unknown tui option" cargo run -- tui 1b --bogus --dry-run
 
 echo "==> Checking 1B model audit CLI dry run..."
 cargo run -- model 1b --dry-run

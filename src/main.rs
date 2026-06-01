@@ -2284,6 +2284,7 @@ fn parse_tui_args_with_env_and_alias_env_and_workspace(
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            arg if arg.starts_with("--") => return Err("unknown tui option"),
             _ => positionals.push(arg.clone()),
         }
     }
@@ -2718,6 +2719,7 @@ fn parse_ready_1b_args_inner(
                     return Err("ready 1B accepts only one quantization selector");
                 }
             }
+            arg if arg.starts_with("--") => return Err("unknown ready 1B option"),
             _ => smoke_args.push(arg.clone()),
         }
     }
@@ -12393,6 +12395,21 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn tui_args_reject_unknown_option() {
+        let err = parse_tui_args_with_env(
+            &[
+                "llama32-1b".to_owned(),
+                "--bad".to_owned(),
+                "--dry-run".to_owned(),
+            ],
+            None,
+        )
+        .expect_err("unknown TUI option should fail before numeric parsing");
+
+        assert_eq!(err, "unknown tui option");
+    }
+
+    #[test]
     fn smoke_q8_model_args_use_explicit_model_path_without_env() {
         let parsed = parse_smoke_args_with_env(
             &[
@@ -13643,6 +13660,19 @@ flags\t\t: sse4_2 avx2
         .expect_err("conflicting readiness selectors should fail");
 
         assert_eq!(err, "ready 1B accepts only one quantization selector");
+    }
+
+    #[test]
+    fn ready_1b_args_reject_unknown_option() {
+        let err = parse_ready_1b_args_with_env(
+            &["--bogus".to_owned(), "--dry-run".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("unknown readiness option should fail before prompt parsing");
+
+        assert_eq!(err, "unknown ready 1B option");
     }
 
     #[test]
