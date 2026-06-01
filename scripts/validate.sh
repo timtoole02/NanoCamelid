@@ -340,8 +340,10 @@ check_stable_cli_help() {
   expect_output "ready help documents 1b gate" "nanocamelid ready 1b" cargo run -- ready --help
   expect_output "chat help documents explicit model usage" "nanocamelid chat <model.gguf> <prompt>" cargo run -- chat --help
   expect_output "chat help documents 1b alias usage" "nanocamelid chat 1b <prompt>" cargo run -- chat --help
+  expect_output "chat help documents promoted template families" "Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma" cargo run -- chat --help
   expect_output "tui help documents explicit model usage" "nanocamelid tui <model.gguf> [temp] [max_tokens]" cargo run -- tui --help
   expect_output "tui help documents 1b alias usage" "nanocamelid tui 1b [temp] [max_tokens]" cargo run -- tui --help
+  expect_output "tui help documents promoted template families" "Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma" cargo run -- tui --help
   expect_output "serve help documents usage" "nanocamelid serve [--host <addr>] [--port <port>]" cargo run -- serve --help
 }
 

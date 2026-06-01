@@ -66,6 +66,7 @@ const DEFAULT_Q4_PREFILL_BATCH: usize = 16;
 const DEFAULT_Q4_PREFILL_RUNS: usize = 5;
 const Q4_PREFILL_ROWS: usize = 3_584;
 const Q4_PREFILL_COLS: usize = 3_584;
+const CHAT_TEMPLATE_FAMILIES: &str = "Llama, Qwen, ChatML, Mistral, DeepSeek-R1-Qwen, and Gemma";
 
 fn main() -> ExitCode {
     setup_thread_pool();
@@ -1286,7 +1287,7 @@ fn print_chat_usage() {
     println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
     println!();
     println!(
-        "Chat uses recognized tokenizer chat templates when present, including the Llama 3 instruct header/eot format."
+        "Chat uses recognized tokenizer chat templates when present: {CHAT_TEMPLATE_FAMILIES}."
     );
 }
 
@@ -1337,6 +1338,10 @@ fn print_tui_usage() {
         "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings after each turn"
     );
     println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
+    println!();
+    println!(
+        "TUI chat uses recognized tokenizer chat templates when present: {CHAT_TEMPLATE_FAMILIES}."
+    );
     println!();
     println!(
         "Commands inside the TUI: /help, /model <path>, /models, /temp <value>, /tokens <count>, /system <prompt>, /status, /history, /save <path>, /clear, /exit"

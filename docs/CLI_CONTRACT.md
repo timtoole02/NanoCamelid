@@ -55,6 +55,9 @@ below.
   the directory and points to `--dir` or `NANOCAMELID_MODEL_DIR`.
 - `models inspect` accepts only a `.gguf` path or the stable `1b`/`3b`
   aliases; unknown shorthand values fail before an inspect plan is printed.
+- `chat --help` and `tui --help` name the promoted tokenizer chat-template
+  families currently surfaced in the product docs: Llama, Qwen, ChatML,
+  Mistral, DeepSeek-R1-Qwen, and Gemma.
 - `ready 1b` and `tui` reject unknown `--flag` values before treating them as
   prompts or numeric arguments.
 - Invalid numeric flags should name the failing flag and accepted range.
