@@ -4,6 +4,8 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added the configured request/input/output caps to the local API `/health`
+  response so local tools can preflight server limits without scraping metrics.
 - Hardened the release installer so `NANOCAMELID_INSTALL_MODE` must be an
   explicit `release`, `source`, or `dev` value instead of silently falling back
   to release behavior for typos.

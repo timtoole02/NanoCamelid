@@ -4135,17 +4135,9 @@ fn handle_serve_connection(
     }
 
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/health") => write_json_response(
-            stream,
-            200,
-            &format!(
-                "{{\"status\":\"ok\",\"version\":{},\"model_dir\":{},\"api_key_required\":{}}}",
-                json_string(env!("CARGO_PKG_VERSION")),
-                json_string(&parsed.model_dir),
-                parsed.api_key.is_some()
-            ),
-        )
-        .map(|()| Some(200)),
+        ("GET", "/health") => {
+            write_json_response(stream, 200, &serve_health_json(parsed)).map(|()| Some(200))
+        }
         ("GET", "/v1/models") => {
             write_json_response(stream, 200, &serve_models_json(parsed)).map(|()| Some(200))
         }
@@ -4685,6 +4677,28 @@ fn serve_models_json(parsed: &ServeArgs) -> String {
         json_string(&parsed.model_dir),
         dir.is_dir(),
         data
+    )
+}
+
+fn serve_health_json(parsed: &ServeArgs) -> String {
+    format!(
+        concat!(
+            "{{",
+            "\"status\":\"ok\",",
+            "\"version\":{},",
+            "\"model_dir\":{},",
+            "\"api_key_required\":{},",
+            "\"max_request_bytes\":{},",
+            "\"max_input_tokens\":{},",
+            "\"max_output_tokens\":{}",
+            "}}"
+        ),
+        json_string(env!("CARGO_PKG_VERSION")),
+        json_string(&parsed.model_dir),
+        parsed.api_key.is_some(),
+        parsed.max_request_bytes,
+        parsed.max_input_tokens,
+        parsed.max_output_tokens
     )
 }
 
@@ -10060,11 +10074,11 @@ mod tests {
         ready_chat_temp_from_env_value, ready_chat_tokens_from_env_value, request_too_large_error,
         resolve_api_model_path, resolve_llama32_1b_model_path_with_workspace,
         resolve_llama32_3b_model_path_with_workspace, runtime_options_from_gguf,
-        serve_dry_run_command, serve_metrics_text, serve_models_json, shared_token_prefix_len,
-        shell_command, shell_command_with_env, smoke_1b_status_json, smoke_defaults_from_values,
-        smoke_plan_command_with_context, smoke_plan_command_with_env, trim_tui_history,
-        tui_prompt_history, validate_api_chat_completion_request, validate_api_completion_request,
-        validate_api_input_token_cap, validate_generation_budget,
+        serve_dry_run_command, serve_health_json, serve_metrics_text, serve_models_json,
+        shared_token_prefix_len, shell_command, shell_command_with_env, smoke_1b_status_json,
+        smoke_defaults_from_values, smoke_plan_command_with_context, smoke_plan_command_with_env,
+        trim_tui_history, tui_prompt_history, validate_api_chat_completion_request,
+        validate_api_completion_request, validate_api_input_token_cap, validate_generation_budget,
     };
 
     #[test]
@@ -11057,6 +11071,28 @@ flags\t\t: sse4_2 avx2
         assert!(json.contains("\"object\":\"list\""));
         assert!(json.contains("\"model_dir_exists\":false"));
         assert!(json.contains("\"data\":[]"));
+    }
+
+    #[test]
+    fn serve_health_json_reports_auth_and_caps() {
+        let parsed = ServeArgs {
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            model_dir: "/models".to_owned(),
+            api_key: Some("redacted".to_owned()),
+            max_request_bytes: 4096,
+            max_input_tokens: 1024,
+            max_output_tokens: 64,
+            dry_run: false,
+        };
+
+        let json = serve_health_json(&parsed);
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"api_key_required\":true"));
+        assert!(json.contains("\"max_request_bytes\":4096"));
+        assert!(json.contains("\"max_input_tokens\":1024"));
+        assert!(json.contains("\"max_output_tokens\":64"));
+        assert!(!json.contains("redacted"));
     }
 
     #[test]

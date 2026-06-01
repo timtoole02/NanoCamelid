@@ -70,7 +70,10 @@ Response:
   "status": "ok",
   "version": "0.1.0",
   "model_dir": "/mnt/nanocamelid/models",
-  "api_key_required": false
+  "api_key_required": false,
+  "max_request_bytes": 65536,
+  "max_input_tokens": 2048,
+  "max_output_tokens": 256
 }
 ```
 

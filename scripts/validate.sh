@@ -490,6 +490,9 @@ check_local_api_smoke() {
   done
   expect_http_status "authenticated health readiness" "200" "$status" "$api_smoke_body"
   expect_file_contains "authenticated health readiness" "\"status\":\"ok\"" "$api_smoke_body"
+  expect_file_contains "authenticated health request cap" "\"max_request_bytes\":4096" "$api_smoke_body"
+  expect_file_contains "authenticated health input cap" "\"max_input_tokens\":64" "$api_smoke_body"
+  expect_file_contains "authenticated health output cap" "\"max_output_tokens\":8" "$api_smoke_body"
 
   status="$(curl -sS -o "$api_smoke_body" -w "%{http_code}" "$base_url/health" || true)"
   expect_http_status "unauthenticated health rejection" "401" "$status" "$api_smoke_body"
