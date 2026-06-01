@@ -611,6 +611,11 @@ expect_file_contains "release notes preflight gate" "- \`./scripts/release-prefl
 expect_file_contains "release notes standard validation gate" "- \`./scripts/validate.sh\`" RELEASE_NOTES.md
 expect_file_contains "release notes dry-run packaging check" "- \`./scripts/package-release.sh --dry-run\`" RELEASE_NOTES.md
 expect_file_contains "release notes checksum artifact" "SHA256SUMS" RELEASE_NOTES.md
+expect_file_contains "README release process link" "docs/RELEASE_PROCESS.md" README.md
+expect_file_contains "release process preflight" "./scripts/release-preflight.sh --check-remote --require-unpublished" docs/RELEASE_PROCESS.md
+expect_file_contains "release process workflow validation gate" "./scripts/validate.sh" docs/RELEASE_PROCESS.md
+expect_file_contains "release process checksum artifact" "SHA256SUMS" docs/RELEASE_PROCESS.md
+expect_file_contains "release process installer smoke" "nanocamelid serve --dry-run" docs/RELEASE_PROCESS.md
 
 echo "==> Checking format..."
 cargo fmt -- --check

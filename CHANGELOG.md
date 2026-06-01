@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added `docs/RELEASE_PROCESS.md` as a public-safe release runbook covering
+  preflight, tag publication, GitHub workflow gates, artifacts, checksums,
+  post-publish installer smoke, and release-document hygiene.
 - Added the release publication preflight to the GitHub release workflow so tag
   and manual release runs verify the Cargo version, release docs, and release
   plan before validation, packaging, and artifact upload begin.

@@ -159,6 +159,8 @@ front door.
   shapes, auth, caps, metrics, and structured errors.
 - [docs/SERVICE_MODE.md](docs/SERVICE_MODE.md): systemd user-service install,
   defaults, and hardening notes.
+- [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md): release preflight,
+  publication, artifact, checksum, installer-smoke, and public-hygiene runbook.
 - [docs/PRODUCT_HISTORY.md](docs/PRODUCT_HISTORY.md): detailed prototype
   history, Pi evidence, performance notes, and advanced launchers.
 - [docs/PI_PORTING.md](docs/PI_PORTING.md): Pi deployment and validation notes.
