@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Tightened `scripts/release-preflight.sh` so release tagging now checks that
+  `CHANGELOG.md` and `RELEASE_NOTES.md` both carry the Cargo version being
+  published, with validation coverage for the dry-run contract.
 - Tightened stable `chat` parsing so unknown `--flag` values fail with an
   actionable chat-specific error before model-path resolution, and added
   validation coverage for that CLI contract.

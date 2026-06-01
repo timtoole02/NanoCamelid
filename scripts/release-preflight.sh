@@ -70,6 +70,21 @@ if [[ "$version" != "$cargo_version" ]]; then
   exit 2
 fi
 
+require_file_contains() {
+  local label="$1"
+  local file="$2"
+  local needle="$3"
+
+  if ! grep -F -- "$needle" "$file" >/dev/null 2>&1; then
+    echo "Release preflight missing $label for $version_tag in ${file#$repo_root/}." >&2
+    echo "Expected to find: $needle" >&2
+    exit 2
+  fi
+}
+
+require_file_contains "changelog entry" "$repo_root/CHANGELOG.md" "## [$version] -"
+require_file_contains "release notes title" "$repo_root/RELEASE_NOTES.md" "NanoCamelid $version_tag Release Notes"
+
 cd "$repo_root"
 
 working_tree="clean"
@@ -141,6 +156,8 @@ echo "release_target: $release_target"
 echo "branch: $branch"
 echo "head: $head_sha"
 echo "working_tree: $working_tree"
+echo "changelog_entry: CHANGELOG.md has ## [$version] -"
+echo "release_notes: RELEASE_NOTES.md has NanoCamelid $version_tag Release Notes"
 echo "local_tag: $local_tag_status"
 echo "remote: $remote"
 echo "remote_tag: $remote_tag_status"
