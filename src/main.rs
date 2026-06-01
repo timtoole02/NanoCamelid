@@ -6780,6 +6780,25 @@ fn llama32_1b_shape_audit(gguf: &gguf::GgufFile) -> ModelShapeAudit {
                     config.rope_freq_base
                 ));
             }
+            check_metadata_f32(&mut mismatches, gguf, "llama.rope.scaling.factor", 32.0);
+            check_metadata_u32(
+                &mut mismatches,
+                gguf,
+                "llama.rope.scaling.original_context_length",
+                8_192,
+            );
+            check_metadata_f32(
+                &mut mismatches,
+                gguf,
+                "llama.rope.scaling.low_freq_factor",
+                1.0,
+            );
+            check_metadata_f32(
+                &mut mismatches,
+                gguf,
+                "llama.rope.scaling.high_freq_factor",
+                4.0,
+            );
             Some(config)
         }
         Err(err) => {
@@ -6925,6 +6944,32 @@ fn check_optional_tensor_matrix_dimensions(
             "{name} dims expected {:?} or {:?} got {:?}",
             direct, transposed, tensor.dimensions
         ));
+    }
+}
+
+fn check_metadata_u32(
+    mismatches: &mut Vec<String>,
+    gguf: &gguf::GgufFile,
+    key: &str,
+    expected: u32,
+) {
+    match gguf.metadata_u32(key) {
+        Some(actual) if actual == expected => {}
+        Some(actual) => mismatches.push(format!("{key} expected {expected} got {actual}")),
+        None => mismatches.push(format!("{key} missing")),
+    }
+}
+
+fn check_metadata_f32(
+    mismatches: &mut Vec<String>,
+    gguf: &gguf::GgufFile,
+    key: &str,
+    expected: f32,
+) {
+    match gguf.metadata_f32(key) {
+        Some(actual) if (actual - expected).abs() <= f32::EPSILON => {}
+        Some(actual) => mismatches.push(format!("{key} expected {expected} got {actual}")),
+        None => mismatches.push(format!("{key} missing")),
     }
 }
 
@@ -14071,6 +14116,32 @@ flags\t\t: sse4_2 avx2
     }
 
     #[test]
+    fn llama32_1b_shape_audit_requires_llama3_rope_scaling() {
+        let mut fixture = llama32_1b_shape_fixture();
+        fixture
+            .metadata
+            .remove("llama.rope.scaling.original_context_length");
+        fixture.metadata.insert(
+            "llama.rope.scaling.factor".to_owned(),
+            GgufMetadataValue::F32(16.0),
+        );
+
+        let audit = llama32_1b_shape_audit(&fixture);
+
+        assert!(!audit.ready);
+        assert!(
+            audit
+                .mismatches
+                .contains(&"llama.rope.scaling.factor expected 32 got 16".to_owned())
+        );
+        assert!(
+            audit
+                .mismatches
+                .contains(&"llama.rope.scaling.original_context_length missing".to_owned())
+        );
+    }
+
+    #[test]
     fn runtime_options_read_qwen2_rope_scaling_metadata() {
         let mut fixture = inspect_fixture(false);
         fixture.metadata.insert(
@@ -14361,6 +14432,22 @@ flags\t\t: sse4_2 avx2
         fixture.metadata.insert(
             "llama.rope.freq_base".to_owned(),
             GgufMetadataValue::F32(500_000.0),
+        );
+        fixture.metadata.insert(
+            "llama.rope.scaling.factor".to_owned(),
+            GgufMetadataValue::F32(32.0),
+        );
+        fixture.metadata.insert(
+            "llama.rope.scaling.original_context_length".to_owned(),
+            GgufMetadataValue::U32(8_192),
+        );
+        fixture.metadata.insert(
+            "llama.rope.scaling.low_freq_factor".to_owned(),
+            GgufMetadataValue::F32(1.0),
+        );
+        fixture.metadata.insert(
+            "llama.rope.scaling.high_freq_factor".to_owned(),
+            GgufMetadataValue::F32(4.0),
         );
         fixture.metadata.insert(
             "llama.vocab_size".to_owned(),
