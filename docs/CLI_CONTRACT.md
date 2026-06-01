@@ -58,8 +58,8 @@ below.
 - `chat --help` and `tui --help` name the promoted tokenizer chat-template
   families currently surfaced in the product docs: Llama, Qwen, ChatML,
   Mistral, DeepSeek-R1-Qwen, and Gemma.
-- `ready 1b` and `tui` reject unknown `--flag` values before treating them as
-  prompts or numeric arguments.
+- `chat`, `ready 1b`, and `tui` reject unknown `--flag` values before treating
+  them as prompts or numeric arguments.
 - Invalid numeric flags should name the failing flag and accepted range.
 - Local API errors are structured JSON with an `error.code` and
   `error.message`.

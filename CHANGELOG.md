@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Tightened stable `chat` parsing so unknown `--flag` values fail with an
+  actionable chat-specific error before model-path resolution, and added
+  validation coverage for that CLI contract.
 - Added `scripts/release-preflight.sh` so the v0.1 release publish path has a
   local clean-tree/version/tag preflight with an optional remote tag check and
   an exact GitHub release tag push action.

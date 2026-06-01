@@ -232,7 +232,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
 
-            match parse_generate_args(&args[1..]) {
+            match parse_chat_args(&args[1..]) {
                 Ok(parsed) => {
                     if parsed.dry_run {
                         print_generation_dry_run("chat", &parsed)
@@ -2123,6 +2123,17 @@ fn parse_generate_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
     )
 }
 
+fn parse_chat_args(args: &[String]) -> Result<GenerateArgs, &'static str> {
+    let (workspace, q4_exists) = llama32_1b_workspace_defaults();
+    parse_chat_args_with_env_and_alias_env_and_workspace(
+        args,
+        default_model_path_from_env(),
+        model_1b_env_path_and_source(),
+        &workspace,
+        q4_exists,
+    )
+}
+
 fn parse_tui_args(args: &[String]) -> Result<TuiArgs, &'static str> {
     let (workspace, q4_exists) = llama32_1b_workspace_defaults();
     parse_tui_args_with_env_and_alias_env_and_workspace(
@@ -2366,12 +2377,100 @@ fn parse_generate_args_with_env_and_alias_env_and_workspace(
     workspace: &str,
     q4_exists: bool,
 ) -> Result<GenerateArgs, &'static str> {
+    parse_text_generation_args_with_env_and_alias_env_and_workspace(
+        args,
+        env_model_path,
+        alias_env_model_path,
+        workspace,
+        q4_exists,
+        TextGenerationCommand::Generate,
+    )
+}
+
+#[cfg(test)]
+fn parse_chat_args_with_env(
+    args: &[String],
+    env_model_path: Option<String>,
+) -> Result<GenerateArgs, &'static str> {
+    parse_chat_args_with_env_and_workspace(args, env_model_path, DEFAULT_PI_WORKSPACE, false)
+}
+
+#[cfg(test)]
+fn parse_chat_args_with_env_and_workspace(
+    args: &[String],
+    env_model_path: Option<String>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<GenerateArgs, &'static str> {
+    parse_chat_args_with_env_and_alias_env_and_workspace(
+        args,
+        env_model_path.clone(),
+        env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV)),
+        workspace,
+        q4_exists,
+    )
+}
+
+fn parse_chat_args_with_env_and_alias_env_and_workspace(
+    args: &[String],
+    env_model_path: Option<String>,
+    alias_env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+) -> Result<GenerateArgs, &'static str> {
+    parse_text_generation_args_with_env_and_alias_env_and_workspace(
+        args,
+        env_model_path,
+        alias_env_model_path,
+        workspace,
+        q4_exists,
+        TextGenerationCommand::Chat,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum TextGenerationCommand {
+    Generate,
+    Chat,
+}
+
+impl TextGenerationCommand {
+    fn missing_prompt_error(self) -> &'static str {
+        match self {
+            Self::Generate => {
+                "missing prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first"
+            }
+            Self::Chat => {
+                "missing chat prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first"
+            }
+        }
+    }
+
+    fn unknown_option_error(self) -> &'static str {
+        match self {
+            Self::Generate => "unknown generate option",
+            Self::Chat => "unknown chat option",
+        }
+    }
+}
+
+fn parse_text_generation_args_with_env_and_alias_env_and_workspace(
+    args: &[String],
+    env_model_path: Option<String>,
+    alias_env_model_path: Option<(String, &'static str)>,
+    workspace: &str,
+    q4_exists: bool,
+    command: TextGenerationCommand,
+) -> Result<GenerateArgs, &'static str> {
     let env_model_path = env_model_path.map(|path| (path, DEFAULT_MODEL_GGUF_ENV));
     let mut dry_run = false;
     let mut positionals = Vec::with_capacity(args.len());
     for arg in args {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            arg if matches!(command, TextGenerationCommand::Chat) && arg.starts_with("--") => {
+                return Err(command.unknown_option_error());
+            }
             _ => positionals.push(arg.clone()),
         }
     }
@@ -2395,25 +2494,39 @@ fn parse_generate_args_with_env_and_alias_env_and_workspace(
         Some(prompt) => prompt.clone(),
         None if dry_run => "<prompt>".to_owned(),
         None => {
-            return Err(
-                "missing prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first",
-            );
+            return Err(command.missing_prompt_error());
         }
     };
     let temp = positionals
         .get(prompt_idx + 1)
-        .map(|value| parse_non_negative_f32(value, "generate temp must be a non-negative number"))
+        .map(|value| {
+            parse_non_negative_f32(
+                value,
+                match command {
+                    TextGenerationCommand::Generate => {
+                        "generate temp must be a non-negative number"
+                    }
+                    TextGenerationCommand::Chat => "chat temp must be a non-negative number",
+                },
+            )
+        })
         .transpose()?
         .unwrap_or(0.0);
     let max_tokens = parse_optional_positive_usize(
         positionals.get(prompt_idx + 2),
-        "generate max_tokens must be a positive integer",
+        match command {
+            TextGenerationCommand::Generate => "generate max_tokens must be a positive integer",
+            TextGenerationCommand::Chat => "chat max_tokens must be a positive integer",
+        },
     )?
     .unwrap_or(128);
     reject_extra_positionals(
         &positionals,
         prompt_idx + 3,
-        "unexpected extra generate argument",
+        match command {
+            TextGenerationCommand::Generate => "unexpected extra generate argument",
+            TextGenerationCommand::Chat => "unexpected extra chat argument",
+        },
     )?;
 
     Ok(GenerateArgs {
@@ -10155,9 +10268,10 @@ mod tests {
         looks_like_non_gguf_model_path, method_not_allowed_error, model_1b_status_json,
         model_entry_aliases, parse_bench_1b_args_with_env, parse_bench_1b_args_with_path,
         parse_bench_q4_layout_args, parse_bench_q4_prefill_args, parse_bench_q8_dot_args,
-        parse_content_length, parse_context_packs, parse_cpu_list, parse_doctor_args,
-        parse_evidence_1b_args_with_env, parse_evidence_1b_args_with_path,
-        parse_generate_args_with_env, parse_generate_args_with_env_and_alias_env_and_workspace,
+        parse_chat_args_with_env, parse_chat_args_with_env_and_workspace, parse_content_length,
+        parse_context_packs, parse_cpu_list, parse_doctor_args, parse_evidence_1b_args_with_env,
+        parse_evidence_1b_args_with_path, parse_generate_args_with_env,
+        parse_generate_args_with_env_and_alias_env_and_workspace,
         parse_generate_args_with_env_and_workspace, parse_http_request,
         parse_inspect_args_with_env, parse_model_1b_args_with_path, parse_models_args,
         parse_prefill_batches, parse_prefill_bench_1b_batch_metrics, parse_probe_args,
@@ -12196,6 +12310,58 @@ flags\t\t: sse4_2 avx2
         )
         .expect_err("extra generate argument should fail");
         assert_eq!(extra, "unexpected extra generate argument");
+    }
+
+    #[test]
+    fn chat_args_reject_unknown_long_options_before_model_resolution() {
+        let err = parse_chat_args_with_env(&["--unknown".to_owned()], None)
+            .expect_err("unknown chat flag should fail before model fallback");
+
+        assert_eq!(err, "unknown chat option");
+
+        let err = parse_chat_args_with_env(
+            &["Say hello".to_owned(), "--unknown".to_owned()],
+            Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
+        )
+        .expect_err("unknown chat flag after prompt should fail");
+
+        assert_eq!(err, "unknown chat option");
+    }
+
+    #[test]
+    fn chat_args_report_chat_specific_prompt_and_numeric_errors() {
+        let missing_prompt = parse_chat_args_with_env(
+            &[],
+            Some("/models/Llama-3.2-1B-Instruct.Q8_0.gguf".to_owned()),
+        )
+        .expect_err("chat should require a prompt without dry run");
+        assert_eq!(
+            missing_prompt,
+            "missing chat prompt; pass one after the GGUF path or set NANOCAMELID_MODEL_GGUF and pass the prompt first"
+        );
+
+        let bad_temp = parse_chat_args_with_env_and_workspace(
+            &["1b".to_owned(), "Hello".to_owned(), "bad".to_owned()],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("invalid chat temp should fail");
+        assert_eq!(bad_temp, "chat temp must be a non-negative number");
+
+        let bad_tokens = parse_chat_args_with_env_and_workspace(
+            &[
+                "1b".to_owned(),
+                "Hello".to_owned(),
+                "0.0".to_owned(),
+                "0".to_owned(),
+            ],
+            None,
+            "/mnt/nanocamelid",
+            true,
+        )
+        .expect_err("zero chat token count should fail");
+        assert_eq!(bad_tokens, "chat max_tokens must be a positive integer");
     }
 
     #[test]
