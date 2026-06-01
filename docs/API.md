@@ -59,6 +59,10 @@ Access-Control-Allow-Headers: Authorization, Content-Type
 
 ### Health
 
+`/health` is a cheap local preflight endpoint. It does not load model weights;
+it reports whether the configured model directory exists and how many `.gguf`
+files are directly discoverable there.
+
 ```bash
 curl http://127.0.0.1:8080/health
 ```
@@ -70,6 +74,8 @@ Response:
   "status": "ok",
   "version": "0.1.0",
   "model_dir": "/mnt/nanocamelid/models",
+  "model_dir_exists": true,
+  "model_count": 1,
   "api_key_required": false,
   "max_request_bytes": 65536,
   "max_input_tokens": 2048,

@@ -4681,12 +4681,24 @@ fn serve_models_json(parsed: &ServeArgs) -> String {
 }
 
 fn serve_health_json(parsed: &ServeArgs) -> String {
+    let model_dir = Path::new(&parsed.model_dir);
+    let model_dir_exists = model_dir.is_dir();
+    let model_count = if model_dir_exists {
+        scan_model_dir(model_dir, false)
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     format!(
         concat!(
             "{{",
             "\"status\":\"ok\",",
             "\"version\":{},",
             "\"model_dir\":{},",
+            "\"model_dir_exists\":{},",
+            "\"model_count\":{},",
             "\"api_key_required\":{},",
             "\"max_request_bytes\":{},",
             "\"max_input_tokens\":{},",
@@ -4695,6 +4707,8 @@ fn serve_health_json(parsed: &ServeArgs) -> String {
         ),
         json_string(env!("CARGO_PKG_VERSION")),
         json_string(&parsed.model_dir),
+        model_dir_exists,
+        model_count,
         parsed.api_key.is_some(),
         parsed.max_request_bytes,
         parsed.max_input_tokens,
@@ -11140,6 +11154,8 @@ flags\t\t: sse4_2 avx2
 
         let json = serve_health_json(&parsed);
         assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"model_dir_exists\":false"));
+        assert!(json.contains("\"model_count\":0"));
         assert!(json.contains("\"api_key_required\":true"));
         assert!(json.contains("\"max_request_bytes\":4096"));
         assert!(json.contains("\"max_input_tokens\":1024"));

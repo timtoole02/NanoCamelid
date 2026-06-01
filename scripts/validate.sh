@@ -490,6 +490,8 @@ check_local_api_smoke() {
   done
   expect_http_status "authenticated health readiness" "200" "$status" "$api_smoke_body"
   expect_file_contains "authenticated health readiness" "\"status\":\"ok\"" "$api_smoke_body"
+  expect_file_contains "authenticated health model dir exists" "\"model_dir_exists\":true" "$api_smoke_body"
+  expect_file_contains "authenticated health model count" "\"model_count\":0" "$api_smoke_body"
   expect_file_contains "authenticated health request cap" "\"max_request_bytes\":4096" "$api_smoke_body"
   expect_file_contains "authenticated health input cap" "\"max_input_tokens\":64" "$api_smoke_body"
   expect_file_contains "authenticated health output cap" "\"max_output_tokens\":8" "$api_smoke_body"
