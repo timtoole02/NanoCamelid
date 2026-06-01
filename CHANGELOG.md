@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Tightened the stable `models inspect` namespace so it rejects missing,
+  non-GGUF, or unknown shorthand model arguments before printing an inspect
+  plan.
 - Made the GitHub release workflow run the standard validation gate before
   packaging/uploading versioned aarch64 Linux artifacts, with local validation
   coverage for that release guard.

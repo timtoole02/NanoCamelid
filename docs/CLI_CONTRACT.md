@@ -53,6 +53,8 @@ below.
   fail before printing host details.
 - Missing model directories should fail with an actionable message that names
   the directory and points to `--dir` or `NANOCAMELID_MODEL_DIR`.
+- `models inspect` accepts only a `.gguf` path or the stable `1b`/`3b`
+  aliases; unknown shorthand values fail before an inspect plan is printed.
 - Invalid numeric flags should name the failing flag and accepted range.
 - Local API errors are structured JSON with an `error.code` and
   `error.message`.

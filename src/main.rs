@@ -2068,6 +2068,7 @@ fn parse_models_args(args: &[String]) -> Result<ModelsArgs, &'static str> {
             })
         }
         "inspect" => {
+            validate_models_inspect_args(&args[1..])?;
             let inspect = parse_inspect_args(&args[1..])?;
             Ok(ModelsArgs {
                 action: ModelsAction::Inspect(inspect),
@@ -2076,6 +2077,33 @@ fn parse_models_args(args: &[String]) -> Result<ModelsArgs, &'static str> {
             })
         }
         _ => Err("unknown models command; expected list, scan, or inspect"),
+    }
+}
+
+fn validate_models_inspect_args(args: &[String]) -> Result<(), &'static str> {
+    let mut model_arg = None;
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" | "--q4" | "--q8" => {}
+            arg if arg.starts_with('-') => return Err("unknown inspect option"),
+            _ => {
+                model_arg = Some(arg.as_str());
+                break;
+            }
+        }
+    }
+
+    let Some(model_arg) = model_arg else {
+        return Err("models inspect requires <model.gguf|1b|3b>");
+    };
+
+    if is_llama32_1b_alias(model_arg)
+        || is_llama32_3b_alias(model_arg)
+        || looks_like_gguf_path(model_arg)
+    {
+        Ok(())
+    } else {
+        Err("models inspect model argument must be a .gguf path or 1b/3b alias")
     }
 }
 
@@ -11043,6 +11071,30 @@ flags\t\t: sse4_2 avx2
             parse_models_args(&["list".to_owned(), "--dir".to_owned()])
                 .expect_err("missing models dir should fail"),
             "models --dir requires a path"
+        );
+        assert_eq!(
+            parse_models_args(&["inspect".to_owned()])
+                .expect_err("missing models inspect arg should fail"),
+            "models inspect requires <model.gguf|1b|3b>"
+        );
+        assert_eq!(
+            parse_models_args(&["inspect".to_owned(), "badalias".to_owned()])
+                .expect_err("unknown models inspect alias should fail"),
+            "models inspect model argument must be a .gguf path or 1b/3b alias"
+        );
+        assert_eq!(
+            parse_models_args(&[
+                "inspect".to_owned(),
+                "/models/not-a-gguf".to_owned(),
+                "--dry-run".to_owned(),
+            ])
+            .expect_err("non-GGUF models inspect path should fail"),
+            "models inspect model argument must be a .gguf path or 1b/3b alias"
+        );
+        assert_eq!(
+            parse_models_args(&["inspect".to_owned(), "--oops".to_owned()])
+                .expect_err("unknown models inspect option should fail"),
+            "unknown inspect option"
         );
     }
 
