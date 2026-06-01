@@ -4,6 +4,9 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- Added the release publication preflight to the GitHub release workflow so tag
+  and manual release runs verify the Cargo version, release docs, and release
+  plan before validation, packaging, and artifact upload begin.
 - Tightened `scripts/release-preflight.sh` so release tagging now checks that
   `CHANGELOG.md` and `RELEASE_NOTES.md` both carry the Cargo version being
   published, with validation coverage for the dry-run contract.

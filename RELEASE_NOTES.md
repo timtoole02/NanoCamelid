@@ -35,6 +35,7 @@ See `docs/MODEL_CATALOG.md` and `docs/SUPPORT_MATRIX.md`.
 
 ## Validation Checklist
 
+- `./scripts/release-preflight.sh --dry-run`
 - `./scripts/validate.sh`
 - `cargo fmt -- --check`
 - `cargo test`
@@ -44,7 +45,8 @@ See `docs/MODEL_CATALOG.md` and `docs/SUPPORT_MATRIX.md`.
 - `./scripts/release-preflight.sh --check-remote --require-unpublished`
 - `./scripts/validate.sh --dry-run`
 
-GitHub releases run the standard validation gate before packaging the aarch64
-Linux release archive, then publish the archive and `SHA256SUMS` from
-`scripts/package-release.sh`. The final publish step is to tag and push the
-validated commit named by `scripts/release-preflight.sh`.
+GitHub releases run `scripts/release-preflight.sh --dry-run`, then the standard
+validation gate before packaging the aarch64 Linux release archive and
+publishing the archive plus `SHA256SUMS` from `scripts/package-release.sh`. The
+final publish step is to tag and push the validated commit named by
+`scripts/release-preflight.sh`.
