@@ -3,8 +3,10 @@
 set -euo pipefail
 
 PI_HOST="${1:-}"
-SSH_KEY="${2:-/Users/timtoole/Documents/cert/pi5_tooleman_ed25519}"
-PI_USER="${3:-tooleman}"
+_SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ -f "$_SD/../config/cluster.env" ]] && source "$_SD/../config/cluster.env"
+SSH_KEY="${2:-${SSH_KEY:-$HOME/.ssh/id_ed25519}}"
+PI_USER="${3:-${PI_USER:-pi}}"
 
 if [[ -z "$PI_HOST" ]]; then
   echo "Usage: $0 <pi-ip-or-hostname> [ssh-key-path] [pi-username]" >&2
@@ -14,7 +16,7 @@ fi
 if [[ ! -f "$SSH_KEY" ]]; then
   SSH_OPT=""
 else
-  SSH_OPT="-i $SSH_KEY"
+  SSH_OPT="-o IdentitiesOnly=yes -i $SSH_KEY"
 fi
 
 echo "Deploying latest changes first..."

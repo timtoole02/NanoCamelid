@@ -1,1 +1,13 @@
 /target
+
+# Model weights — never commit GGUFs
+/models
+*.gguf
+
+# Local, machine-specific cluster wiring (real IPs / SSH creds / model paths)
+/config/nodes.local.toml
+/config/cluster.env
+
+# Logs and scratch
+*.log
+/criterion

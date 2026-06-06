@@ -1,0 +1,33 @@
+# NanoCamelid 3-node pipeline cluster configuration (EXAMPLE / template).
+#
+# Copy this to config/nodes.local.toml and fill in your real addresses; the launch scripts
+# prefer nodes.local.toml when it exists (and it is gitignored, so your IPs stay private).
+#
+# Node order == pipeline stage order: node0 (head) -> node1 -> node2 (tail).
+#   - node0 runs `generate-distributed` (embedding + first layer range + sampling)
+#   - node1 and node2 run `serve-stage` (middle range / final range + logits)
+#
+# `model` must be a path valid on EVERY node (each node reads its own layer shard from the
+# same GGUF file). Must be a llama-architecture GGUF with pure Q8_0 or Q4_0 tensors.
+
+model = "/home/USER/nanocamelid/models/model.gguf"
+
+[[nodes]]
+name = "node0"
+host = "10.0.0.10"
+port = 9100
+
+[[nodes]]
+name = "node1"
+host = "10.0.0.11"
+port = 9100
+
+[[nodes]]
+name = "node2"
+host = "10.0.0.12"
+port = 9100
+
+# By default the transformer layers are auto-split evenly and contiguously across the nodes
+# (remainder to the earlier nodes). To pin an explicit split instead, give every node a
+# `layers = [start, end)` entry, e.g.:
+#   layers = [0, 11]

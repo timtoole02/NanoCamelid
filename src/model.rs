@@ -1,12 +1,12 @@
 use std::{
     fs::File,
-    io,
     os::unix::fs::FileExt,
     path::Path,
 };
 
-use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType, read_file};
+use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
 use crate::q8::{Q8_0Block, decode_q8_0_blocks};
+use crate::q4::{Q4_0Block, decode_q4_0_blocks};
 
 #[derive(Clone, Debug)]
 pub struct LlamaModelConfig {
@@ -82,11 +82,11 @@ impl LlamaModelConfig {
     }
 }
 
-pub struct LlamaLayerWeights {
+pub struct LlamaLayerWeightsQ8 {
     pub attention_norm: Vec<f32>,
     pub wq: Vec<Q8_0Block>,
     pub wk: Vec<Q8_0Block>,
-    pub wav: Vec<Q8_0Block>, // or attention_v
+    pub wav: Vec<Q8_0Block>,
     pub wo: Vec<Q8_0Block>,
     pub ffn_norm: Vec<f32>,
     pub w1: Vec<Q8_0Block>,
@@ -94,58 +94,173 @@ pub struct LlamaLayerWeights {
     pub w2: Vec<Q8_0Block>,
 }
 
-pub struct LlamaWeights {
-    pub token_embeddings: Vec<f32>, // vocab_size * embedding_length
+pub struct LlamaLayerWeightsQ4 {
+    pub attention_norm: Vec<f32>,
+    pub wq: Vec<Q4_0Block>,
+    pub wk: Vec<Q4_0Block>,
+    pub wav: Vec<Q4_0Block>,
+    pub wo: Vec<Q4_0Block>,
+    pub ffn_norm: Vec<f32>,
+    pub w1: Vec<Q4_0Block>,
+    pub w3: Vec<Q4_0Block>,
+    pub w2: Vec<Q4_0Block>,
+}
+
+pub struct LlamaWeightsQ8 {
+    pub token_embeddings: Vec<f32>,
     pub output_norm: Vec<f32>,
-    pub output_projection: Option<Vec<Q8_0Block>>, // None if tied output
-    pub layers: Vec<LlamaLayerWeights>,
+    pub output_projection: Option<Vec<Q8_0Block>>,
+    pub layers: Vec<LlamaLayerWeightsQ8>,
+}
+
+pub struct LlamaWeightsQ4 {
+    pub token_embeddings: Vec<f32>,
+    pub output_norm: Vec<f32>,
+    pub output_projection: Option<Vec<Q4_0Block>>,
+    pub layers: Vec<LlamaLayerWeightsQ4>,
+}
+
+pub enum LlamaWeights {
+    Q8_0(LlamaWeightsQ8),
+    Q4_0(LlamaWeightsQ4),
 }
 
 impl LlamaWeights {
+    /// Load the whole model onto a single node.
     pub fn load(path: &Path, config: &LlamaModelConfig, gguf: &GgufFile) -> Result<Self, String> {
+        Self::load_range(path, config, gguf, 0, config.block_count, true, true)
+    }
+
+    /// Load only the transformer layers in `[start_layer, end_layer)` plus the optional
+    /// embedding / output tensors this pipeline node needs.
+    ///
+    /// - `need_embeddings`: load `token_embd.weight` — node0 needs it for the embedding lookup.
+    /// - `need_output`: load `output_norm.weight` (+ `output.weight` if present) — the tail
+    ///   node needs them for the final RMSNorm and logits projection.
+    ///
+    /// Tied-embeddings models (no `output.weight`) compute logits from `token_embeddings` in
+    /// `finalize`, so when `need_output` is set on such a model the embedding table is force
+    /// loaded as well. The returned `layers` Vec is **locally indexed** `0..(end-start)` to
+    /// match `forward_layers`. Tensors are read independently by file offset, so a shard only
+    /// materializes the bytes it asks for — this is what lets a model exceed one node's RAM.
+    pub fn load_range(
+        path: &Path,
+        config: &LlamaModelConfig,
+        gguf: &GgufFile,
+        start_layer: usize,
+        end_layer: usize,
+        need_embeddings: bool,
+        need_output: bool,
+    ) -> Result<Self, String> {
+        let _ = config;
         let file = File::open(path).map_err(|e| e.to_string())?;
+        let has_output_weight = gguf.tensors.iter().any(|t| t.name == "output.weight");
+        // Tied embeddings: the tail node's finalize() multiplies by token_embeddings.
+        let load_embeddings = need_embeddings || (need_output && !has_output_weight);
 
-        let token_embeddings = load_f32_or_f16(&file, gguf, "token_embd.weight")?;
-        let output_norm = load_f32_or_f16(&file, gguf, "output_norm.weight")?;
-        
-        let output_projection = if gguf.tensors.iter().any(|t| t.name == "output.weight") {
-            Some(load_q8_0(&file, gguf, "output.weight")?)
-        } else {
-            None
-        };
+        // Inspect format from the first layer query tensor type
+        let sample_desc = load_tensor_desc(gguf, "blk.0.attn_q.weight")?;
+        match sample_desc.tensor_type {
+            GgufTensorType::Q8_0 => {
+                let token_embeddings = if load_embeddings {
+                    load_f32_or_f16(&file, gguf, "token_embd.weight")?
+                } else {
+                    Vec::new()
+                };
+                let output_norm = if need_output {
+                    load_f32_or_f16(&file, gguf, "output_norm.weight")?
+                } else {
+                    Vec::new()
+                };
+                let output_projection = if need_output && has_output_weight {
+                    Some(load_q8_0(&file, gguf, "output.weight")?)
+                } else {
+                    None
+                };
 
-        let mut layers = Vec::with_capacity(config.block_count);
-        for i in 0..config.block_count {
-            let attention_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_norm.weight"))?;
-            let wq = load_q8_0(&file, gguf, &format!("blk.{i}.attn_q.weight"))?;
-            let wk = load_q8_0(&file, gguf, &format!("blk.{i}.attn_k.weight"))?;
-            let wav = load_q8_0(&file, gguf, &format!("blk.{i}.attn_v.weight"))?;
-            let wo = load_q8_0(&file, gguf, &format!("blk.{i}.attn_output.weight"))?;
-            
-            let ffn_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
-            let w1 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
-            let w3 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_up.weight"))?;
-            let w2 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_down.weight"))?;
+                let mut layers = Vec::with_capacity(end_layer - start_layer);
+                for i in start_layer..end_layer {
+                    let attention_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_norm.weight"))?;
+                    let wq = load_q8_0(&file, gguf, &format!("blk.{i}.attn_q.weight"))?;
+                    let wk = load_q8_0(&file, gguf, &format!("blk.{i}.attn_k.weight"))?;
+                    let wav = load_q8_0(&file, gguf, &format!("blk.{i}.attn_v.weight"))?;
+                    let wo = load_q8_0(&file, gguf, &format!("blk.{i}.attn_output.weight"))?;
+                    let ffn_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
+                    let w1 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
+                    let w3 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_up.weight"))?;
+                    let w2 = load_q8_0(&file, gguf, &format!("blk.{i}.ffn_down.weight"))?;
 
-            layers.push(LlamaLayerWeights {
-                attention_norm,
-                wq,
-                wk,
-                wav,
-                wo,
-                ffn_norm,
-                w1,
-                w3,
-                w2,
-            });
+                    layers.push(LlamaLayerWeightsQ8 {
+                        attention_norm,
+                        wq,
+                        wk,
+                        wav,
+                        wo,
+                        ffn_norm,
+                        w1,
+                        w3,
+                        w2,
+                    });
+                }
+
+                Ok(Self::Q8_0(LlamaWeightsQ8 {
+                    token_embeddings,
+                    output_norm,
+                    output_projection,
+                    layers,
+                }))
+            }
+            GgufTensorType::Q4_0 => {
+                let token_embeddings = if load_embeddings {
+                    load_f32_or_f16(&file, gguf, "token_embd.weight")?
+                } else {
+                    Vec::new()
+                };
+                let output_norm = if need_output {
+                    load_f32_or_f16(&file, gguf, "output_norm.weight")?
+                } else {
+                    Vec::new()
+                };
+                let output_projection = if need_output && has_output_weight {
+                    Some(load_q4_0(&file, gguf, "output.weight")?)
+                } else {
+                    None
+                };
+
+                let mut layers = Vec::with_capacity(end_layer - start_layer);
+                for i in start_layer..end_layer {
+                    let attention_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.attn_norm.weight"))?;
+                    let wq = load_q4_0(&file, gguf, &format!("blk.{i}.attn_q.weight"))?;
+                    let wk = load_q4_0(&file, gguf, &format!("blk.{i}.attn_k.weight"))?;
+                    let wav = load_q4_0(&file, gguf, &format!("blk.{i}.attn_v.weight"))?;
+                    let wo = load_q4_0(&file, gguf, &format!("blk.{i}.attn_output.weight"))?;
+                    let ffn_norm = load_f32_or_f16(&file, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
+                    let w1 = load_q4_0(&file, gguf, &format!("blk.{i}.ffn_gate.weight"))?;
+                    let w3 = load_q4_0(&file, gguf, &format!("blk.{i}.ffn_up.weight"))?;
+                    let w2 = load_q4_0(&file, gguf, &format!("blk.{i}.ffn_down.weight"))?;
+
+                    layers.push(LlamaLayerWeightsQ4 {
+                        attention_norm,
+                        wq,
+                        wk,
+                        wav,
+                        wo,
+                        ffn_norm,
+                        w1,
+                        w3,
+                        w2,
+                    });
+                }
+
+                Ok(Self::Q4_0(LlamaWeightsQ4 {
+                    token_embeddings,
+                    output_norm,
+                    output_projection,
+                    layers,
+                }))
+            }
+            other => Err(format!("Unsupported model quantization format: {:?}", other)),
         }
-
-        Ok(Self {
-            token_embeddings,
-            output_norm,
-            output_projection,
-            layers,
-        })
     }
 }
 
@@ -187,6 +302,16 @@ fn load_f32_or_f16(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<f32>,
             }
             Ok(data)
         }
+        GgufTensorType::Q4_0 => {
+            let blocks = decode_q4_0_blocks(&bytes).map_err(|e| e.to_string())?;
+            let mut data = Vec::with_capacity(blocks.len() * 32);
+            for block in blocks {
+                let mut block_data = [0.0f32; 32];
+                block.dequantize(&mut block_data);
+                data.extend_from_slice(&block_data);
+            }
+            Ok(data)
+        }
         other => Err(format!("unsupported floating point type for {name}: {other:?}")),
     }
 }
@@ -200,6 +325,17 @@ fn load_q8_0(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<Q8_0Block>,
     file.read_exact_at(&mut bytes, desc.absolute_offset).map_err(|e| e.to_string())?;
 
     decode_q8_0_blocks(&bytes).map_err(|e| e.to_string())
+}
+
+fn load_q4_0(file: &File, gguf: &GgufFile, name: &str) -> Result<Vec<Q4_0Block>, String> {
+    let desc = load_tensor_desc(gguf, name)?;
+    if desc.tensor_type != GgufTensorType::Q4_0 {
+        return Err(format!("expected Q4_0 tensor type for {name}, got {:?}", desc.tensor_type));
+    }
+    let mut bytes = vec![0; desc.n_bytes as usize];
+    file.read_exact_at(&mut bytes, desc.absolute_offset).map_err(|e| e.to_string())?;
+
+    decode_q4_0_blocks(&bytes).map_err(|e| e.to_string())
 }
 
 // Convert F16 bits to F32 (duplicate helper from q8.rs to keep model.rs self-contained)

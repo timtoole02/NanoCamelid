@@ -445,6 +445,37 @@ impl Q8DotKernelSelector {
         )
     }
 
+    /// Like [`from_env`], but when no kernel is explicitly requested via the environment we
+    /// auto-select the fastest available kernel (SDOT > NEON > scalar) instead of defaulting
+    /// to scalar. All three kernels produce bit-identical i8 dot results (see the kernel
+    /// equivalence tests), so this is a pure speed win with no effect on output. An explicit
+    /// `NANOCAMELID_Q8_DOT_KERNEL` request always takes precedence and is honored exactly as
+    /// in [`from_env`].
+    pub fn from_env_or_auto() -> Self {
+        let requested = env::var(DOT_KERNEL_ENV)
+            .ok()
+            .as_deref()
+            .and_then(parse_requested_kernel);
+
+        let features = RuntimeFeatures::detect();
+        if requested.is_none() {
+            let (selected, reason) = if features.dotprod {
+                (Q8DotKernel::Sdot, "auto_sdot")
+            } else if features.neon {
+                (Q8DotKernel::Neon, "auto_neon")
+            } else {
+                (Q8DotKernel::Scalar, "auto_scalar")
+            };
+            return Self {
+                requested: None,
+                selected,
+                fallback_reason: Some(reason),
+            };
+        }
+
+        Self::for_request(requested, features, sdot_candidate_requested())
+    }
+
     fn for_request(
         requested: Option<Q8DotKernel>,
         features: RuntimeFeatures,

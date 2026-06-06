@@ -6,3 +6,44 @@ license = "MIT"
 
 [dependencies]
 rayon = "1"
+# Pipeline-parallel transport across the 3-node cluster: raw TCP with length-prefixed
+# binary frames. tokio gives us async multiplexing so multiple in-flight requests can
+# overlap through the stages without a thread-per-connection explosion.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+# Pin rayon workers to dedicated A76 cores (Linux sched_setaffinity under the hood).
+core_affinity = "0.8"
+# Node cluster configuration (config/nodes.toml).
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Tuned release build for Cortex-A76. lto + single codegen unit trade compile time for
+# maximal cross-function inlining/vectorization of the hot kernels.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+# Benchmarks should run with the same optimization as release.
+[profile.bench]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[[bench]]
+name = "bench_q8_dot"
+harness = false
+
+[[bench]]
+name = "bench_q4_dot"
+harness = false
+
+[[bench]]
+name = "bench_matmul"
+harness = false
+
+[[bench]]
+name = "bench_forward"
+harness = false

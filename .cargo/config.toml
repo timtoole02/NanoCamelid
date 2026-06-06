@@ -1,0 +1,11 @@
+# Build tuning for the Raspberry Pi 5 cluster (Cortex-A76, ARMv8.2-A + FEAT_DotProd).
+#
+# target-cpu=cortex-a76 lets the compiler emit NEON + dotprod (SDOT/UDOT) instructions
+# and schedule for the A76 pipeline. This only affects native aarch64-linux builds on the
+# Pis; cross-compiling or building on an aarch64-apple-darwin dev box uses a different
+# target triple and is unaffected.
+#
+# NOTE: scripts/deploy.sh must NOT exclude this directory from rsync, or the Pis never see it.
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=cortex-a76"]

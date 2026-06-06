@@ -51,6 +51,52 @@ For the porting sequence, see [`docs/PI_PORTING.md`](docs/PI_PORTING.md).
 For the Camelid-derived implementation map, see
 [`docs/CAMELID_PORTING_MAP.md`](docs/CAMELID_PORTING_MAP.md).
 
+## ⚡ Cortex-A76 build tuning
+
+The repo ships tuned defaults — no flags needed:
+
+- `.cargo/config.toml` sets `target-cpu=cortex-a76` for `aarch64-unknown-linux-gnu`
+  (NEON + FEAT_DotProd codegen, A76 scheduling).
+- Release/bench profiles use `lto = true`, `codegen-units = 1`.
+- `generate` builds a rayon pool with one worker per core, **pinned** to the 4 A76 cores
+  (`NANOCAMELID_PIN=0` to disable, `NANOCAMELID_THREADS=<n>` to resize).
+- The Q8/Q4 dot kernel **auto-selects** SDOT → NEON → scalar at runtime; explicit
+  `NANOCAMELID_Q8_DOT_KERNEL` / `NANOCAMELID_Q4_DOT_KERNEL` still take precedence.
+- A thermal watchdog logs a warning when the SoC passes 80 °C or the firmware reports
+  throttling (`vcgencmd get_throttled`); `probe` prints the current temperature/flags.
+- Criterion benchmarks live in [`benches/`](benches/README.md) (run them on the Pi).
+
+All of this changes scheduling and codegen only — **output is bit-identical** (the i8 dot
+kernels are exact integer math; float accumulation order is never reordered).
+
+## 🌐 3-node pipeline cluster
+
+NanoCamelid can split a model's transformer layers across three Pi 5s
+(pipeline parallelism), pooling 48 GB of RAM to run models up to ~3× what a single Pi
+holds. Each node loads only its layer shard + KV cache; the f32 hidden state crosses the
+gigabit link as raw little-endian frames over plain TCP (tokio), ~8–16 KB twice per token.
+Sampling stays on the head node, so distributed output is **bit-identical** to a
+single-node run (proven by `tests/pipeline_equivalence.rs`).
+
+```bash
+# 1. Put the 3 Pis' addresses in config/nodes.toml (order = stage order), then:
+./scripts/launch_cluster.sh                      # deploy + build + start stage servers
+./scripts/launch_cluster.sh "Tell me a story"    # ...and generate from the head node
+
+# Manually:
+nanocamelid serve-stage config/nodes.toml node1            # on node1
+nanocamelid serve-stage config/nodes.toml node2            # on node2
+nanocamelid generate-distributed config/nodes.toml "Hi"    # on node0 (head)
+
+./scripts/stop_cluster.sh                        # tear down the stage servers
+```
+
+Layers auto-split evenly (remainder to earlier nodes); pin an explicit split with
+`layers = [start, end]` per node in `nodes.toml`. Note: pipeline parallelism adds capacity
+and multi-request throughput — single-stream tokens/sec is bounded by total compute plus
+two small network hops per token, so for models that already fit on one Pi, plain
+`generate` remains the latency-optimal path.
+
 ## License
 
 NanoCamelid is licensed under the MIT License. See [`LICENSE`](LICENSE).

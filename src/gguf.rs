@@ -2,12 +2,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     fs::{self, File},
-    io::{self, ErrorKind, Read},
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const DEFAULT_ALIGNMENT: u64 = 32;
+#[allow(dead_code)]
 const GGML_MAX_NAME: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]

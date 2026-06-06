@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
-use crate::gguf::{GgufFile, GgufTensorType};
+use crate::gguf::GgufFile;
 
 pub type TokenId = u32;
 

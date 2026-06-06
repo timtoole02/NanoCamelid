@@ -1,6 +1,6 @@
 use std::{env, fs, path::Path, process::ExitCode};
 
-use nanocamelid::{gguf, q8, model, inference, tokenizer};
+use nanocamelid::{distributed, gguf, inference, model, q4, q8, runtime, tokenizer};
 
 fn main() -> ExitCode {
     let command = env::args().nth(1);
@@ -35,6 +35,37 @@ fn main() -> ExitCode {
                 run_generation(Path::new(&model_path.unwrap()), &prompt.unwrap(), temp, max_tokens)
             }
         }
+        Some("serve-stage") => {
+            let config_path = env::args().nth(2);
+            let node_name = env::args().nth(3);
+            match (config_path, node_name) {
+                (Some(config_path), Some(node_name)) => {
+                    run_serve_stage(&config_path, &node_name, env::args().nth(4))
+                }
+                _ => {
+                    eprintln!("missing cluster config path or node name");
+                    print_usage();
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("generate-distributed") => {
+            let config_path = env::args().nth(2);
+            let prompt = env::args().nth(3);
+            if config_path.is_none() || prompt.is_none() {
+                eprintln!("missing cluster config path or prompt");
+                print_usage();
+                ExitCode::from(2)
+            } else {
+                let temp = env::args().nth(4)
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let max_tokens = env::args().nth(5)
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(128);
+                run_generate_distributed(&config_path.unwrap(), &prompt.unwrap(), temp, max_tokens)
+            }
+        }
         Some("bench") => match env::args().nth(2).as_deref() {
             Some("q8-dot") => {
                 let iterations = env::args()
@@ -46,6 +77,17 @@ fn main() -> ExitCode {
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
                 bench_q8_dot(iterations, runs)
+            }
+            Some("q4-dot") => {
+                let iterations = env::args()
+                    .nth(3)
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(q8::DEFAULT_DOT_BENCH_ITERATIONS);
+                let runs = env::args()
+                    .nth(4)
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(q8::DEFAULT_DOT_BENCH_RUNS);
+                bench_q4_dot(iterations, runs)
             }
             Some(other) => {
                 eprintln!("unknown benchmark: {other}");
@@ -78,7 +120,12 @@ fn print_usage() {
     println!("  nanocamelid inspect <model.gguf>             Inspect GGUF metadata and tensor layouts");
     println!("  nanocamelid generate <model.gguf> <prompt> [temp] [max_tokens]");
     println!("                                               Generate text from prompt on Raspberry Pi 5");
+    println!("  nanocamelid serve-stage <nodes.toml> <node-name> [model.gguf]");
+    println!("                                               Run a pipeline stage server (node1/node2)");
+    println!("  nanocamelid generate-distributed <nodes.toml> <prompt> [temp] [max_tokens]");
+    println!("                                               Generate using the 3-node pipeline (run on node0)");
     println!("  nanocamelid bench q8-dot [iterations] [runs] Benchmark Q8 dot product kernels");
+    println!("  nanocamelid bench q4-dot [iterations] [runs] Benchmark Q4 dot product kernels");
 }
 
 fn print_probe() {
@@ -96,6 +143,14 @@ fn print_probe() {
     println!("cpu_features: {}", features.unwrap_or("unknown"));
     println!("runtime_neon: {}", runtime_neon());
     println!("runtime_dotprod: {}", runtime_dotprod());
+    match runtime::read_cpu_temp_celsius() {
+        Some(temp) => println!("cpu_temp_c: {temp:.1}"),
+        None => println!("cpu_temp_c: unknown"),
+    }
+    match runtime::read_throttled_flags() {
+        Some(flags) => println!("throttled: 0x{flags:x}"),
+        None => println!("throttled: unknown"),
+    }
 }
 
 fn bench_q8_dot(iterations: usize, runs: usize) -> ExitCode {
@@ -398,6 +453,10 @@ fn device_model(model: &str) -> Option<&str> {
 }
 
 fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize) -> ExitCode {
+    // Pin the rayon workers to the A76 cores. Scheduling only — results are unchanged.
+    if let Err(e) = runtime::configure_compute_pool() {
+        eprintln!("warning: {e}");
+    }
     println!("Loading GGUF file: {}...", model_path.display());
     let gguf = match gguf::read_file(model_path) {
         Ok(g) => g,
@@ -450,12 +509,20 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
 
     let mut cache = inference::LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
     let mut ws = inference::LlamaWorkspace::new(&config);
-    let selector = q8::Q8DotKernelSelector::from_env();
+    let selector_q8 = q8::Q8DotKernelSelector::from_env_or_auto();
+    let selector_q4 = q4::Q4DotKernelSelector::from_env_or_auto();
     
-    println!("Selected dot-product kernel: {}", selector.selected.name());
+    match &weights {
+        model::LlamaWeights::Q8_0(_) => {
+            println!("Selected Q8 dot-product kernel: {}", selector_q8.selected.name());
+        }
+        model::LlamaWeights::Q4_0(_) => {
+            println!("Selected Q4 dot-product kernel: {}", selector_q4.selected.name());
+        }
+    }
     println!("\nGenerating response:\n");
 
-    let mut input_token = 0;
+    let mut input_token;
     let mut pos = 0;
     
     // Decode prompt tokens (prefill path)
@@ -468,7 +535,8 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
             &weights,
             &mut cache,
             &mut ws,
-            selector,
+            selector_q8,
+            selector_q4,
             gguf.metadata_f32("llama.rope.scaling.factor"),
             gguf.metadata_u32("llama.rope.scaling.original_context_length").map(|v| v as f32),
             gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
@@ -511,7 +579,8 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
             &weights,
             &mut cache,
             &mut ws,
-            selector,
+            selector_q8,
+            selector_q4,
             gguf.metadata_f32("llama.rope.scaling.factor"),
             gguf.metadata_u32("llama.rope.scaling.original_context_length").map(|v| v as f32),
             gguf.metadata_f32("llama.rope.scaling.low_freq_factor"),
@@ -530,6 +599,99 @@ fn run_generation(model_path: &Path, prompt: &str, temp: f32, max_tokens: usize)
     );
 
     ExitCode::SUCCESS
+}
+
+/// Run this Pi as a pipeline stage server (node1 / node2 in nodes.toml).
+fn run_serve_stage(config_path: &str, node_name: &str, model_override: Option<String>) -> ExitCode {
+    if let Err(e) = runtime::configure_compute_pool() {
+        eprintln!("warning: {e}");
+    }
+    let _thermal = runtime::ThermalMonitor::spawn(
+        runtime::DEFAULT_THERMAL_INTERVAL,
+        runtime::DEFAULT_THERMAL_THRESHOLD_C,
+    );
+
+    let cluster = match distributed::config::ClusterConfig::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let model = match model_override.or_else(|| cluster.model.clone()) {
+        Some(m) => m,
+        None => {
+            eprintln!(
+                "no model path: set `model = \"...\"` in {config_path} or pass it as the third argument"
+            );
+            return ExitCode::from(2);
+        }
+    };
+
+    // Network I/O is tiny (one peer, ~KB frames); a current-thread tokio runtime keeps all
+    // 4 cores free for the pinned rayon compute pool.
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("failed to start tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match rt.block_on(distributed::run_stage(&cluster, node_name, &model)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("serve-stage failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Run distributed generation from the head node (node0 in nodes.toml).
+fn run_generate_distributed(
+    config_path: &str,
+    prompt: &str,
+    temp: f32,
+    max_tokens: usize,
+) -> ExitCode {
+    if let Err(e) = runtime::configure_compute_pool() {
+        eprintln!("warning: {e}");
+    }
+    let _thermal = runtime::ThermalMonitor::spawn(
+        runtime::DEFAULT_THERMAL_INTERVAL,
+        runtime::DEFAULT_THERMAL_THRESHOLD_C,
+    );
+
+    let cluster = match distributed::config::ClusterConfig::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let model = match cluster.model.clone() {
+        Some(m) => m,
+        None => {
+            eprintln!("no model path: set `model = \"...\"` in {config_path}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("failed to start tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match rt.block_on(distributed::run_distributed_generation(
+        &cluster, &model, prompt, temp, max_tokens,
+    )) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("distributed generation failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -592,4 +754,206 @@ flags\t\t: sse4_2 avx2
         );
         assert_eq!(device_model("\0"), None);
     }
+}
+
+fn bench_q4_dot(iterations: usize, runs: usize) -> ExitCode {
+    if iterations == 0 {
+        eprintln!("iterations must be greater than zero");
+        return ExitCode::from(2);
+    }
+    if runs == 0 {
+        eprintln!("runs must be greater than zero");
+        return ExitCode::from(2);
+    }
+
+    let report = q4::bench_dot_runs(iterations, runs);
+
+    println!("NanoCamelid Q4 dot benchmark");
+    println!("iterations: {}", report.iterations);
+    println!("runs: {}", report.runs);
+    println!("blocks_per_iteration: {}", report.blocks_per_iteration);
+    println!("elements_per_iteration: {}", report.elements_per_iteration);
+    println!(
+        "kernel_selector_requested: {}",
+        report
+            .kernel_selector
+            .requested
+            .map(q4::Q4DotKernel::name)
+            .unwrap_or("default")
+    );
+    println!(
+        "kernel_selector_selected: {}",
+        report.kernel_selector.selected.name()
+    );
+    if let Some(reason) = report.kernel_selector.fallback_reason {
+        println!("kernel_selector_fallback: {reason}");
+    }
+    println!("selected_checksum: {}", report.selected.checksum);
+    println!(
+        "selected_total_ms: {:.3}",
+        report.selected.total_elapsed().as_secs_f64() * 1000.0
+    );
+    println!("scalar_checksum: {}", report.scalar.checksum);
+    println!(
+        "scalar_total_ms: {:.3}",
+        report.scalar.total_elapsed().as_secs_f64() * 1000.0
+    );
+    println!(
+        "scalar_min_ns_per_block: {:.2}",
+        report.scalar_min_ns_per_block()
+    );
+    println!(
+        "scalar_median_ns_per_block: {:.2}",
+        report.scalar_median_ns_per_block()
+    );
+    if report.selected.checksum != report.scalar.checksum {
+        eprintln!("selected kernel checksum mismatch");
+        return ExitCode::FAILURE;
+    }
+
+    match &report.neon {
+        Some(neon) => {
+            println!("neon_available: true");
+            println!("dotprod_feature_detected: {}", q8::dotprod_available());
+            println!(
+                "sdot_candidate_requested: {}",
+                q4::sdot_candidate_requested()
+            );
+            println!("sdot_candidate_enabled: {}", q4::sdot_candidate_enabled());
+            println!("neon_checksum: {}", neon.checksum);
+            println!(
+                "neon_total_ms: {:.3}",
+                neon.total_elapsed().as_secs_f64() * 1000.0
+            );
+            println!(
+                "neon_min_ns_per_block: {:.2}",
+                report.neon_min_ns_per_block().unwrap_or_default()
+            );
+            println!(
+                "neon_median_ns_per_block: {:.2}",
+                report.neon_median_ns_per_block().unwrap_or_default()
+            );
+            println!(
+                "neon_min_speedup: {:.2}x",
+                report.neon_min_speedup().unwrap_or_default()
+            );
+            println!(
+                "neon_median_speedup: {:.2}x",
+                report.neon_median_speedup().unwrap_or_default()
+            );
+            if neon.checksum != report.scalar.checksum {
+                eprintln!("neon checksum mismatch");
+                return ExitCode::FAILURE;
+            }
+        }
+        None => {
+            println!("neon_available: false");
+            println!("dotprod_feature_detected: {}", q8::dotprod_available());
+            println!(
+                "sdot_candidate_requested: {}",
+                q4::sdot_candidate_requested()
+            );
+            println!("sdot_candidate_enabled: {}", q4::sdot_candidate_enabled());
+        }
+    }
+
+    if let Some(sdot) = &report.sdot {
+        println!("sdot_checksum: {}", sdot.checksum);
+        println!(
+            "sdot_total_ms: {:.3}",
+            sdot.total_elapsed().as_secs_f64() * 1000.0
+        );
+        println!(
+            "sdot_min_ns_per_block: {:.2}",
+            report.sdot_min_ns_per_block().unwrap_or_default()
+        );
+        println!(
+            "sdot_median_ns_per_block: {:.2}",
+            report.sdot_median_ns_per_block().unwrap_or_default()
+        );
+        println!(
+            "sdot_min_speedup: {:.2}x",
+            report.sdot_min_speedup().unwrap_or_default()
+        );
+        println!(
+            "sdot_median_speedup: {:.2}x",
+            report.sdot_median_speedup().unwrap_or_default()
+        );
+        if report.neon.is_some() {
+            println!(
+                "sdot_vs_neon_min_speedup: {:.2}x",
+                report.sdot_vs_neon_min_speedup().unwrap_or_default()
+            );
+            println!(
+                "sdot_vs_neon_median_speedup: {:.2}x",
+                report.sdot_vs_neon_median_speedup().unwrap_or_default()
+            );
+        }
+        if sdot.checksum != report.scalar.checksum {
+            eprintln!("sdot checksum mismatch");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    println!("json: {}", q4_dot_json(&report));
+
+    ExitCode::SUCCESS
+}
+
+fn q4_dot_json(report: &q4::Q4DotBenchmarkReport) -> String {
+    let scalar_runs = duration_ms_json(&report.scalar.elapsed_runs);
+    let neon_json = report.neon.as_ref().map(|neon| {
+        format!(
+            ",\"neon\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6},\"min_speedup\":{:.6},\"median_speedup\":{:.6}}}",
+            neon.checksum,
+            duration_ms_json(&neon.elapsed_runs),
+            report.neon_min_ns_per_block().unwrap_or_default(),
+            report.neon_median_ns_per_block().unwrap_or_default(),
+            report.neon_min_speedup().unwrap_or_default(),
+            report.neon_median_speedup().unwrap_or_default()
+        )
+    }).unwrap_or_default();
+    let sdot_json = report
+        .sdot
+        .as_ref()
+        .map(|sdot| {
+            format!(
+                ",\"sdot\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6},\"min_speedup\":{:.6},\"median_speedup\":{:.6},\"vs_neon_min_speedup\":{:.6},\"vs_neon_median_speedup\":{:.6}}}",
+                sdot.checksum,
+                duration_ms_json(&sdot.elapsed_runs),
+                report.sdot_min_ns_per_block().unwrap_or_default(),
+                report.sdot_median_ns_per_block().unwrap_or_default(),
+                report.sdot_min_speedup().unwrap_or_default(),
+                report.sdot_median_speedup().unwrap_or_default(),
+                report.sdot_vs_neon_min_speedup().unwrap_or_default(),
+                report.sdot_vs_neon_median_speedup().unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
+    let kernel_json = format!(
+        ",\"kernel_selector\":{{\"requested\":{},\"selected\":\"{}\",\"fallback_reason\":{}}}",
+        report.kernel_selector.requested.map(|k| format!("\"{}\"", k.name())).unwrap_or_else(|| "null".to_string()),
+        report.kernel_selector.selected.name(),
+        report.kernel_selector.fallback_reason.map(|r| format!("\"{}\"", r)).unwrap_or_else(|| "null".to_string())
+    );
+    let suffix_json = format!("{kernel_json}{neon_json}{sdot_json}");
+
+    format!(
+        "{{\"benchmark\":\"q4-dot\",\"iterations\":{},\"runs\":{},\"blocks_per_iteration\":{},\"elements_per_iteration\":{},\"selected\":{{\"checksum\":{},\"run_ms\":{}}},\"scalar\":{{\"checksum\":{},\"run_ms\":{},\"min_ns_per_block\":{:.6},\"median_ns_per_block\":{:.6}}},\"neon_available\":{},\"dotprod_feature_detected\":{},\"sdot_candidate_requested\":{},\"sdot_candidate_enabled\":{}{}}}",
+        report.iterations,
+        report.runs,
+        report.blocks_per_iteration,
+        report.elements_per_iteration,
+        report.selected.checksum,
+        duration_ms_json(&report.selected.elapsed_runs),
+        report.scalar.checksum,
+        scalar_runs,
+        report.scalar_min_ns_per_block(),
+        report.scalar_median_ns_per_block(),
+        report.neon.is_some(),
+        q8::dotprod_available(),
+        q4::sdot_candidate_requested(),
+        q4::sdot_candidate_enabled(),
+        suffix_json
+    )
 }
