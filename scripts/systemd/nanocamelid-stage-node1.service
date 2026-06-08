@@ -1,0 +1,14 @@
+[Unit]
+Description=NanoCamelid pipeline stage (node1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/nanocamelid
+ExecStart=%h/nanocamelid/target/release/nanocamelid serve-stage %h/nanocamelid/src/NanoCamelid/config/nodes.local.toml node1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
