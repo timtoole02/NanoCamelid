@@ -149,6 +149,7 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("webui") => run_webui_command(&args[1..]),
         Some("serve") => {
             if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
                 print_help(HelpTopic::Serve);
@@ -14840,3 +14841,587 @@ flags\t\t: sse4_2 avx2
         row_values * row_count * 2
     }
 }
+// ===== NANO_SERVE_MODULE_BEGIN =====
+// ---------------------------------------------------------------------------
+// serve: minimal HTTP server exposing the NanoCamelid chat engine + embedded
+// web UI. Added to run the Camelid React frontend on a Raspberry Pi over the LAN.
+// ---------------------------------------------------------------------------
+
+include!(concat!(env!("OUT_DIR"), "/webui_assets.rs"));
+
+struct ServeConfig {
+    host: String,
+    port: u16,
+    model_dir: PathBuf,
+    #[allow(dead_code)]
+    api_key: Option<String>,
+    temp: f32,
+    max_tokens: usize,
+}
+
+struct ScanEntry {
+    filename: String,
+    path: PathBuf,
+    bytes: u64,
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn serve_scan_model_dir(dir: &Path) -> Vec<ScanEntry> {
+    let mut entries = Vec::new();
+    if let Ok(read) = fs::read_dir(dir) {
+        for e in read.flatten() {
+            let path = e.path();
+            let is_gguf = path
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("gguf"))
+                .unwrap_or(false);
+            if !is_gguf {
+                continue;
+            }
+            let filename = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            entries.push(ScanEntry {
+                filename,
+                path,
+                bytes,
+            });
+        }
+    }
+    entries.sort_by(|a, b| a.filename.cmp(&b.filename));
+    entries
+}
+
+fn serve_active_entry(entries: &[ScanEntry]) -> Option<&ScanEntry> {
+    entries
+        .iter()
+        .find(|e| e.filename.to_lowercase().contains("tinyllama"))
+        .or_else(|| entries.first())
+}
+
+fn parse_webui_args(args: &[String]) -> Result<ServeConfig, String> {
+    let mut host = "0.0.0.0".to_owned();
+    let mut port: u16 = 8080;
+    let mut model_dir: Option<PathBuf> = None;
+    let mut api_key: Option<String> = None;
+    let mut temp: f32 = 0.7;
+    let mut max_tokens: usize = 256;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--host" => {
+                i += 1;
+                host = args.get(i).ok_or("--host requires a value")?.clone();
+            }
+            "--port" => {
+                i += 1;
+                port = args
+                    .get(i)
+                    .ok_or("--port requires a value")?
+                    .parse()
+                    .map_err(|_| "invalid --port")?;
+            }
+            "--model-dir" => {
+                i += 1;
+                model_dir = Some(PathBuf::from(
+                    args.get(i).ok_or("--model-dir requires a value")?,
+                ));
+            }
+            "--api-key" => {
+                i += 1;
+                api_key = Some(args.get(i).ok_or("--api-key requires a value")?.clone());
+            }
+            "--temp" => {
+                i += 1;
+                temp = args
+                    .get(i)
+                    .ok_or("--temp requires a value")?
+                    .parse()
+                    .map_err(|_| "invalid --temp")?;
+            }
+            "--max-tokens" => {
+                i += 1;
+                max_tokens = args
+                    .get(i)
+                    .ok_or("--max-tokens requires a value")?
+                    .parse()
+                    .map_err(|_| "invalid --max-tokens")?;
+            }
+            other => return Err(format!("unknown serve arg: {other}")),
+        }
+        i += 1;
+    }
+    let model_dir = model_dir.ok_or("--model-dir is required")?;
+    if host != "127.0.0.1" && host != "localhost" && api_key.is_none() {
+        return Err(format!(
+            "binding to {host} requires --api-key (dummy token acceptable on a trusted LAN)"
+        ));
+    }
+    Ok(ServeConfig {
+        host,
+        port,
+        model_dir,
+        api_key,
+        temp,
+        max_tokens,
+    })
+}
+
+struct ServeModel {
+    loaded: TuiLoadedModel,
+}
+
+fn run_webui_command(args: &[String]) -> ExitCode {
+    let cfg = match parse_webui_args(args) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!(
+                "usage: nanocamelid webui --host <h> --port <p> --model-dir <dir> --api-key <token> [--temp <t>] [--max-tokens <n>]"
+            );
+            return ExitCode::from(2);
+        }
+    };
+
+    let entries = serve_scan_model_dir(&cfg.model_dir);
+    let active = match serve_active_entry(&entries) {
+        Some(e) => e,
+        None => {
+            eprintln!(
+                "no .gguf models found in {}",
+                cfg.model_dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let active_path = active.path.clone();
+    let active_id = active.filename.clone();
+    println!(
+        "nanocamelid serve: loading {} ...",
+        active_path.display()
+    );
+
+    let selector = q8::Q8DotKernelSelector::from_env();
+    let loaded = match load_tui_model(&active_path, selector) {
+        Ok(m) => m,
+        Err(err) => {
+            eprintln!("failed to load model: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "nanocamelid serve: model \"{}\" ready ({:.1}s load)",
+        active_id, loaded.load_secs
+    );
+    let model = ServeModel { loaded };
+
+    let bind_addr = format!("{}:{}", cfg.host, cfg.port);
+    let listener = match std::net::TcpListener::bind(&bind_addr) {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("failed to bind {bind_addr}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Camelid is ready");
+    println!(
+        "nanocamelid serve: listening on http://{} (open from a LAN browser)",
+        bind_addr
+    );
+
+    // Single-threaded accept loop: model state (KV cache) is not thread-safe and
+    // one Pi core-set handles inference. Requests are processed serially.
+    let mut session = ChatSession::new(&model.loaded.config);
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                if let Err(err) =
+                    handle_webui_connection(&mut stream, &cfg, &model, &entries, &active_id, &mut session)
+                {
+                    eprintln!("serve: connection error: {err}");
+                }
+            }
+            Err(err) => eprintln!("serve: accept error: {err}"),
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+struct WebuiHttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> std::io::Result<Option<WebuiHttpRequest>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    let header_end;
+    loop {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+            header_end = pos + 4;
+            break;
+        }
+        if buf.len() > 1 << 20 {
+            // 1MB header cap
+            return Ok(None);
+        }
+    }
+    let header_text = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+    let mut lines = header_text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_owned();
+    let path = parts.next().unwrap_or_default().to_owned();
+    let mut content_length = 0usize;
+    for line in lines {
+        if let Some(v) = line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")) {
+            content_length = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = buf[header_end..].to_vec();
+    while body.len() < content_length {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+    body.truncate(content_length);
+    Ok(Some(WebuiHttpRequest { method, path, body }))
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+}
+
+fn write_bytes_response(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    body: &[u8],
+    content_type: &str,
+    cache: &str,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        _ => "OK",
+    };
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: {cache}\r\nX-Content-Type-Options: nosniff\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()
+}
+
+fn write_json(stream: &mut std::net::TcpStream, status: u16, body: &str) -> std::io::Result<()> {
+    write_bytes_response(stream, status, body.as_bytes(), "application/json", "no-cache")
+}
+
+fn extract_json_string_field(body: &str, field: &str) -> Option<String> {
+    // Minimal extractor for "field":"value" (handles escapes/unicode). Returns the
+    // LAST occurrence, which for an OpenAI chat request is the newest user "content".
+    // Avoids adding a JSON dependency for this small, fixed shape.
+    let key = format!("\"{field}\"");
+    let mut search_from = 0;
+    let mut last_val = None;
+    while let Some(rel) = body[search_from..].find(&key) {
+        let start = search_from + rel + key.len();
+        let after_colon = body[start..].trim_start();
+        if let Some(after) = after_colon.strip_prefix(':') {
+            let after = after.trim_start();
+            if after.starts_with('"') {
+                last_val = Some(parse_json_string_at(after));
+            }
+        }
+        search_from = start;
+    }
+    last_val
+}
+
+fn parse_json_string_at(after: &str) -> String {
+    // `after` starts with the opening quote of a JSON string literal.
+    let mut chars = after.char_indices();
+    let mut out = String::new();
+    // consume opening quote
+    let _ = chars.next();
+    let mut escaped = false;
+    let mut pending_u = String::new();
+    let mut in_u = 0usize;
+    for (_, c) in chars {
+        if in_u > 0 {
+            pending_u.push(c);
+            in_u -= 1;
+            if in_u == 0 {
+                if let Ok(cp) = u32::from_str_radix(&pending_u, 16) {
+                    if let Some(ch) = char::from_u32(cp) {
+                        out.push(ch);
+                    }
+                }
+                pending_u.clear();
+            }
+            continue;
+        }
+        if escaped {
+            match c {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'b' => out.push('\u{0008}'),
+                'f' => out.push('\u{000C}'),
+                'u' => {
+                    in_u = 4;
+                }
+                other => out.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => break,
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn serve_is_public(method: &str, path: &str) -> bool {
+    return true; // LAN: all routes public; --api-key only guards the 0.0.0.0 bind
+
+    (method == "GET"
+        && (path == "/"
+            || path == "/favicon.svg"
+            || path.starts_with("/assets/")
+            || path == "/v1/health"
+            || path == "/health"
+            || path == "/v1/models"
+            || path == "/api/capabilities"
+            || path == "/api/models/local"
+            || path == "/api/models/current"
+            || (!path.starts_with("/v1/")
+                && !path.starts_with("/api/")
+                && !path.starts_with("/metrics"))))
+        || ((path == "/v1/chat/completions" || path == "/v1/completions") && method == "POST")
+        || method == "OPTIONS"
+}
+
+fn serve_capabilities_json() -> String {
+    String::from(
+        "{\"engine\":\"nanocamelid\",\"model_compatibility\":[{\"id\":\"tinyllama_1_1b_chat_v1_0_q8_0\",\"family\":\"llama_spm_decoder\",\"quantization\":\"q8_0\",\"status\":\"supported\",\"evidence\":\"nanocamelid local chat\",\"notes\":\"TinyLlama Q8_0 local chat\"}],\"api_features\":[],\"planned_model_families\":[]}",
+    )
+}
+
+fn webui_health_json(active_id: &str, model_dir: &Path) -> String {
+    format!(
+        "{{\"ok\":true,\"status\":\"ok\",\"engine\":\"nanocamelid\",\"active_model_id\":\"{}\",\"loaded_now\":true,\"generation_ready\":true,\"model_dir\":\"{}\",\"model_ready\":true}}",
+        json_escape(active_id),
+        json_escape(&model_dir.to_string_lossy())
+    )
+}
+
+fn serve_models_v1_json(active_id: &str) -> String {
+    format!(
+        "{{\"object\":\"list\",\"data\":[{{\"id\":\"{}\",\"object\":\"model\",\"created\":0,\"owned_by\":\"nanocamelid\"}}]}}",
+        json_escape(active_id)
+    )
+}
+
+fn serve_models_local_json(entries: &[ScanEntry]) -> String {
+    let mut out = String::from("{\"models\":[");
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"id\":\"{0}\",\"filename\":\"{0}\",\"runtime_model_name\":\"{0}\",\"path\":\"{1}\",\"model_path\":\"{1}\",\"bytes\":{2},\"quant\":\"Q8_0\",\"family\":\"tinyllama\",\"status\":\"ready\"}}",
+            json_escape(&e.filename),
+            json_escape(&e.path.to_string_lossy()),
+            e.bytes
+        ));
+    }
+    out.push_str("]}");
+    out
+}
+
+fn serve_models_current_json(active: &ScanEntry) -> String {
+    format!(
+        "{{\"id\":\"{id}\",\"name\":\"TinyLlama 1.1B Chat\",\"filename\":\"{id}\",\"model_path\":\"{path}\",\"path\":\"{path}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":7}}}},\"quant\":\"Q8_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
+        id = json_escape(&active.filename),
+        path = json_escape(&active.path.to_string_lossy())
+    )
+}
+
+fn serve_static(stream: &mut std::net::TcpStream, path: &str) -> std::io::Result<()> {
+    let rel = path.trim_start_matches('/');
+    let rel = if rel.is_empty() { "index.html" } else { rel };
+    if let Some(&(_, mime, data)) = WEBUI_ASSETS.iter().find(|&&(p, _, _)| p == rel) {
+        let cache = if rel.starts_with("assets/") {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        };
+        return write_bytes_response(stream, 200, data, mime, cache);
+    }
+    // SPA fallback: non-file GET → index.html
+    let is_file = rel.rsplit('/').next().map(|s| s.contains('.')).unwrap_or(false);
+    if !is_file {
+        if let Some(&(_, mime, data)) = WEBUI_ASSETS.iter().find(|&&(p, _, _)| p == "index.html") {
+            return write_bytes_response(stream, 200, data, mime, "no-cache");
+        }
+    }
+    write_bytes_response(stream, 404, b"not found", "text/plain; charset=utf-8", "no-cache")
+}
+
+fn handle_webui_connection(
+    stream: &mut std::net::TcpStream,
+    cfg: &ServeConfig,
+    model: &ServeModel,
+    entries: &[ScanEntry],
+    active_id: &str,
+    session: &mut ChatSession,
+) -> std::io::Result<()> {
+    let request = match read_http_request(stream)? {
+        Some(r) => r,
+        None => return Ok(()),
+    };
+    let method = request.method.as_str();
+    let path = request.path.as_str();
+
+    // CORS preflight
+    if method == "OPTIONS" {
+        return write_bytes_response(stream, 200, b"", "text/plain", "no-cache");
+    }
+
+    // Auth: LAN-trusted. Public routes (UI + chat) exempt; anything else would
+    // require a bearer token, but no other write routes exist here.
+    if !serve_is_public(method, path) {
+        return write_json(stream, 401, "{\"error\":\"unauthorized\"}");
+    }
+
+    match (method, path) {
+        ("GET", "/health") | ("GET", "/v1/health") => {
+            write_json(stream, 200, &webui_health_json(active_id, &cfg.model_dir))
+        }
+        ("GET", "/api/capabilities") => write_json(stream, 200, &serve_capabilities_json()),
+        ("GET", "/v1/models") => write_json(stream, 200, &serve_models_v1_json(active_id)),
+        ("GET", "/api/models/local") => {
+            write_json(stream, 200, &serve_models_local_json(entries))
+        }
+        ("GET", "/api/models/current") => {
+            let active = serve_active_entry(entries);
+            match active {
+                Some(a) => write_json(stream, 200, &serve_models_current_json(a)),
+                None => write_json(stream, 200, "{}"),
+            }
+        }
+        ("POST", "/v1/chat/completions") => {
+            handle_chat_completion(stream, cfg, model, active_id, session, &request.body)
+        }
+        // Unmatched /api/* GET returns JSON, never the SPA shell. The frontend
+        // fetches these (e.g. /api/models/catalog/downloads) and, on a 200, feeds
+        // the body straight into array ops; an HTML body there is a TypeError that
+        // crashes the dashboard build. [] is the benign value its own catch() uses.
+        ("GET", p) if p.starts_with("/api/") => write_json(stream, 200, "[]"),
+        ("GET", _) => serve_static(stream, path),
+        _ => write_json(stream, 404, "{\"error\":\"not found\"}"),
+    }
+}
+
+fn handle_chat_completion(
+    stream: &mut std::net::TcpStream,
+    cfg: &ServeConfig,
+    model: &ServeModel,
+    active_id: &str,
+    session: &mut ChatSession,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let body_str = String::from_utf8_lossy(body);
+    let user_content = match extract_json_string_field(&body_str, "content") {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            return write_json(
+                stream,
+                400,
+                "{\"error\":\"missing messages[].content\"}",
+            );
+        }
+    };
+
+    // Fresh conversation per request (single-turn); reset KV cache.
+    session.reset(&model.loaded.config);
+    let history = vec![ChatTurn {
+        role: "user".to_owned(),
+        content: user_content,
+    }];
+
+    let env = ChatGenerationEnv {
+        config: &model.loaded.config,
+        weights: &model.loaded.weights,
+        tokenizer: &model.loaded.tokenizer,
+        runtime_options: model.loaded.runtime_options,
+        draft: None,
+    };
+
+    let result = generate_chat_turn(&history, session, env, cfg.temp, cfg.max_tokens);
+    match result {
+        Ok((text, report)) => {
+            let created = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let json = format!(
+                "{{\"id\":\"chatcmpl-nano\",\"object\":\"chat.completion\",\"created\":{created},\"model\":\"{model_id}\",\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":{pt},\"completion_tokens\":{ct},\"total_tokens\":{tt}}}}}",
+                model_id = json_escape(active_id),
+                content = json_escape(text.trim()),
+                pt = report.input_tokens,
+                ct = report.output_tokens,
+                tt = report.input_tokens + report.output_tokens
+            );
+            write_json(stream, 200, &json)
+        }
+        Err(err) => {
+            let json = format!("{{\"error\":\"{}\"}}", json_escape(&err));
+            write_json(stream, 500, &json)
+        }
+    }
+}
+
+// ===== NANO_SERVE_MODULE_END =====

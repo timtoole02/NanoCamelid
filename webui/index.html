@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0e1216" />
+    <title>Camelid</title>
+    <script>
+      // Apply an explicit light/dark preference before first paint to avoid a flash.
+      // "system" (or unset) intentionally leaves [data-theme] off so the
+      // prefers-color-scheme media query drives the palette.
+      try {
+        var t = localStorage.getItem('camelid-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-GPcPWL0c.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/icons-CLPWrPMZ.js">
+    <link rel="modulepreload" crossorigin href="/assets/modelState-B3kRrX-d.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-oLgSpjkf.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

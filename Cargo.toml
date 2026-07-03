@@ -9,6 +9,7 @@ readme = "README.md"
 keywords = ["gguf", "llm", "inference", "raspberry-pi", "arm64"]
 categories = ["command-line-utilities"]
 default-run = "nanocamelid"
+build = "build.rs"
 
 [dependencies]
 core_affinity = "0.8"
