@@ -217,12 +217,17 @@ fn run_worker(
     let mut activations = Vec::new();
     let mut decoded_tokens = Vec::new();
     let mut worker_compute_total = Duration::ZERO;
+    let mut upstream_wait_samples = StageSamples::default();
+    let mut compute_samples = StageSamples::default();
+    let mut feedback_send_samples = StageSamples::default();
     loop {
+        let upstream_wait_start = Instant::now();
         let header = match cluster::recv_activation_packet(&mut stream, &mut activations) {
             Ok(header) => header,
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(err) => return Err(format!("failed to receive activation packet: {err}")),
         };
+        let upstream_wait_elapsed = upstream_wait_start.elapsed();
         let seq_len = header.seq_len as usize;
         let pos = header.pos as usize;
         let expected_floats = seq_len * loaded.config.embedding_length;
@@ -273,10 +278,17 @@ fn run_worker(
             &mut ws,
             options,
         );
-        worker_compute_total += compute_start.elapsed();
+        let compute_elapsed = compute_start.elapsed();
+        worker_compute_total += compute_elapsed;
         let next_token = inference::sample_logits(&ws.logits, 0.0);
+        let feedback_send_start = Instant::now();
         cluster::send_token_feedback(&mut stream, next_token as u32, false)
             .map_err(|err| format!("failed to send token feedback: {err}"))?;
+        if seq_len == 1 {
+            upstream_wait_samples.push(upstream_wait_elapsed);
+            compute_samples.push(compute_elapsed);
+            feedback_send_samples.push(feedback_send_start.elapsed());
+        }
 
         println!("received_pos: {}", header.pos);
         println!("received_seq_len: {}", header.seq_len);
@@ -297,6 +309,15 @@ fn run_worker(
             worker_compute_total.as_secs_f64() * 1000.0 / decoded_tokens.len() as f64
         );
     }
+    println!(
+        "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"final\",\"model\":{:?},\"layer_range\":\"{}..{}\",{},{},{}}}",
+        model_path.display().to_string(),
+        node1.layer_start,
+        node1.layer_end,
+        upstream_wait_samples.json_fields("upstream_wait"),
+        compute_samples.json_fields("compute"),
+        feedback_send_samples.json_fields("feedback_send"),
+    );
     println!("result: WORKER_DONE");
     Ok(())
 }
@@ -383,8 +404,13 @@ fn run_middle_worker(
     let mut feedback_tokens = Vec::new();
     let mut middle_compute_total = Duration::ZERO;
     let mut downstream_round_trip_total = Duration::ZERO;
+    let mut upstream_wait_samples = StageSamples::default();
+    let mut compute_samples = StageSamples::default();
+    let mut downstream_send_samples = StageSamples::default();
+    let mut downstream_wait_samples = StageSamples::default();
 
     loop {
+        let upstream_wait_start = Instant::now();
         let header = match cluster::recv_activation_packet(&mut upstream, &mut activations) {
             Ok(header) => header,
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -394,6 +420,7 @@ fn run_middle_worker(
                 ));
             }
         };
+        let upstream_wait_elapsed = upstream_wait_start.elapsed();
         let seq_len = header.seq_len as usize;
         let pos = header.pos as usize;
         let expected_floats = seq_len * config.embedding_length;
@@ -433,14 +460,24 @@ fn run_middle_worker(
             run_distributed_range(&node, pos, &config, &mut cache, &mut ws, options)?;
             &ws.hidden[..]
         };
-        middle_compute_total += compute_start.elapsed();
+        let compute_elapsed = compute_start.elapsed();
+        middle_compute_total += compute_elapsed;
 
-        let downstream_start = Instant::now();
+        let downstream_send_start = Instant::now();
         cluster::send_activation_packet(&mut downstream, header.pos, header.seq_len, outgoing)
             .map_err(|err| format!("failed to send downstream activation packet: {err}"))?;
+        let downstream_send_elapsed = downstream_send_start.elapsed();
+        let downstream_wait_start = Instant::now();
         let feedback = cluster::recv_token_feedback(&mut downstream)
             .map_err(|err| format!("failed to receive downstream token feedback: {err}"))?;
-        downstream_round_trip_total += downstream_start.elapsed();
+        let downstream_wait_elapsed = downstream_wait_start.elapsed();
+        downstream_round_trip_total += downstream_send_elapsed + downstream_wait_elapsed;
+        if seq_len == 1 {
+            upstream_wait_samples.push(upstream_wait_elapsed);
+            compute_samples.push(compute_elapsed);
+            downstream_send_samples.push(downstream_send_elapsed);
+            downstream_wait_samples.push(downstream_wait_elapsed);
+        }
         cluster::send_token_feedback(&mut upstream, feedback.token_id, feedback.is_finished)
             .map_err(|err| format!("failed to send upstream token feedback: {err}"))?;
 
@@ -472,6 +509,16 @@ fn run_middle_worker(
             downstream_round_trip_total.as_secs_f64() * 1000.0 / token_count
         );
     }
+    println!(
+        "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"middle\",\"model\":{:?},\"layer_range\":\"{}..{}\",{},{},{},{}}}",
+        model_path.display().to_string(),
+        node.layer_start,
+        node.layer_end,
+        upstream_wait_samples.json_fields("upstream_wait"),
+        compute_samples.json_fields("compute"),
+        downstream_send_samples.json_fields("downstream_send"),
+        downstream_wait_samples.json_fields("downstream_wait"),
+    );
     println!("result: MIDDLE_WORKER_DONE");
     Ok(())
 }
@@ -665,6 +712,9 @@ fn run_master_generate(
     let started_generation = Instant::now();
     let mut master_stage_total = Duration::ZERO;
     let mut tcp_round_trip_total = Duration::ZERO;
+    let mut compute_samples = StageSamples::default();
+    let mut send_samples = StageSamples::default();
+    let mut recv_wait_samples = StageSamples::default();
 
     while generated_tokens.len() < max_tokens {
         if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length {
@@ -691,14 +741,21 @@ fn run_master_generate(
                 options,
             },
         )?;
-        master_stage_total += master_start.elapsed();
+        let master_elapsed = master_start.elapsed();
+        master_stage_total += master_elapsed;
+        compute_samples.push(master_elapsed);
 
-        let round_trip_start = Instant::now();
+        let send_start = Instant::now();
         cluster::send_activation_packet(&mut stream, pos as u32, 1, &node0_ws.hidden)
             .map_err(|err| format!("failed to send decode activation packet: {err}"))?;
+        let send_elapsed = send_start.elapsed();
+        let recv_start = Instant::now();
         let feedback = cluster::recv_token_feedback(&mut stream)
             .map_err(|err| format!("failed to receive decode token feedback: {err}"))?;
-        tcp_round_trip_total += round_trip_start.elapsed();
+        let recv_elapsed = recv_start.elapsed();
+        tcp_round_trip_total += send_elapsed + recv_elapsed;
+        send_samples.push(send_elapsed);
+        recv_wait_samples.push(recv_elapsed);
 
         next_token = feedback.token_id as usize;
         pos += 1;
@@ -723,6 +780,20 @@ fn run_master_generate(
     println!(
         "cluster_tcp_round_trip_total_ms: {:.3}",
         tcp_round_trip_total.as_secs_f64() * 1000.0
+    );
+    println!(
+        "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"master\",\"model\":{:?},\"generated_tokens\":{},\"generation_seconds\":{:.3},\"decode_tokens_per_sec\":{:.3},{},{},{}}}",
+        model_path.display().to_string(),
+        generated_tokens.len(),
+        elapsed,
+        if elapsed > 0.0 {
+            generated_tokens.len() as f64 / elapsed
+        } else {
+            0.0
+        },
+        compute_samples.json_fields("compute"),
+        send_samples.json_fields("send"),
+        recv_wait_samples.json_fields("recv_wait"),
     );
     println!("result: PASS_GENERATE_UNCHECKED");
     Ok(())
@@ -986,6 +1057,35 @@ fn is_stop_token(tokenizer: &tokenizer::Tokenizer, token_id: u32) -> bool {
     Some(token_id) == tokenizer.special.eos
         || Some(token_id) == tokenizer.special.eot
         || Some(token_id) == tokenizer.special.eom
+}
+
+// Per-token stage timings for the Phase 0 decode breakdown. Samples are
+// decode-step-only (seq_len == 1); the batched prefill packet is excluded so
+// the summary reflects steady-state decode.
+#[derive(Default)]
+struct StageSamples {
+    ms: Vec<f64>,
+}
+
+impl StageSamples {
+    fn push(&mut self, elapsed: Duration) {
+        self.ms.push(elapsed.as_secs_f64() * 1000.0);
+    }
+
+    fn json_fields(&self, label: &str) -> String {
+        if self.ms.is_empty() {
+            return format!("\"{label}_samples\":0");
+        }
+        let mut sorted = self.ms.clone();
+        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let count = sorted.len();
+        let avg = sorted.iter().sum::<f64>() / count as f64;
+        let p50 = sorted[count / 2];
+        let p95 = sorted[((count as f64 * 0.95) as usize).min(count - 1)];
+        format!(
+            "\"{label}_samples\":{count},\"{label}_avg_ms\":{avg:.3},\"{label}_p50_ms\":{p50:.3},\"{label}_p95_ms\":{p95:.3}"
+        )
+    }
 }
 
 struct LoadedClusterModel {
