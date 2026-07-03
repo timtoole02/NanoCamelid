@@ -1,5 +1,5 @@
 use crate::model::{
-    LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, MoeExpertWeights,
+    LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, MoeExpertWeights, RopeStyle,
     PageAlignedQ4_0Swizzled1x4, PageAlignedQ8_0Swizzled1x4, QuantizedMatrix,
 };
 use crate::q8::{
@@ -633,6 +633,7 @@ pub fn apply_rope(
     rope_dim: usize,
     freq_base: f32,
     rope_scaling: RopeScaling,
+    rope_style: RopeStyle,
 ) {
     if rope_cache_enabled() {
         apply_rope_cached(
@@ -643,15 +644,21 @@ pub fn apply_rope(
             rope_dim,
             freq_base,
             rope_scaling,
+            rope_style,
         );
         return;
     }
 
+    let half = rope_dim / 2;
     for head in 0..head_count {
         let head_start = head * head_dim;
-        for i in 0..(rope_dim / 2) {
-            let dim0 = head_start + (i * 2);
-            let dim1 = dim0 + 1;
+        for i in 0..half {
+            // NORM rotates interleaved pairs (2i, 2i+1); NEOX rotates split-half pairs
+            // (i, i+rope_dim/2). Same angle table, different element pairing.
+            let (dim0, dim1) = match rope_style {
+                RopeStyle::Norm => (head_start + i * 2, head_start + i * 2 + 1),
+                RopeStyle::Neox => (head_start + i, head_start + i + half),
+            };
 
             let mut theta = freq_base.powf(-((i * 2) as f32) / rope_dim as f32);
 
@@ -800,13 +807,18 @@ fn apply_rope_cached(
     rope_dim: usize,
     freq_base: f32,
     rope_scaling: RopeScaling,
+    rope_style: RopeStyle,
 ) {
     let angles = cached_rope_angles(pos, rope_dim, freq_base, rope_scaling);
+    let half = rope_dim / 2;
     for head in 0..head_count {
         let head_start = head * head_dim;
         for (i, &(sin, cos)) in angles.iter().enumerate() {
-            let dim0 = head_start + (i * 2);
-            let dim1 = dim0 + 1;
+            // NORM: interleaved pairs (2i, 2i+1); NEOX: split-half pairs (i, i+rope_dim/2).
+            let (dim0, dim1) = match rope_style {
+                RopeStyle::Norm => (head_start + i * 2, head_start + i * 2 + 1),
+                RopeStyle::Neox => (head_start + i, head_start + i + half),
+            };
             let x0 = data[dim0];
             let x1 = data[dim1];
 
@@ -3405,6 +3417,7 @@ pub fn run_layer_range_batch(
                 config.rope_dimension_count,
                 config.rope_freq_base,
                 options.rope_scaling,
+                config.rope_style,
             );
             apply_rope(
                 &mut ws.k[kv_start..kv_start + config.kv_width],
@@ -3414,6 +3427,7 @@ pub fn run_layer_range_batch(
                 config.rope_dimension_count,
                 config.rope_freq_base,
                 options.rope_scaling,
+                config.rope_style,
             );
             cache.store_kv(
                 layer_idx,
@@ -4083,6 +4097,7 @@ pub fn run_layer_range(
             config.rope_dimension_count,
             config.rope_freq_base,
             options.rope_scaling,
+                config.rope_style,
         );
 
         apply_rope(
@@ -4093,6 +4108,7 @@ pub fn run_layer_range(
             config.rope_dimension_count,
             config.rope_freq_base,
             options.rope_scaling,
+                config.rope_style,
         );
         trace_record("decode.rope", stage_started.elapsed());
 
@@ -4902,6 +4918,7 @@ mod tests {
             attention_head_count_kv: 1,
             rope_dimension_count: 32,
             rope_freq_base: 10000.0,
+            rope_style: crate::model::RopeStyle::Norm,
             rms_norm_epsilon: 1e-5,
             vocab_size: 4,
             head_dim: 32,
@@ -6645,12 +6662,68 @@ mod tests {
     #[test]
     fn apply_rope_respects_partial_rope_dimension_count() {
         let mut data = vec![1.0, 0.0, 10.0, 20.0];
-        apply_rope(&mut data, 1, 1, 4, 2, 10000.0, RopeScaling::default());
+        apply_rope(&mut data, 1, 1, 4, 2, 10000.0, RopeScaling::default(), crate::model::RopeStyle::Norm);
 
         assert!((data[0] - 1.0_f32.cos()).abs() < 1e-6);
         assert!((data[1] - 1.0_f32.sin()).abs() < 1e-6);
         assert_eq!(data[2], 10.0);
         assert_eq!(data[3], 20.0);
+    }
+
+    #[test]
+    fn apply_rope_neox_rotates_split_half_pairs() {
+        // head_dim = rope_dim = 4, head_count = 1, pos = 1, base = 10000.
+        // NEOX pairs element i with i+rope_dim/2: (0,2) at theta0, (1,3) at theta1.
+        let mut data = vec![1.0_f32, 2.0, 3.0, 4.0];
+        apply_rope(
+            &mut data,
+            1,
+            1,
+            4,
+            4,
+            10000.0,
+            RopeScaling::default(),
+            crate::model::RopeStyle::Neox,
+        );
+
+        let theta0 = 10000_f32.powf(0.0); // i = 0
+        let theta1 = 10000_f32.powf(-2.0 / 4.0); // i = 1
+        let (s0, c0) = (1.0 * theta0).sin_cos();
+        let (s1, c1) = (1.0 * theta1).sin_cos();
+        // pair (0, 2)
+        assert!((data[0] - (1.0 * c0 - 3.0 * s0)).abs() < 1e-5);
+        assert!((data[2] - (1.0 * s0 + 3.0 * c0)).abs() < 1e-5);
+        // pair (1, 3)
+        assert!((data[1] - (2.0 * c1 - 4.0 * s1)).abs() < 1e-5);
+        assert!((data[3] - (2.0 * s1 + 4.0 * c1)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn apply_rope_norm_and_neox_differ() {
+        // Guards against a regression where NEOX silently behaves like NORM.
+        let mut norm = vec![1.0_f32, 2.0, 3.0, 4.0];
+        let mut neox = vec![1.0_f32, 2.0, 3.0, 4.0];
+        apply_rope(
+            &mut norm,
+            3,
+            1,
+            4,
+            4,
+            10000.0,
+            RopeScaling::default(),
+            crate::model::RopeStyle::Norm,
+        );
+        apply_rope(
+            &mut neox,
+            3,
+            1,
+            4,
+            4,
+            10000.0,
+            RopeScaling::default(),
+            crate::model::RopeStyle::Neox,
+        );
+        assert_ne!(norm, neox, "NEOX rotation must differ from NORM");
     }
 
     #[test]
