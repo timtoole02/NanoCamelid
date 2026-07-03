@@ -2031,6 +2031,38 @@ pub fn quantize_f32_matrix_to_q8_0_blocks(
     blocks
 }
 
+pub fn quantize_f32_matrix_to_q4_0_blocks(values: &[f32], rows: usize, cols: usize) -> Vec<Q4_0Block> {
+    assert!(cols.is_multiple_of(Q8_BLOCK_SIZE), "cols ({cols}) must be a multiple of {Q8_BLOCK_SIZE}");
+    assert_eq!(values.len(), rows * cols, "values.len() ({}) != rows*cols ({})", values.len(), rows * cols);
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    let mut blocks = Vec::with_capacity(rows * blocks_per_row);
+    for row in 0..rows {
+        let row_start = row * cols;
+        for b in 0..blocks_per_row {
+            let chunk = &values[row_start + b * Q8_BLOCK_SIZE .. row_start + (b + 1) * Q8_BLOCK_SIZE];
+            let mut amax = 0.0_f32;
+            let mut max = 0.0_f32;
+            for &v in chunk {
+                let a = v.abs();
+                if a > amax { amax = a; max = v; }
+            }
+            let d = max / -8.0;
+            let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+            let mut packed = [0_u8; Q8_BLOCK_SIZE / 2];
+            for j in 0..(Q8_BLOCK_SIZE / 2) {
+                let x0 = chunk[j] * id + 8.5;
+                let x1 = chunk[j + Q8_BLOCK_SIZE / 2] * id + 8.5;
+                let q0 = (x0 as i32).clamp(0, 15) as u8;
+                let q1 = (x1 as i32).clamp(0, 15) as u8;
+                packed[j] = q0 | (q1 << 4);
+            }
+            let scale_bits = fast_f32_to_f16(d);
+            blocks.push(Q4_0Block::from_parts(scale_bits, packed));
+        }
+    }
+    blocks
+}
+
 pub fn decode_q4_0_blocks(bytes: &[u8]) -> Result<Vec<Q4_0Block>, Q8BlockError> {
     if !bytes.len().is_multiple_of(Q4_0_BLOCK_BYTES) {
         return Err(Q8BlockError::MisalignedLength {
@@ -3724,7 +3756,68 @@ mod tests {
         dot_i8_with_selector, dot_q4_0_q8_0_1x4_sdot_selected, dot_q4_0_q8_0_scalar,
         dot_q4_0_q8_0_with_selector, dot_q4_1_q8_0_scalar, dot_q8_0_blocks_scalar,
         dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32, fast_f32_to_f16,
+        quantize_f32_matrix_to_q4_0_blocks,
     };
+
+    #[test]
+    fn quantize_f32_matrix_to_q4_0_blocks_reconstructs_within_scale() {
+        let rows = 8;
+        let cols = 64;
+        let blocks_per_row = cols / Q8_BLOCK_SIZE;
+        let mut values = vec![0.0_f32; rows * cols];
+        for row in 0..rows {
+            for col in 0..cols {
+                let idx = row * cols + col;
+                let block = col / Q8_BLOCK_SIZE;
+                if row == 0 {
+                    // All-zero block for the first row's first block; leave zeros elsewhere too.
+                    values[idx] = 0.0;
+                } else if row == 1 && block == 0 {
+                    // One large outlier plus mixed signs within a single block.
+                    values[idx] = if col == 0 {
+                        -12.5
+                    } else if col % 2 == 0 {
+                        0.25 * (col as f32)
+                    } else {
+                        -0.125 * (col as f32)
+                    };
+                } else {
+                    // Deterministic mixed-sign ramp.
+                    let sign = if (row + col) % 2 == 0 { 1.0 } else { -1.0 };
+                    values[idx] = sign * (0.03 * (idx as f32) + 0.5);
+                }
+            }
+        }
+
+        let blocks = quantize_f32_matrix_to_q4_0_blocks(&values, rows, cols);
+        assert_eq!(blocks.len(), rows * blocks_per_row);
+
+        for row in 0..rows {
+            let row_start = row * cols;
+            for b in 0..blocks_per_row {
+                let blk = &blocks[row * blocks_per_row + b];
+                let d = blk.scale_f32();
+                let recon = blk.unpack_values();
+                let chunk = &values[row_start + b * Q8_BLOCK_SIZE..row_start + (b + 1) * Q8_BLOCK_SIZE];
+                for k in 0..Q8_BLOCK_SIZE {
+                    let err = (recon[k] as f32 * d - chunk[k]).abs();
+                    assert!(
+                        err <= d.abs() + 1e-4,
+                        "row={row} b={b} k={k} err={err} d={d} chunk={} recon={}",
+                        chunk[k],
+                        recon[k]
+                    );
+                }
+            }
+        }
+
+        // An all-zero input block reconstructs to all zeros.
+        let zero_blk = &blocks[0];
+        assert_eq!(zero_blk.scale_f32(), 0.0);
+        for &q in zero_blk.unpack_values().iter() {
+            assert_eq!(q, 0);
+        }
+    }
 
     #[test]
     fn q8_k_block_dequantize_and_dot_product() {
