@@ -269,6 +269,7 @@ mod tests {
             attention_head_count_kv: 1,
             rope_dimension_count: 32,
             rope_freq_base: 10000.0,
+            rope_style: crate::model::RopeStyle::Norm,
             rms_norm_epsilon: 1e-5,
             vocab_size: 4,
             head_dim: 32,

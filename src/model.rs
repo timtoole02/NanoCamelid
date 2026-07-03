@@ -34,6 +34,7 @@ pub struct LlamaModelConfig {
     pub attention_head_count_kv: usize,
     pub rope_dimension_count: usize,
     pub rope_freq_base: f32,
+    pub rope_style: RopeStyle,
     pub rms_norm_epsilon: f32,
     pub vocab_size: usize,
     pub head_dim: usize,
@@ -172,6 +173,7 @@ impl LlamaModelConfig {
             attention_head_count_kv,
             rope_dimension_count,
             rope_freq_base,
+            rope_style: rope_style_for_arch(arch),
             rms_norm_epsilon,
             vocab_size,
             head_dim,
@@ -185,6 +187,25 @@ impl LlamaModelConfig {
 
 fn metadata_key(prefix: &str, suffix: &str) -> String {
     format!("{prefix}.{suffix}")
+}
+
+/// RoPE rotation convention. Llama-family GGUFs are pre-permuted by the HF->GGUF
+/// converter so that adjacent-pair (NORM) rotation reproduces the original model;
+/// qwen2/qwen3/gemma3/phi3/lfm2 GGUFs are NOT permuted and require split-half (NEOX)
+/// rotation. Mapping mirrors llama.cpp's `llama_model_rope_type` (llama-model.cpp):
+/// LLAMA/SMOLLM3/MISTRAL -> NORM, QWEN2/QWEN3/GEMMA3/PHI3/LFM2 -> NEOX.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RopeStyle {
+    Norm,
+    Neox,
+}
+
+pub fn rope_style_for_arch(arch: &str) -> RopeStyle {
+    match arch {
+        "qwen2" | "qwen3" | "gemma3" | "phi3" | "lfm2" => RopeStyle::Neox,
+        // llama, smollm3, mistral and other llama-family archs use NORM.
+        _ => RopeStyle::Norm,
+    }
 }
 
 pub fn metadata_prefix_for_arch(arch: &str) -> Option<&'static str> {
@@ -1683,6 +1704,7 @@ mod tests {
             attention_head_count_kv: 4,
             rope_dimension_count: 64,
             rope_freq_base: 10000.0,
+            rope_style: crate::model::RopeStyle::Norm,
             rms_norm_epsilon: 1e-5,
             vocab_size: 32000,
             head_dim: 64,
