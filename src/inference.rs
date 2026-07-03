@@ -14,7 +14,7 @@ use std::{
     hash::{Hash, Hasher},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -163,8 +163,8 @@ pub fn trace_snapshot() -> Vec<(&'static str, TraceStats)> {
 }
 
 pub struct WorkerState {
-    pub task_id: AtomicU32,
-    pub completed_id: AtomicU32,
+    pub task_id: AtomicU64,
+    pub completed_id: AtomicU64,
     pub active: AtomicBool,
 }
 
@@ -236,8 +236,8 @@ impl SpinThreadPool {
 
         for i in 0..thread_count {
             let state = Arc::new(WorkerState {
-                task_id: AtomicU32::new(0),
-                completed_id: AtomicU32::new(0),
+                task_id: AtomicU64::new(0),
+                completed_id: AtomicU64::new(0),
                 active: AtomicBool::new(false),
             });
             states.push(state.clone());
@@ -334,7 +334,7 @@ where
             ACTIVE_WORK.store(&work as *const _ as *mut c_void, Ordering::Release);
 
             // Master thread increments TASK_ID to start workers
-            static TASK_ID: AtomicU32 = AtomicU32::new(1);
+            static TASK_ID: AtomicU64 = AtomicU64::new(1);
             let current_task = TASK_ID.fetch_add(1, Ordering::Relaxed);
 
             // Dispatch task to workers
