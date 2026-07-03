@@ -10,7 +10,7 @@ use std::{
 use nanocamelid::{
     cluster, gguf, inference,
     model::{self, DistributedLlamaWeights},
-    q8, tokenizer,
+    q8, speculative, tokenizer,
 };
 
 const CLUSTER_CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CLUSTER_CONTEXT_LIMIT";
@@ -108,6 +108,7 @@ fn run() -> Result<(), String> {
                 requested_split_layer,
                 max_tokens,
                 false,
+                None,
             )
         }
         Some("master-chat") | Some("master-chat-generate") => {
@@ -129,6 +130,33 @@ fn run() -> Result<(), String> {
                 requested_split_layer,
                 max_tokens,
                 true,
+                None,
+            )
+        }
+        Some("master-chat-spec") => {
+            let Some(model_path) = args.next() else {
+                print_usage();
+                return Err("missing master model path".to_owned());
+            };
+            let worker_addr = args.next().unwrap_or_else(|| "127.0.0.1:5005".to_owned());
+            let Some(prompt) = args.next() else {
+                print_usage();
+                return Err("missing prompt".to_owned());
+            };
+            let requested_split_layer = parse_optional_usize(args.next(), 0, "split_layer")?;
+            let max_tokens = parse_optional_usize(args.next(), 16, "max_tokens")?;
+            let spec_k = env::var("NANOCAMELID_SPEC_K")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(4);
+            run_master_generate(
+                Path::new(&model_path),
+                &worker_addr,
+                &prompt,
+                requested_split_layer,
+                max_tokens,
+                true,
+                Some(spec_k),
             )
         }
         _ => {
@@ -251,6 +279,55 @@ fn run_worker(
         }
 
         let compute_start = Instant::now();
+        if header.verify {
+            // Speculative verify batch: run the layer range for every
+            // position, then answer with the greedy prediction after EACH
+            // position so the master can run acceptance.
+            batch_ws.hidden[..expected_floats].copy_from_slice(&activations);
+            inference::run_layer_range_batch(
+                node1.layer_start,
+                &node1.layers,
+                seq_len,
+                pos,
+                &loaded.config,
+                &mut cache,
+                &mut batch_ws,
+                options,
+            );
+            let layers_elapsed = compute_start.elapsed();
+            let logits_start = Instant::now();
+            let emb_len = loaded.config.embedding_length;
+            let mut predictions = Vec::with_capacity(seq_len);
+            for row in 0..seq_len {
+                let hidden_start = row * emb_len;
+                ws.hidden
+                    .copy_from_slice(&batch_ws.hidden[hidden_start..hidden_start + emb_len]);
+                inference::compute_logits_from_hidden(
+                    &loaded.config,
+                    output_token_embeddings,
+                    output_norm,
+                    output_projection,
+                    &mut ws,
+                    options,
+                );
+                predictions.push(inference::sample_logits(&ws.logits, 0.0) as u32);
+            }
+            let logits_elapsed = logits_start.elapsed();
+            let compute_elapsed = compute_start.elapsed();
+            worker_compute_total += compute_elapsed;
+            let feedback_send_start = Instant::now();
+            cluster::send_batch_feedback(&mut stream, &predictions)
+                .map_err(|err| format!("failed to send batch feedback: {err}"))?;
+            upstream_wait_samples.push(upstream_wait_elapsed);
+            compute_samples.push(compute_elapsed);
+            layers_samples.push(layers_elapsed);
+            logits_samples.push(logits_elapsed);
+            feedback_send_samples.push(feedback_send_start.elapsed());
+            if let Some(&last) = predictions.last() {
+                decoded_tokens.push(last);
+            }
+            continue;
+        }
         if seq_len > 1 {
             batch_ws.hidden[..expected_floats].copy_from_slice(&activations);
             inference::run_layer_range_batch(
@@ -452,7 +529,7 @@ fn run_middle_worker(
         }
 
         let compute_start = Instant::now();
-        let outgoing = if seq_len > 1 {
+        let outgoing = if seq_len > 1 || header.verify {
             batch_ws.hidden[..expected_floats].copy_from_slice(&activations);
             inference::run_layer_range_batch(
                 node.layer_start,
@@ -474,6 +551,26 @@ fn run_middle_worker(
         middle_compute_total += compute_elapsed;
 
         let downstream_send_start = Instant::now();
+        if header.verify {
+            cluster::send_verify_packet(&mut downstream, header.pos, header.seq_len, outgoing)
+                .map_err(|err| format!("failed to send downstream verify packet: {err}"))?;
+            let downstream_send_elapsed = downstream_send_start.elapsed();
+            let downstream_wait_start = Instant::now();
+            let predictions = cluster::recv_batch_feedback(&mut downstream)
+                .map_err(|err| format!("failed to receive downstream batch feedback: {err}"))?;
+            let downstream_wait_elapsed = downstream_wait_start.elapsed();
+            downstream_round_trip_total += downstream_send_elapsed + downstream_wait_elapsed;
+            upstream_wait_samples.push(upstream_wait_elapsed);
+            compute_samples.push(compute_elapsed);
+            downstream_send_samples.push(downstream_send_elapsed);
+            downstream_wait_samples.push(downstream_wait_elapsed);
+            cluster::send_batch_feedback(&mut upstream, &predictions)
+                .map_err(|err| format!("failed to send upstream batch feedback: {err}"))?;
+            if let Some(&last) = predictions.last() {
+                feedback_tokens.push(last);
+            }
+            continue;
+        }
         cluster::send_activation_packet(&mut downstream, header.pos, header.seq_len, outgoing)
             .map_err(|err| format!("failed to send downstream activation packet: {err}"))?;
         let downstream_send_elapsed = downstream_send_start.elapsed();
@@ -568,6 +665,7 @@ fn run_master_unchecked(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_master_generate(
     model_path: &Path,
     worker_addr: &str,
@@ -575,6 +673,7 @@ fn run_master_generate(
     requested_split_layer: usize,
     max_tokens: usize,
     chat_prompt: bool,
+    spec_k: Option<usize>,
 ) -> Result<(), String> {
     let loaded = load_cluster_model(model_path, requested_split_layer)?;
     let tokenizer = tokenizer::Tokenizer::from_gguf(&loaded.gguf)
@@ -681,7 +780,9 @@ fn run_master_generate(
 
     let started_prefill = Instant::now();
     let prompt_len = prompt_tokens.len();
-    let mut batch_ws = inference::LlamaBatchWorkspace::new(&loaded.config, prompt_len);
+    // In spec mode the workspace must also fit a verify batch of k+1 rows.
+    let batch_capacity = prompt_len.max(spec_k.unwrap_or(0) + 1);
+    let mut batch_ws = inference::LlamaBatchWorkspace::new(&loaded.config, batch_capacity);
     for (token_idx, &token) in prompt_tokens.iter().enumerate() {
         let emb_start = token as usize * loaded.config.embedding_length;
         let hidden_start = token_idx * loaded.config.embedding_length;
@@ -727,49 +828,203 @@ fn run_master_generate(
     let mut send_samples = StageSamples::default();
     let mut recv_wait_samples = StageSamples::default();
 
-    while generated_tokens.len() < max_tokens {
-        if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length {
-            break;
-        }
+    let mut spec_rounds = 0usize;
+    let mut spec_drafted = 0usize;
+    let mut spec_accepted = 0usize;
 
-        generated_tokens.push(next_token as u32);
-        stream_generated_text(&tokenizer, &generated_tokens, &mut last_printed_len)?;
+    if let Some(spec_k_val) = spec_k {
+        // Speculative pipeline decode: draft locally, verify the whole
+        // batch in one pipeline traversal, accept the longest matching
+        // prefix. KV rows written for a rejected suffix sit at positions
+        // the next round overwrites before anything attends them, so no
+        // rollback message is needed.
+        let drafter = speculative::NGramDrafter::default();
+        let mut context_tokens = prompt_tokens.clone();
+        let emb_len = loaded.config.embedding_length;
 
-        if generated_tokens.len() >= max_tokens {
-            break;
-        }
+        while generated_tokens.len() < max_tokens {
+            if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length
+            {
+                break;
+            }
 
-        let master_start = Instant::now();
-        run_master_half_token(
-            next_token,
-            pos,
-            MasterHalfState {
-                config: &loaded.config,
-                node0: &node0,
-                token_embeddings,
-                cache: &mut node0_cache,
-                ws: &mut node0_ws,
+            generated_tokens.push(next_token as u32);
+            context_tokens.push(next_token as u32);
+            stream_generated_text(&tokenizer, &generated_tokens, &mut last_printed_len)?;
+
+            if generated_tokens.len() >= max_tokens {
+                break;
+            }
+
+            spec_rounds += 1;
+            let k = spec_k_val
+                .min(max_tokens - generated_tokens.len())
+                .min(batch_ws.max_batch.saturating_sub(1))
+                .min(loaded.config.context_length.saturating_sub(pos + 1))
+                .min(cluster::MAX_BATCH_FEEDBACK_TOKENS - 1);
+            let drafts = if k == 0 {
+                Vec::new()
+            } else {
+                drafter.draft(&context_tokens, k)
+            };
+
+            if drafts.is_empty() {
+                // Plain single-token traversal.
+                let master_start = Instant::now();
+                run_master_half_token(
+                    next_token,
+                    pos,
+                    MasterHalfState {
+                        config: &loaded.config,
+                        node0: &node0,
+                        token_embeddings,
+                        cache: &mut node0_cache,
+                        ws: &mut node0_ws,
+                        options,
+                    },
+                )?;
+                let master_elapsed = master_start.elapsed();
+                master_stage_total += master_elapsed;
+                compute_samples.push(master_elapsed);
+                let send_start = Instant::now();
+                cluster::send_activation_packet(&mut stream, pos as u32, 1, &node0_ws.hidden)
+                    .map_err(|err| format!("failed to send decode activation packet: {err}"))?;
+                let send_elapsed = send_start.elapsed();
+                let recv_start = Instant::now();
+                let feedback = cluster::recv_token_feedback(&mut stream)
+                    .map_err(|err| format!("failed to receive decode token feedback: {err}"))?;
+                let recv_elapsed = recv_start.elapsed();
+                tcp_round_trip_total += send_elapsed + recv_elapsed;
+                send_samples.push(send_elapsed);
+                recv_wait_samples.push(recv_elapsed);
+                next_token = feedback.token_id as usize;
+                pos += 1;
+                continue;
+            }
+
+            spec_drafted += drafts.len();
+            let mut batch = Vec::with_capacity(drafts.len() + 1);
+            batch.push(next_token as u32);
+            batch.extend_from_slice(&drafts);
+
+            let master_start = Instant::now();
+            for (row, &token) in batch.iter().enumerate() {
+                let emb_start = token as usize * emb_len;
+                batch_ws.hidden[row * emb_len..(row + 1) * emb_len]
+                    .copy_from_slice(&token_embeddings[emb_start..emb_start + emb_len]);
+            }
+            inference::run_layer_range_batch(
+                0,
+                &node0.layers,
+                batch.len(),
+                pos,
+                &loaded.config,
+                &mut node0_cache,
+                &mut batch_ws,
                 options,
-            },
-        )?;
-        let master_elapsed = master_start.elapsed();
-        master_stage_total += master_elapsed;
-        compute_samples.push(master_elapsed);
+            );
+            let master_elapsed = master_start.elapsed();
+            master_stage_total += master_elapsed;
+            compute_samples.push(master_elapsed);
 
-        let send_start = Instant::now();
-        cluster::send_activation_packet(&mut stream, pos as u32, 1, &node0_ws.hidden)
-            .map_err(|err| format!("failed to send decode activation packet: {err}"))?;
-        let send_elapsed = send_start.elapsed();
-        let recv_start = Instant::now();
-        let feedback = cluster::recv_token_feedback(&mut stream)
-            .map_err(|err| format!("failed to receive decode token feedback: {err}"))?;
-        let recv_elapsed = recv_start.elapsed();
-        tcp_round_trip_total += send_elapsed + recv_elapsed;
-        send_samples.push(send_elapsed);
-        recv_wait_samples.push(recv_elapsed);
+            let send_start = Instant::now();
+            cluster::send_verify_packet(
+                &mut stream,
+                pos as u32,
+                batch.len() as u32,
+                &batch_ws.hidden[..batch.len() * emb_len],
+            )
+            .map_err(|err| format!("failed to send verify packet: {err}"))?;
+            let send_elapsed = send_start.elapsed();
+            let recv_start = Instant::now();
+            let predictions = cluster::recv_batch_feedback(&mut stream)
+                .map_err(|err| format!("failed to receive batch feedback: {err}"))?;
+            let recv_elapsed = recv_start.elapsed();
+            tcp_round_trip_total += send_elapsed + recv_elapsed;
+            send_samples.push(send_elapsed);
+            recv_wait_samples.push(recv_elapsed);
 
-        next_token = feedback.token_id as usize;
-        pos += 1;
+            if predictions.len() != batch.len() {
+                return Err(format!(
+                    "batch feedback carried {} predictions for a batch of {}",
+                    predictions.len(),
+                    batch.len()
+                ));
+            }
+
+            let mut accepted = 0usize;
+            for (i, &draft) in drafts.iter().enumerate() {
+                if draft == predictions[i] {
+                    accepted += 1;
+                } else {
+                    break;
+                }
+            }
+            spec_accepted += accepted;
+
+            let mut halted = false;
+            for &draft in &drafts[..accepted] {
+                if is_stop_token(&tokenizer, draft) || generated_tokens.len() >= max_tokens {
+                    halted = true;
+                    break;
+                }
+                generated_tokens.push(draft);
+                context_tokens.push(draft);
+            }
+            stream_generated_text(&tokenizer, &generated_tokens, &mut last_printed_len)?;
+            if halted {
+                break;
+            }
+
+            next_token = predictions[accepted] as usize;
+            pos += accepted + 1;
+        }
+    } else {
+        while generated_tokens.len() < max_tokens {
+            if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length
+            {
+                break;
+            }
+
+            generated_tokens.push(next_token as u32);
+            stream_generated_text(&tokenizer, &generated_tokens, &mut last_printed_len)?;
+
+            if generated_tokens.len() >= max_tokens {
+                break;
+            }
+
+            let master_start = Instant::now();
+            run_master_half_token(
+                next_token,
+                pos,
+                MasterHalfState {
+                    config: &loaded.config,
+                    node0: &node0,
+                    token_embeddings,
+                    cache: &mut node0_cache,
+                    ws: &mut node0_ws,
+                    options,
+                },
+            )?;
+            let master_elapsed = master_start.elapsed();
+            master_stage_total += master_elapsed;
+            compute_samples.push(master_elapsed);
+
+            let send_start = Instant::now();
+            cluster::send_activation_packet(&mut stream, pos as u32, 1, &node0_ws.hidden)
+                .map_err(|err| format!("failed to send decode activation packet: {err}"))?;
+            let send_elapsed = send_start.elapsed();
+            let recv_start = Instant::now();
+            let feedback = cluster::recv_token_feedback(&mut stream)
+                .map_err(|err| format!("failed to receive decode token feedback: {err}"))?;
+            let recv_elapsed = recv_start.elapsed();
+            tcp_round_trip_total += send_elapsed + recv_elapsed;
+            send_samples.push(send_elapsed);
+            recv_wait_samples.push(recv_elapsed);
+
+            next_token = feedback.token_id as usize;
+            pos += 1;
+        }
     }
 
     let elapsed = started_generation.elapsed().as_secs_f64();
@@ -792,9 +1047,20 @@ fn run_master_generate(
         "cluster_tcp_round_trip_total_ms: {:.3}",
         tcp_round_trip_total.as_secs_f64() * 1000.0
     );
+    if spec_k.is_some() {
+        println!(
+            "speculation: rounds {spec_rounds} drafted {spec_drafted} accepted {spec_accepted} acceptance_pct {:.1}",
+            if spec_drafted > 0 {
+                spec_accepted as f64 / spec_drafted as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
+    }
     println!(
-        "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"master\",\"model\":{:?},\"generated_tokens\":{},\"generation_seconds\":{:.3},\"decode_tokens_per_sec\":{:.3},{},{},{}}}",
+        "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"master\",\"model\":{:?},\"spec_k\":{},\"spec_rounds\":{spec_rounds},\"spec_drafted\":{spec_drafted},\"spec_accepted\":{spec_accepted},\"generated_tokens\":{},\"generation_seconds\":{:.3},\"decode_tokens_per_sec\":{:.3},{},{},{}}}",
         model_path.display().to_string(),
+        spec_k.map_or(0, |k| k),
         generated_tokens.len(),
         elapsed,
         if elapsed > 0.0 {

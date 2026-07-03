@@ -1,7 +1,13 @@
 use std::io::{self, Read, Write};
 
 pub const ACTIVATION_MAGIC: u32 = 0xDEAD_BEEF;
+// Speculative verification: same layout as an activation packet, but the
+// final worker replies with one prediction per batch position
+// (BATCH_FEEDBACK) instead of a single token. Middles relay both verbatim.
+pub const ACTIVATION_VERIFY_MAGIC: u32 = 0xDEAD_BEE5;
 pub const TOKEN_FEEDBACK_MAGIC: u32 = 0xCAFE_FEED;
+pub const BATCH_FEEDBACK_MAGIC: u32 = 0xCAFE_FEE5;
+pub const MAX_BATCH_FEEDBACK_TOKENS: usize = 256;
 pub const CLUSTER_HELLO_MAGIC: u32 = 0x4E43_4C48; // "NCLH"
 pub const CLUSTER_PROTOCOL_VERSION: u32 = 1;
 pub const ACTIVATION_HEADER_BYTES: usize = 16;
@@ -14,6 +20,9 @@ pub struct ActivationHeader {
     pub pos: u32,
     pub seq_len: u32,
     pub float_count: u32,
+    /// True when the packet arrived with ACTIVATION_VERIFY_MAGIC: the final
+    /// worker must reply with per-position predictions (BATCH_FEEDBACK).
+    pub verify: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,6 +135,27 @@ pub fn send_activation_packet<W: Write>(
     seq_len: u32,
     activations: &[f32],
 ) -> io::Result<()> {
+    send_activation_packet_with_magic(writer, ACTIVATION_MAGIC, pos, seq_len, activations)
+}
+
+/// A verify packet carries the same payload as an activation packet; the
+/// magic tells downstream nodes to answer with per-position predictions.
+pub fn send_verify_packet<W: Write>(
+    writer: &mut W,
+    pos: u32,
+    seq_len: u32,
+    activations: &[f32],
+) -> io::Result<()> {
+    send_activation_packet_with_magic(writer, ACTIVATION_VERIFY_MAGIC, pos, seq_len, activations)
+}
+
+fn send_activation_packet_with_magic<W: Write>(
+    writer: &mut W,
+    magic: u32,
+    pos: u32,
+    seq_len: u32,
+    activations: &[f32],
+) -> io::Result<()> {
     let float_count = u32::try_from(activations.len()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -140,7 +170,7 @@ pub fn send_activation_packet<W: Write>(
     // packet never straddles a flush boundary as two small writes.
     let mut message =
         Vec::with_capacity(ACTIVATION_HEADER_BYTES + std::mem::size_of_val(activations));
-    message.extend_from_slice(&ACTIVATION_MAGIC.to_le_bytes());
+    message.extend_from_slice(&magic.to_le_bytes());
     message.extend_from_slice(&pos.to_le_bytes());
     message.extend_from_slice(&seq_len.to_le_bytes());
     message.extend_from_slice(&float_count.to_le_bytes());
@@ -167,12 +197,16 @@ pub fn recv_activation_packet_limited<R: Read>(
     reader.read_exact(&mut header)?;
 
     let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
-    if magic != ACTIVATION_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid activation header magic: 0x{magic:08X}"),
-        ));
-    }
+    let verify = match magic {
+        ACTIVATION_MAGIC => false,
+        ACTIVATION_VERIFY_MAGIC => true,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid activation header magic: 0x{magic:08X}"),
+            ));
+        }
+    };
 
     let pos = u32::from_le_bytes(header[4..8].try_into().unwrap());
     let seq_len = u32::from_le_bytes(header[8..12].try_into().unwrap());
@@ -201,7 +235,49 @@ pub fn recv_activation_packet_limited<R: Read>(
         pos,
         seq_len,
         float_count,
+        verify,
     })
+}
+
+/// Per-position predictions for a verify batch: the target's greedy argmax
+/// after each of the batch's positions, in order.
+pub fn send_batch_feedback<W: Write>(writer: &mut W, tokens: &[u32]) -> io::Result<()> {
+    let count = u32::try_from(tokens.len()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "batch feedback too large")
+    })?;
+    let mut message = Vec::with_capacity(8 + tokens.len() * 4);
+    message.extend_from_slice(&BATCH_FEEDBACK_MAGIC.to_le_bytes());
+    message.extend_from_slice(&count.to_le_bytes());
+    for token in tokens {
+        message.extend_from_slice(&token.to_le_bytes());
+    }
+    writer.write_all(&message)?;
+    writer.flush()
+}
+
+pub fn recv_batch_feedback<R: Read>(reader: &mut R) -> io::Result<Vec<u32>> {
+    let mut header = [0_u8; 8];
+    reader.read_exact(&mut header)?;
+    let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    if magic != BATCH_FEEDBACK_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid batch feedback magic: 0x{magic:08X}"),
+        ));
+    }
+    let count = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+    if count == 0 || count > MAX_BATCH_FEEDBACK_TOKENS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("batch feedback count {count} outside 1..={MAX_BATCH_FEEDBACK_TOKENS}"),
+        ));
+    }
+    let mut payload = vec![0_u8; count * 4];
+    reader.read_exact(&mut payload)?;
+    Ok(payload
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect())
 }
 
 pub fn send_token_feedback<W: Write>(
@@ -349,6 +425,43 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("exceeds limit"));
+    }
+
+    #[test]
+    fn verify_packet_round_trips_with_verify_flag() {
+        let activations = [1.0_f32, -2.0];
+        let mut bytes = Vec::new();
+        super::send_verify_packet(&mut bytes, 7, 2, &activations).unwrap();
+        let mut decoded = Vec::new();
+        let header = recv_activation_packet(&mut Cursor::new(bytes), &mut decoded).unwrap();
+        assert!(header.verify);
+        assert_eq!(header.pos, 7);
+        assert_eq!(header.seq_len, 2);
+        assert_eq!(decoded, activations);
+
+        let mut plain = Vec::new();
+        send_activation_packet(&mut plain, 7, 2, &activations).unwrap();
+        let header = recv_activation_packet(&mut Cursor::new(plain), &mut decoded).unwrap();
+        assert!(!header.verify);
+    }
+
+    #[test]
+    fn batch_feedback_round_trips_and_rejects_bad_input() {
+        let tokens = [5_u32, 0, 31999];
+        let mut bytes = Vec::new();
+        super::send_batch_feedback(&mut bytes, &tokens).unwrap();
+        let decoded = super::recv_batch_feedback(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(decoded, tokens);
+
+        let mut zero = Vec::new();
+        zero.extend_from_slice(&super::BATCH_FEEDBACK_MAGIC.to_le_bytes());
+        zero.extend_from_slice(&0_u32.to_le_bytes());
+        assert!(super::recv_batch_feedback(&mut Cursor::new(zero)).is_err());
+
+        let mut bad_magic = Vec::new();
+        bad_magic.extend_from_slice(&0_u32.to_le_bytes());
+        bad_magic.extend_from_slice(&1_u32.to_le_bytes());
+        assert!(super::recv_batch_feedback(&mut Cursor::new(bad_magic)).is_err());
     }
 
     #[test]
