@@ -9568,29 +9568,40 @@ where
     let selector = q8::Q8DotKernelSelector::from_env();
     let runtime_options = runtime_options_from_gguf(&gguf, selector);
 
-    let mut draft = if let Ok(draft_path_str) = std::env::var("NANOCAMELID_DRAFT_GGUF") {
-        if !draft_path_str.is_empty() {
-            let draft_path = Path::new(&draft_path_str);
-            println!("Loading draft GGUF file: {}...", draft_path.display());
-            let draft_ctx = match speculative::SpeculativeContext::load(draft_path, runtime_options)
-            {
-                Ok(ctx) => ctx,
-                Err(err) => {
-                    eprintln!("failed to load draft GGUF: {err}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            if draft_ctx.config.vocab_size != config.vocab_size {
-                eprintln!(
-                    "Vocabulary size mismatch: Target has {}, Draft has {}",
-                    config.vocab_size, draft_ctx.config.vocab_size
-                );
+    // NANOCAMELID_SPEC_DECODE=1 turns on speculative decoding. The draft
+    // source is NANOCAMELID_SPEC_DRAFT: "ngram" (default; zero-cost prompt
+    // lookup) or a path to a draft-model GGUF. NANOCAMELID_DRAFT_GGUF remains
+    // the legacy way to select a draft model directly.
+    let spec_decode_on = std::env::var("NANOCAMELID_SPEC_DECODE").is_ok_and(|value| value == "1");
+    let spec_draft = std::env::var("NANOCAMELID_SPEC_DRAFT").unwrap_or_else(|_| "ngram".into());
+    let ngram_drafter = if spec_decode_on && spec_draft == "ngram" {
+        Some(speculative::NGramDrafter::default())
+    } else {
+        None
+    };
+    let draft_model_path = std::env::var("NANOCAMELID_DRAFT_GGUF")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| (spec_decode_on && spec_draft != "ngram").then(|| spec_draft.clone()));
+
+    let mut draft = if let Some(draft_path_str) = draft_model_path {
+        let draft_path = Path::new(&draft_path_str);
+        println!("Loading draft GGUF file: {}...", draft_path.display());
+        let draft_ctx = match speculative::SpeculativeContext::load(draft_path, runtime_options) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                eprintln!("failed to load draft GGUF: {err}");
                 return ExitCode::FAILURE;
             }
-            Some(draft_ctx)
-        } else {
-            None
+        };
+        if draft_ctx.config.vocab_size != config.vocab_size {
+            eprintln!(
+                "Vocabulary size mismatch: Target has {}, Draft has {}",
+                config.vocab_size, draft_ctx.config.vocab_size
+            );
+            return ExitCode::FAILURE;
         }
+        Some(draft_ctx)
     } else {
         None
     };
@@ -9673,7 +9684,86 @@ where
     let mut last_printed_len = 0;
     let start_gen = std::time::Instant::now();
 
-    if let Some(ref mut draft_ctx) = draft {
+    if let Some(ngram) = ngram_drafter {
+        let spec_k = std::env::var("NANOCAMELID_SPEC_K")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(4);
+        let mut total_drafted = 0;
+        let mut total_accepted = 0;
+        let mut context_tokens = prompt_tokens.clone();
+
+        loop {
+            if pos >= config.context_length || generated_tokens.len() >= max_tokens {
+                break;
+            }
+
+            // A step emits at most k+1 tokens; keep that within the token
+            // budget so truncation at max_tokens matches the plain loop.
+            let step_budget = max_tokens - generated_tokens.len();
+            let current_k = spec_k.min(step_budget.saturating_sub(1));
+            let is_stop = |token: u32| is_generation_stop_token(&tokenizer.special, token);
+
+            let (outcome, step_stats) = match speculative::ngram_speculative_step(
+                &mut speculative::SpeculativeTarget {
+                    config: &config,
+                    weights: &weights,
+                    cache: &mut cache,
+                    ws: &mut ws,
+                    batch_ws: &mut batch_ws,
+                    pos: &mut pos,
+                    context_tokens: &mut context_tokens,
+                    runtime_options,
+                },
+                &ngram,
+                temp,
+                current_k,
+                is_stop,
+            ) {
+                Ok(result) => result,
+                Err(err) => {
+                    eprintln!("speculative decoding failed: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            total_drafted += step_stats.drafted;
+            total_accepted += step_stats.accepted;
+            generated_tokens.extend_from_slice(&outcome.emitted);
+
+            if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
+                && full_text.len() > last_printed_len
+            {
+                print!("{}", &full_text[last_printed_len..]);
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                last_printed_len = full_text.len();
+            }
+
+            if outcome.hit_stop || outcome.emitted.is_empty() {
+                break;
+            }
+        }
+
+        let elapsed = start_gen.elapsed().as_secs_f64();
+        println!(
+            "\n\nGenerated {} tokens in {:.2}s ({:.2} tokens/sec)",
+            generated_tokens.len(),
+            elapsed,
+            generated_tokens.len() as f64 / elapsed
+        );
+        println!(
+            "{}Speculation (ngram): {:.1}% acceptance rate ({}/{} tokens accepted/drafted){}",
+            ansi::DIM,
+            if total_drafted > 0 {
+                (total_accepted as f32 / total_drafted as f32) * 100.0
+            } else {
+                0.0
+            },
+            total_accepted,
+            total_drafted,
+            ansi::RESET
+        );
+    } else if let Some(ref mut draft_ctx) = draft {
         let draft_k = std::env::var("NANOCAMELID_DRAFT_K")
             .ok()
             .and_then(|val| val.parse::<usize>().ok())

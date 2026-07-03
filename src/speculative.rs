@@ -54,6 +54,231 @@ pub struct SpeculativeStats {
     pub accepted: usize,
 }
 
+/// Prompt-lookup drafting: find the longest n-gram suffix of `history`
+/// (between `min_ngram` and `max_ngram`) that occurred earlier, preferring
+/// the most recent occurrence, and propose the tokens that followed it.
+/// Zero extra weights and near-zero cost per draft; proposes nothing on
+/// novel text, so the fallback is exactly a plain greedy step.
+#[derive(Debug, Clone)]
+pub struct NGramDrafter {
+    pub max_ngram: usize,
+    pub min_ngram: usize,
+}
+
+impl Default for NGramDrafter {
+    fn default() -> Self {
+        Self {
+            max_ngram: 4,
+            // Two-token patterns (e.g. ", " pairs) recur with unrelated
+            // continuations and mostly waste verify rows; three-token
+            // matches measure far higher acceptance.
+            min_ngram: 3,
+        }
+    }
+}
+
+impl NGramDrafter {
+    pub fn draft(&self, history: &[u32], max_tokens: usize) -> Vec<u32> {
+        if max_tokens == 0 || self.min_ngram == 0 || history.len() <= self.min_ngram {
+            return Vec::new();
+        }
+        let len = history.len();
+        let max_n = self.max_ngram.min(len.saturating_sub(1));
+        for n in (self.min_ngram..=max_n).rev() {
+            let pattern = &history[len - n..];
+            // Most recent earlier occurrence; the window at len-n is the
+            // suffix itself and is excluded.
+            for start in (0..len - n).rev() {
+                if &history[start..start + n] == pattern {
+                    let continuation_start = start + n;
+                    let continuation_end = (continuation_start + max_tokens).min(len);
+                    if continuation_start < continuation_end {
+                        return history[continuation_start..continuation_end].to_vec();
+                    }
+                    break;
+                }
+            }
+        }
+        Vec::new()
+    }
+}
+
+pub struct NGramStepOutcome {
+    pub emitted: Vec<u32>,
+    pub hit_stop: bool,
+}
+
+/// One decode step with n-gram prompt-lookup speculation.
+///
+/// Entry invariant (same as the plain greedy loop): `target.ws.logits` holds
+/// the logits predicting the token at `target.pos`, and
+/// `target.context_tokens` holds exactly the `pos` consumed tokens. The step
+/// samples the target's own next token t0 from those logits, proposes up to
+/// `draft_k` continuation tokens from history, and verifies t0 plus the
+/// drafts in one batched forward pass. Every emitted token is the target's
+/// own greedy argmax given the accepted prefix, so at temp 0 the emitted
+/// stream is identical to the plain loop's. Stop tokens are neither emitted
+/// nor consumed, matching the plain loop.
+pub fn ngram_speculative_step(
+    target: &mut SpeculativeTarget<'_>,
+    drafter: &NGramDrafter,
+    temp: f32,
+    draft_k: usize,
+    is_stop_token: impl Fn(u32) -> bool,
+) -> Result<(NGramStepOutcome, SpeculativeStats), String> {
+    let start_pos = *target.pos;
+    let emb_len = target.config.embedding_length;
+    let mut stats = SpeculativeStats::default();
+
+    let t0 = inference::sample_logits(&target.ws.logits, temp) as u32;
+    if is_stop_token(t0) {
+        return Ok((
+            NGramStepOutcome {
+                emitted: Vec::new(),
+                hit_stop: true,
+            },
+            stats,
+        ));
+    }
+
+    let mut history = Vec::with_capacity(target.context_tokens.len() + 1);
+    history.extend_from_slice(target.context_tokens);
+    history.push(t0);
+    let mut drafts = if draft_k == 0 {
+        Vec::new()
+    } else {
+        drafter.draft(&history, draft_k)
+    };
+    // The batch is t0 plus the drafts: bound it by the verify workspace and
+    // the remaining context.
+    let max_drafts = target
+        .batch_ws
+        .max_batch
+        .saturating_sub(1)
+        .min(target.config.context_length.saturating_sub(start_pos + 1));
+    drafts.truncate(max_drafts);
+
+    if drafts.is_empty() {
+        inference::forward_pass(
+            t0 as usize,
+            start_pos,
+            target.config,
+            target.weights,
+            target.cache,
+            target.ws,
+            target.runtime_options,
+        );
+        target.context_tokens.push(t0);
+        *target.pos = start_pos + 1;
+        return Ok((
+            NGramStepOutcome {
+                emitted: vec![t0],
+                hit_stop: false,
+            },
+            stats,
+        ));
+    }
+
+    stats.drafted = drafts.len();
+
+    // One batched pass over t0 plus the drafts. Row i's hidden state yields
+    // the logits that predict the token after batch[i]. KV rows written for
+    // a rejected suffix are never attended (attention never looks past the
+    // current position) and are overwritten when those positions are reached.
+    let mut batch = Vec::with_capacity(drafts.len() + 1);
+    batch.push(t0);
+    batch.extend_from_slice(&drafts);
+    inference::prefill_pass_batch(
+        &batch,
+        start_pos,
+        target.config,
+        target.weights,
+        target.cache,
+        target.batch_ws,
+        target.runtime_options,
+    );
+
+    let mut emitted = vec![t0];
+    for (i, &draft_token) in drafts.iter().enumerate() {
+        let hidden_start = i * emb_len;
+        target
+            .ws
+            .hidden
+            .copy_from_slice(&target.batch_ws.hidden[hidden_start..hidden_start + emb_len]);
+        inference::compute_logits_from_hidden(
+            target.config,
+            &target.weights.token_embeddings,
+            &target.weights.output_norm,
+            target.weights.output_projection.as_ref(),
+            target.ws,
+            target.runtime_options,
+        );
+        let t_target = inference::sample_logits(&target.ws.logits, temp) as u32;
+        if draft_token == t_target {
+            stats.accepted += 1;
+        }
+
+        if is_stop_token(t_target) {
+            // Stop token: neither emitted nor consumed. batch[..=i] is
+            // consumed history (its logits produced this prediction).
+            target.context_tokens.extend_from_slice(&emitted);
+            *target.pos = start_pos + i + 1;
+            return Ok((NGramStepOutcome { emitted, hit_stop: true }, stats));
+        }
+
+        if draft_token == t_target {
+            emitted.push(draft_token);
+        } else {
+            emitted.push(t_target);
+            // Corrective forward replaces the rejected draft's KV row and
+            // leaves ws.logits predicting the following position.
+            inference::forward_pass(
+                t_target as usize,
+                start_pos + i + 1,
+                target.config,
+                target.weights,
+                target.cache,
+                target.ws,
+                target.runtime_options,
+            );
+            target.context_tokens.extend_from_slice(&emitted);
+            *target.pos = start_pos + i + 2;
+            return Ok((
+                NGramStepOutcome {
+                    emitted,
+                    hit_stop: false,
+                },
+                stats,
+            ));
+        }
+    }
+
+    // All drafts accepted: the final batch row's logits predict the next
+    // position and are left in ws.logits for the next step.
+    let hidden_start = (batch.len() - 1) * emb_len;
+    target
+        .ws
+        .hidden
+        .copy_from_slice(&target.batch_ws.hidden[hidden_start..hidden_start + emb_len]);
+    inference::compute_logits_from_hidden(
+        target.config,
+        &target.weights.token_embeddings,
+        &target.weights.output_norm,
+        target.weights.output_projection.as_ref(),
+        target.ws,
+        target.runtime_options,
+    );
+    target.context_tokens.extend_from_slice(&emitted);
+    *target.pos = start_pos + batch.len();
+    Ok((
+        NGramStepOutcome {
+            emitted,
+            hit_stop: false,
+        },
+        stats,
+    ))
+}
+
 pub struct SpeculativeTarget<'a> {
     pub config: &'a LlamaModelConfig,
     pub weights: &'a LlamaWeights,
@@ -310,6 +535,139 @@ mod tests {
             output_projection: None,
             layers: vec![test_layer(config)],
         }
+    }
+
+    #[test]
+    fn ngram_drafts_continuation_of_most_recent_match() {
+        let drafter = NGramDrafter::default();
+        // Suffix [1, 2, 3, 4] (n=4) matches at the start; continuation is [5, 6, 9].
+        let history = vec![1, 2, 3, 4, 5, 6, 9, 9, 1, 2, 3, 4];
+        assert_eq!(drafter.draft(&history, 3), vec![5, 6, 9]);
+    }
+
+    #[test]
+    fn ngram_prefers_longer_patterns_and_recent_matches() {
+        let drafter = NGramDrafter::default();
+        // [3, 4] occurs twice earlier with different continuations; the most
+        // recent occurrence (followed by 8) wins.
+        let history = vec![3, 4, 7, 0, 3, 4, 8, 0, 3, 4];
+        assert_eq!(drafter.draft(&history, 2), vec![8, 0]);
+    }
+
+    #[test]
+    fn ngram_returns_empty_when_no_repeat_exists() {
+        let drafter = NGramDrafter::default();
+        assert!(drafter.draft(&[1, 2, 3, 4, 5], 4).is_empty());
+        assert!(drafter.draft(&[1, 2], 4).is_empty());
+        assert!(drafter.draft(&[], 4).is_empty());
+    }
+
+    #[test]
+    fn ngram_caps_at_requested_tokens() {
+        let drafter = NGramDrafter {
+            max_ngram: 3,
+            min_ngram: 2,
+        };
+        let history = vec![1, 2, 9, 8, 7, 6, 1, 2];
+        assert_eq!(drafter.draft(&history, 2), vec![9, 8]);
+        assert_eq!(drafter.draft(&history, 10), vec![9, 8, 7, 6, 1, 2]);
+    }
+
+    #[test]
+    fn ngram_step_keeps_pos_and_context_consistent() {
+        let config = test_config();
+        let weights = test_weights(&config);
+        let mut cache =
+            LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+        let mut ws = LlamaWorkspace::new(&config);
+        let mut batch_ws = LlamaBatchWorkspace::new(&config, 8);
+        let sel = Q8DotKernelSelector {
+            requested: None,
+            selected: Q8DotKernel::Scalar,
+            fallback_reason: None,
+        };
+        let runtime_options = LlamaRuntimeOptions {
+            q8_selector: sel,
+            rope_scaling: crate::inference::RopeScaling::default(),
+            compute_logits: true,
+        };
+        // Zero weights make every logit equal, so greedy always picks token
+        // 0; a history of zeros makes the n-gram drafter propose zeros, which
+        // all verify. This exercises the batched-verify bookkeeping.
+        ws.logits[0] = 1.0;
+        let mut pos = 6;
+        let mut context_tokens = vec![0_u32; 6];
+        let drafter = NGramDrafter::default();
+        let (outcome, stats) = ngram_speculative_step(
+            &mut SpeculativeTarget {
+                config: &config,
+                weights: &weights,
+                cache: &mut cache,
+                ws: &mut ws,
+                batch_ws: &mut batch_ws,
+                pos: &mut pos,
+                context_tokens: &mut context_tokens,
+                runtime_options,
+            },
+            &drafter,
+            0.0,
+            4,
+            |token| token == 3,
+        )
+        .unwrap();
+        assert!(!outcome.hit_stop);
+        assert!(!outcome.emitted.is_empty());
+        // Exit invariant: pos matches consumed history and every emitted
+        // token was appended to it.
+        assert_eq!(pos, context_tokens.len());
+        assert_eq!(context_tokens.len(), 6 + outcome.emitted.len());
+        assert!(stats.accepted <= stats.drafted);
+    }
+
+    #[test]
+    fn ngram_step_returns_stop_without_emitting() {
+        let config = test_config();
+        let weights = test_weights(&config);
+        let mut cache =
+            LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+        let mut ws = LlamaWorkspace::new(&config);
+        let mut batch_ws = LlamaBatchWorkspace::new(&config, 8);
+        let sel = Q8DotKernelSelector {
+            requested: None,
+            selected: Q8DotKernel::Scalar,
+            fallback_reason: None,
+        };
+        let runtime_options = LlamaRuntimeOptions {
+            q8_selector: sel,
+            rope_scaling: crate::inference::RopeScaling::default(),
+            compute_logits: true,
+        };
+        ws.logits[2] = 10.0;
+        let mut pos = 3;
+        let mut context_tokens = vec![0, 1, 2];
+        let drafter = NGramDrafter::default();
+        let (outcome, stats) = ngram_speculative_step(
+            &mut SpeculativeTarget {
+                config: &config,
+                weights: &weights,
+                cache: &mut cache,
+                ws: &mut ws,
+                batch_ws: &mut batch_ws,
+                pos: &mut pos,
+                context_tokens: &mut context_tokens,
+                runtime_options,
+            },
+            &drafter,
+            0.0,
+            4,
+            |token| token == 2,
+        )
+        .unwrap();
+        assert!(outcome.hit_stop);
+        assert!(outcome.emitted.is_empty());
+        assert_eq!(pos, 3);
+        assert_eq!(context_tokens, vec![0, 1, 2]);
+        assert_eq!(stats.drafted, 0);
     }
 
     #[test]
