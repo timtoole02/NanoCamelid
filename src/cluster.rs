@@ -136,18 +136,18 @@ pub fn send_activation_packet<W: Write>(
         )
     })?;
 
-    let mut header = [0_u8; ACTIVATION_HEADER_BYTES];
-    header[0..4].copy_from_slice(&ACTIVATION_MAGIC.to_le_bytes());
-    header[4..8].copy_from_slice(&pos.to_le_bytes());
-    header[8..12].copy_from_slice(&seq_len.to_le_bytes());
-    header[12..16].copy_from_slice(&float_count.to_le_bytes());
-    writer.write_all(&header)?;
-
-    let mut payload = Vec::with_capacity(std::mem::size_of_val(activations));
+    // Single-write framing: header and payload leave in one write_all so a
+    // packet never straddles a flush boundary as two small writes.
+    let mut message =
+        Vec::with_capacity(ACTIVATION_HEADER_BYTES + std::mem::size_of_val(activations));
+    message.extend_from_slice(&ACTIVATION_MAGIC.to_le_bytes());
+    message.extend_from_slice(&pos.to_le_bytes());
+    message.extend_from_slice(&seq_len.to_le_bytes());
+    message.extend_from_slice(&float_count.to_le_bytes());
     for value in activations {
-        payload.extend_from_slice(&value.to_le_bytes());
+        message.extend_from_slice(&value.to_le_bytes());
     }
-    writer.write_all(&payload)?;
+    writer.write_all(&message)?;
     writer.flush()
 }
 
