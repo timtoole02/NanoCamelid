@@ -316,6 +316,7 @@ fn run_worker(
             worker_compute_total.as_secs_f64() * 1000.0 / decoded_tokens.len() as f64
         );
     }
+    print_worker_trace_summary();
     println!(
         "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"final\",\"model\":{:?},\"layer_range\":\"{}..{}\",{},{},{},{},{}}}",
         model_path.display().to_string(),
@@ -518,6 +519,7 @@ fn run_middle_worker(
             downstream_round_trip_total.as_secs_f64() * 1000.0 / token_count
         );
     }
+    print_worker_trace_summary();
     println!(
         "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"middle\",\"model\":{:?},\"layer_range\":\"{}..{}\",{},{},{},{}}}",
         model_path.display().to_string(),
@@ -1066,6 +1068,19 @@ fn is_stop_token(tokenizer: &tokenizer::Tokenizer, token_id: u32) -> bool {
     Some(token_id) == tokenizer.special.eos
         || Some(token_id) == tokenizer.special.eot
         || Some(token_id) == tokenizer.special.eom
+}
+
+// Stage-level trace summary (populated only when NANOCAMELID_TRACE=1).
+fn print_worker_trace_summary() {
+    for (stage, stats) in inference::trace_snapshot().into_iter().take(24) {
+        let total_ms = stats.total.as_secs_f64() * 1000.0;
+        println!(
+            "trace: {stage} calls {} total_ms {:.1} avg_ms {:.4}",
+            stats.calls,
+            total_ms,
+            total_ms / stats.calls.max(1) as f64
+        );
+    }
 }
 
 // Per-token stage timings for the Phase 0 decode breakdown. Samples are

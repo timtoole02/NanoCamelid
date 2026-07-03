@@ -45,6 +45,21 @@ fn should_parallelize_matmul(rows: usize) -> bool {
     rows >= matmul_min_rows()
 }
 
+// Diagnostic counters for the matmul dispatch branches (read via
+// pool_dispatch_counts; used by benches to verify work stays on the
+// spin pool).
+static POOL_DISPATCH_SPIN: AtomicU64 = AtomicU64::new(0);
+static POOL_DISPATCH_RAYON_LOCK: AtomicU64 = AtomicU64::new(0);
+static POOL_DISPATCH_RAYON_NOPOOL: AtomicU64 = AtomicU64::new(0);
+
+pub fn pool_dispatch_counts() -> (u64, u64, u64) {
+    (
+        POOL_DISPATCH_SPIN.load(Ordering::Relaxed),
+        POOL_DISPATCH_RAYON_LOCK.load(Ordering::Relaxed),
+        POOL_DISPATCH_RAYON_NOPOOL.load(Ordering::Relaxed),
+    )
+}
+
 fn q4_1x4_sdot_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -294,10 +309,21 @@ fn get_spin_pool() -> Option<&'static SpinThreadPool> {
     static INITIALIZED: OnceLock<Option<SpinThreadPool>> = OnceLock::new();
     INITIALIZED
         .get_or_init(|| {
+            // Default OFF. The swizzled 1x4 kernels (the Q4_0/Q8_0 hot path)
+            // parallelize via rayon and never touch this pool, so once the
+            // pool spawns its workers busy-spin through all non-dispatch
+            // time and starve rayon: on a Pi 5, a Mixtral Q6_K untied head
+            // (the only per-token spin dispatch) cost 10ms itself but slowed
+            // every rayon layer matmul ~3.3x (28.6 -> 96ms/layer measured;
+            // docs/bench/phase0_baseline.md). The same idle spin is a
+            // sustained-power hazard on marginal supplies. On rayon the
+            // former spin dispatches measure as fast or faster (Q6_K head
+            // 9.5ms spin vs 8.4ms rayon). NANOCAMELID_SPIN_POOL=1 opts the
+            // old behavior back in for A/B work.
             let enabled = env::var("NANOCAMELID_SPIN_POOL")
                 .ok()
                 .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
-                .unwrap_or_else(|| cfg!(target_arch = "aarch64"));
+                .unwrap_or(false);
 
             if enabled {
                 let cores = std::thread::available_parallelism()
@@ -319,12 +345,14 @@ where
     if should_parallelize_matmul(out.len()) {
         if let Some(pool) = get_spin_pool() {
             let Ok(_work_guard) = active_work_lock().lock() else {
+                POOL_DISPATCH_RAYON_LOCK.fetch_add(1, Ordering::Relaxed);
                 out.par_iter_mut()
                     .with_min_len(matmul_min_rows())
                     .enumerate()
                     .for_each(|(r, out_val)| compute_row(r, out_val));
                 return;
             };
+            POOL_DISPATCH_SPIN.fetch_add(1, Ordering::Relaxed);
             let work = MatmulWork {
                 compute_row: &compute_row as *const F as *const c_void,
                 compute: compute_matmul_row::<F>,
@@ -367,6 +395,7 @@ where
         }
 
         // Rayon fallback
+        POOL_DISPATCH_RAYON_NOPOOL.fetch_add(1, Ordering::Relaxed);
         out.par_iter_mut()
             .with_min_len(matmul_min_rows())
             .enumerate()
