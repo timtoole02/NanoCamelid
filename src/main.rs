@@ -9268,12 +9268,16 @@ fn generate_chat_turn(
                 break;
             }
 
+            let mut saw_stop = false;
             for &token in &step_tokens {
-                generated_tokens.push(token);
-                ttft_secs.get_or_insert_with(|| started_turn.elapsed().as_secs_f64());
+                // Stop tokens end the turn and are not part of the generated
+                // stream, matching the plain greedy loop's accounting.
                 if is_generation_stop_token(&env.tokenizer.special, token) {
+                    saw_stop = true;
                     break;
                 }
+                generated_tokens.push(token);
+                ttft_secs.get_or_insert_with(|| started_turn.elapsed().as_secs_f64());
             }
 
             if let Ok(full_text) = env.tokenizer.decode(&generated_tokens, true)
@@ -9286,10 +9290,7 @@ fn generate_chat_turn(
                 last_printed_len = full_text.len();
             }
 
-            if generated_tokens
-                .iter()
-                .any(|&t| is_generation_stop_token(&env.tokenizer.special, t))
-            {
+            if saw_stop {
                 break;
             }
         }
@@ -9814,11 +9815,15 @@ where
                 break;
             }
 
+            let mut saw_stop = false;
             for &token in &step_tokens {
-                generated_tokens.push(token);
+                // Stop tokens end the turn and are not part of the generated
+                // stream, matching the plain greedy loop's accounting.
                 if is_generation_stop_token(&tokenizer.special, token) {
+                    saw_stop = true;
                     break;
                 }
+                generated_tokens.push(token);
             }
 
             if let Ok(full_text) = tokenizer.decode(&generated_tokens, true)
@@ -9829,10 +9834,7 @@ where
                 last_printed_len = full_text.len();
             }
 
-            if generated_tokens
-                .iter()
-                .any(|&t| is_generation_stop_token(&tokenizer.special, t))
-            {
+            if saw_stop {
                 break;
             }
         }
