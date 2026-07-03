@@ -9901,6 +9901,13 @@ where
             generated_tokens.len() as f64 / elapsed
         );
     }
+    // Token-level parity receipts: NANOCAMELID_EMIT_TOKEN_IDS=1 prints the
+    // exact generated token ids so spec-on/spec-off runs can be compared
+    // token-for-token, not just as decoded text.
+    if std::env::var("NANOCAMELID_EMIT_TOKEN_IDS").is_ok_and(|value| value == "1") {
+        println!("generated_token_ids: {generated_tokens:?}");
+    }
+
     let elapsed = start_gen.elapsed().as_secs_f64();
     println!("generation_status: ok");
     println!(
