@@ -4047,7 +4047,7 @@ fn run_serve(parsed: ServeArgs) -> ExitCode {
             Ok(mut stream) => {
                 // Reap dead/stalled connections so one silent client can't wedge the
                 // single-threaded accept loop (Slowloris). Best-effort; generous for LAN.
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(20)));
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                 let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(20)));
                 metrics.requests_total = metrics.requests_total.saturating_add(1);
                 match handle_serve_connection(
@@ -15059,7 +15059,7 @@ fn run_webui_command(args: &[String]) -> ExitCode {
             Ok(mut stream) => {
                 // Reap dead/stalled connections so one silent client can't wedge the
                 // single-threaded accept loop (Slowloris). Best-effort; generous for LAN.
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(20)));
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                 let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(20)));
                 if let Err(err) =
                     handle_webui_connection(&mut stream, &cfg, &model, &entries, &active_id, &mut session)
