@@ -219,6 +219,8 @@ fn run_worker(
     let mut worker_compute_total = Duration::ZERO;
     let mut upstream_wait_samples = StageSamples::default();
     let mut compute_samples = StageSamples::default();
+    let mut layers_samples = StageSamples::default();
+    let mut logits_samples = StageSamples::default();
     let mut feedback_send_samples = StageSamples::default();
     loop {
         let upstream_wait_start = Instant::now();
@@ -270,6 +272,8 @@ fn run_worker(
             ws.hidden.copy_from_slice(&activations);
             run_distributed_range(&node1, pos, &loaded.config, &mut cache, &mut ws, options)?;
         }
+        let layers_elapsed = compute_start.elapsed();
+        let logits_start = Instant::now();
         inference::compute_logits_from_hidden(
             &loaded.config,
             output_token_embeddings,
@@ -278,6 +282,7 @@ fn run_worker(
             &mut ws,
             options,
         );
+        let logits_elapsed = logits_start.elapsed();
         let compute_elapsed = compute_start.elapsed();
         worker_compute_total += compute_elapsed;
         let next_token = inference::sample_logits(&ws.logits, 0.0);
@@ -287,6 +292,8 @@ fn run_worker(
         if seq_len == 1 {
             upstream_wait_samples.push(upstream_wait_elapsed);
             compute_samples.push(compute_elapsed);
+            layers_samples.push(layers_elapsed);
+            logits_samples.push(logits_elapsed);
             feedback_send_samples.push(feedback_send_start.elapsed());
         }
 
@@ -310,12 +317,14 @@ fn run_worker(
         );
     }
     println!(
-        "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"final\",\"model\":{:?},\"layer_range\":\"{}..{}\",{},{},{}}}",
+        "json: {{\"benchmark\":\"cluster-decode-breakdown\",\"role\":\"final\",\"model\":{:?},\"layer_range\":\"{}..{}\",{},{},{},{},{}}}",
         model_path.display().to_string(),
         node1.layer_start,
         node1.layer_end,
         upstream_wait_samples.json_fields("upstream_wait"),
         compute_samples.json_fields("compute"),
+        layers_samples.json_fields("layers"),
+        logits_samples.json_fields("logits"),
         feedback_send_samples.json_fields("feedback_send"),
     );
     println!("result: WORKER_DONE");
