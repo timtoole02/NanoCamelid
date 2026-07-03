@@ -141,7 +141,68 @@ and the Q6_K matmul path is scalar unless `NANOCAMELID_Q6K_SDOT=1` — the
 same opt-in the historic Strand three-Pi receipts recorded. The README's
 1.12 tok/s row is only reachable with that flag (and an uncapped master).
 
-Run 2 — `NANOCAMELID_Q6K_SDOT=1`, same commit/split/prompt: PENDING.
+Run 2 — `NANOCAMELID_Q6K_SDOT=1`, same commit/split/prompt: **0.501 tok/s,
+identical** (the flag defaults ON — `q6_k_sdot_enabled().unwrap_or(true)` —
+so run 1 already used SDOT; the "experimental, opt-in" help text is stale).
+Token streams identical between runs.
+
+### The final-node anomaly: legacy spin pool starves rayon (FOUND + FIXED)
+
+The ~700ms/token excess on the final node was bisected with receipts:
+
+1. layers/logits split (commit 98919c9): logits pass = 9.5ms (matches a
+   synthetic `q6k_head_bench` at 32000x4096 exactly); the *layer range*
+   carried the excess at ~102ms/layer vs the middle node's 30ms/layer.
+2. Role-swap A/B (middle on c3, final on c2): the slowness followed the
+   ROLE, not the node — 0.497 tok/s, same shape.
+3. `shard_decode_bench` reproduced it standalone: layers 22..32 alone =
+   28.6ms/layer; add one head-logits pass per token = ~96ms/layer, zero
+   major faults, gigabytes free — not memory pressure.
+4. Per-thread sampling mid-run: 3 spin-pool workers at ~93% (pinned cores
+   1–3) PLUS 4 rayon threads at ~25% each — oversubscription.
+5. Dispatch counters: with-logits = `spin 8, rayon 0` (one spin dispatch
+   per token: the Q6_K head); without = `spin 0` (all layer matmuls run on
+   rayon via the swizzled 1x4 kernels and never touch the spin pool).
+
+Mechanism: the legacy `SpinThreadPool` spawns lazily on the FIRST
+`for_each_matmul_row` dispatch — in modern decode that path is only reached
+by K-quant matmuls such as this GGUF's Q6_K untied `output.weight`. Once
+spawned, its N−1 workers busy-spin through all non-dispatch time and starve
+the rayon pool doing the real layer work. Tied-head rows (the Llama rows)
+never spawn it, which is why single-node numbers were always clean. The
+same permanent idle spin is a sustained power hazard (see the camelid1
+deviation above).
+
+Fix (commit e02918b): spin pool defaults OFF (`NANOCAMELID_SPIN_POOL=1`
+opts back in). The head matmul itself is *faster* on rayon (8.4ms vs
+9.5ms).
+
+Run 3 — post-fix, same split/prompt, master still capped: **0.792 tok/s**
+(+58%), token streams identical to runs 1/2.
+
+| stage | pre-fix ms | post-fix ms |
+|---|---|---|
+| master compute (c1, 2-core cap, 11 layers) | 641.7 | 635.8 |
+| middle compute (c2, 11 layers) | 332.2 | 323.7 |
+| final layers (c3, 10 layers) | 1021.5 | **293.8** |
+| final logits (Q6_K head) | 9.5 | 8.5 |
+| network residual | ~0.8 | ~0.9 |
+
+Run 4 — post-fix, PROMPT_LONG (185 prompt tokens), capped master:
+**0.820 tok/s** decode. Prompt ingest was 204.6s — MoE batch prefill
+touches every routed expert per layer, so batch amortization is weak;
+prefill is out of scope for this decode campaign but is now a known cost.
+
+Single-node sanity post-fix on an idle camelid2: 1B 13.42, 3B 5.07 tok/s —
+no regression (these rows never spawned the pool; the tied Q8-swizzled
+head runs on rayon).
+
+Uncapped-master attempt post-fix: camelid1 browned out again during the
+run, even with the idle spin eliminated. Its power fault is hardware
+(supply/cable under 4-core compute bursts), not the spin pool alone; the
+2-core cap stays for camelid1 until the supply is replaced. Projection
+stands: with a healthy master node the pipeline sums to ~950ms ≈ 1.05
+tok/s on this row.
 
 ## H0 verdict
 
@@ -152,3 +213,24 @@ shrinks to framing hygiene only (TCP_NODELAY is already set everywhere —
 and must stay: the Nagle-off A/B recorded a 2.1s stall). The levers that
 matter are compute-side: Phase 2/3 (speculation fills pipeline bubbles)
 and Phase 4 (TP divides the per-token weight read).
+
+## Phase 0 summary table
+
+| row | config | tok/s |
+|---|---|---|
+| 1B Q4_0 | single node | 13.42 |
+| 3B Q4_0 | single node | 5.07–5.33 |
+| 3B Q4_0 | 3-node PP (capped master) | 2.99 |
+| Mixtral Q4_0 | 3-node PP, main-at-base (spin pool on) | 0.50 |
+| Mixtral Q4_0 | 3-node PP, post-fix e02918b (capped master) | **0.79–0.82** |
+| Mixtral Q4_0 | 3-node PP, healthy master (projected) | ~1.05 |
+
+Found work beyond measurement: the spin-pool starvation fix (e02918b,
++58% on the Mixtral row, token-identical), the cluster harness pins the
+scalar Q8 kernel via `runtime_options()` (a deliberate parity choice worth
+revisiting as its own A/B), and the stale `NANOCAMELID_Q6K_SDOT` help text
+(the flag defaults on).
+
+Phase 3 baseline to beat: **0.79 tok/s** (capped master, post-fix), gate
+threshold ≥1.4x → ≥1.11 tok/s. Phase 4's 3B target re-bases to ≥1.8x of
+5.33 → ≥9.6 tok/s.
