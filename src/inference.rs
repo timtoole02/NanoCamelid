@@ -24,6 +24,7 @@ pub const Q4_1X4_SDOT_ENV: &str = "NANOCAMELID_Q4_1X4_SDOT";
 pub const Q6K_SDOT_ENV: &str = "NANOCAMELID_Q6K_SDOT";
 pub const ATTENTION_HEAD_PARALLEL_ENV: &str = "NANOCAMELID_ATTENTION_HEAD_PARALLEL";
 pub const KV_CACHE_F16_ENV: &str = "NANOCAMELID_KV_CACHE_F16";
+pub const KV_CACHE_Q8_ENV: &str = "NANOCAMELID_KV_CACHE_Q8";
 pub const ROPE_CACHE_ENV: &str = "NANOCAMELID_ROPE_CACHE";
 pub const TRACE_ENV: &str = "NANOCAMELID_TRACE";
 const DEFAULT_MATMUL_MIN_ROWS: usize = 128;
@@ -78,6 +79,16 @@ fn kv_cache_f16_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(KV_CACHE_F16_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
+fn kv_cache_q8_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(KV_CACHE_Q8_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
             .unwrap_or(false)
@@ -393,6 +404,7 @@ pub struct BatchMatmulShape {
 pub enum KvCacheSlice<'a> {
     F32(&'a [f32]),
     F16(&'a [u16]),
+    Q8_0(&'a [Q8_0Block]),
 }
 
 enum LlamaKvCacheStorage {
@@ -403,6 +415,10 @@ enum LlamaKvCacheStorage {
     F16 {
         k_cache: Vec<u16>,
         v_cache: Vec<u16>,
+    },
+    Q8_0 {
+        k_cache: Vec<Q8_0Block>,
+        v_cache: Vec<Q8_0Block>,
     },
 }
 
@@ -415,7 +431,14 @@ pub struct LlamaKvCache {
 impl LlamaKvCache {
     pub fn new(block_count: usize, max_seq_len: usize, kv_width: usize) -> Self {
         let size = block_count * max_seq_len * kv_width;
-        let storage = if kv_cache_f16_enabled() {
+        let storage = if kv_cache_q8_enabled() && kv_width.is_multiple_of(Q8_BLOCK_SIZE) {
+            let block_size = block_count * max_seq_len * (kv_width / Q8_BLOCK_SIZE);
+            let zero_block = Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]);
+            LlamaKvCacheStorage::Q8_0 {
+                k_cache: vec![zero_block; block_size],
+                v_cache: vec![zero_block; block_size],
+            }
+        } else if kv_cache_f16_enabled() {
             LlamaKvCacheStorage::F16 {
                 k_cache: vec![0; size],
                 v_cache: vec![0; size],
@@ -449,6 +472,18 @@ impl LlamaKvCache {
                     v_cache[start + idx] = crate::q8::fast_f32_to_f16(v[idx]);
                 }
             }
+            LlamaKvCacheStorage::Q8_0 { k_cache, v_cache } => {
+                let blocks_per_width = self.kv_width / Q8_BLOCK_SIZE;
+                let block_base = (layer * self.max_seq_len + pos) * blocks_per_width;
+                quantize_row_to_q8_0_blocks(
+                    k,
+                    &mut k_cache[block_base..block_base + blocks_per_width],
+                );
+                quantize_row_to_q8_0_blocks(
+                    v,
+                    &mut v_cache[block_base..block_base + blocks_per_width],
+                );
+            }
         }
     }
 
@@ -458,6 +493,12 @@ impl LlamaKvCache {
         match &self.storage {
             LlamaKvCacheStorage::F32 { k_cache, .. } => KvCacheSlice::F32(&k_cache[range]),
             LlamaKvCacheStorage::F16 { k_cache, .. } => KvCacheSlice::F16(&k_cache[range]),
+            LlamaKvCacheStorage::Q8_0 { k_cache, .. } => {
+                let blocks_per_width = self.kv_width / Q8_BLOCK_SIZE;
+                let base = layer * self.max_seq_len * blocks_per_width;
+                let block_range = base..base + self.max_seq_len * blocks_per_width;
+                KvCacheSlice::Q8_0(&k_cache[block_range])
+            }
         }
     }
 
@@ -467,6 +508,12 @@ impl LlamaKvCache {
         match &self.storage {
             LlamaKvCacheStorage::F32 { v_cache, .. } => KvCacheSlice::F32(&v_cache[range]),
             LlamaKvCacheStorage::F16 { v_cache, .. } => KvCacheSlice::F16(&v_cache[range]),
+            LlamaKvCacheStorage::Q8_0 { v_cache, .. } => {
+                let blocks_per_width = self.kv_width / Q8_BLOCK_SIZE;
+                let base = layer * self.max_seq_len * blocks_per_width;
+                let block_range = base..base + self.max_seq_len * blocks_per_width;
+                KvCacheSlice::Q8_0(&v_cache[block_range])
+            }
         }
     }
 }
@@ -3737,7 +3784,100 @@ fn apply_attention_head(
         (KvCacheSlice::F16(k_cache), KvCacheSlice::F16(v_cache)) => {
             apply_attention_head_f16(out_head, scores, input, kv_h, q_head, k_cache, v_cache);
         }
+        (KvCacheSlice::Q8_0(k_cache), KvCacheSlice::Q8_0(v_cache)) => {
+            apply_attention_head_q8_0(out_head, scores, input, kv_h, q_head, k_cache, v_cache);
+        }
         _ => unreachable!("KV cache key and value storage kinds must match"),
+    }
+}
+
+/// Scalar quantization of a contiguous f32 row into `Q8_0Block`s.
+///
+/// Correctness over speed: each 32-element chunk gets its own `scale = max_abs / 127`
+/// and elements are rounded to the nearest `i8`. `src.len()` must equal
+/// `out.len() * Q8_BLOCK_SIZE`.
+fn quantize_row_to_q8_0_blocks(src: &[f32], out: &mut [Q8_0Block]) {
+    debug_assert_eq!(src.len(), out.len() * Q8_BLOCK_SIZE);
+    for (chunk, block) in src.chunks_exact(Q8_BLOCK_SIZE).zip(out.iter_mut()) {
+        let mut max_abs = 0.0f32;
+        for &x in chunk {
+            let a = x.abs();
+            if a > max_abs {
+                max_abs = a;
+            }
+        }
+        let scale = max_abs / 127.0;
+        let inv = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+        let mut values = [0i8; Q8_BLOCK_SIZE];
+        for (dst, &x) in values.iter_mut().zip(chunk) {
+            *dst = (x * inv).round().clamp(-127.0, 127.0) as i8;
+        }
+        *block = Q8_0Block::from_parts(crate::q8::fast_f32_to_f16(scale), values);
+    }
+}
+
+fn apply_attention_head_q8_0(
+    out_head: &mut [f32],
+    scores: &mut [f32],
+    input: &AttentionInput<'_>,
+    kv_h: usize,
+    q_head: &[f32],
+    k_cache: &[Q8_0Block],
+    v_cache: &[Q8_0Block],
+) {
+    assert!(
+        input.head_dim.is_multiple_of(Q8_BLOCK_SIZE),
+        "q8_0 KV cache attention requires head_dim to be a multiple of {Q8_BLOCK_SIZE} (got {})",
+        input.head_dim
+    );
+    let blocks_per_head = input.head_dim / Q8_BLOCK_SIZE;
+    let blocks_per_kv_width = input.cache_kv_width / Q8_BLOCK_SIZE;
+
+    // Quantize q_head once (mirrors the store quantization) into stack/heap blocks.
+    const MAX_STACK_HEAD_BLOCKS: usize = 256 / Q8_BLOCK_SIZE;
+    let mut q_blocks_stack = [Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); MAX_STACK_HEAD_BLOCKS];
+    let mut q_blocks_heap;
+    let q_blocks: &mut [Q8_0Block] = if blocks_per_head <= MAX_STACK_HEAD_BLOCKS {
+        &mut q_blocks_stack[..blocks_per_head]
+    } else {
+        q_blocks_heap =
+            vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); blocks_per_head];
+        &mut q_blocks_heap[..]
+    };
+    quantize_row_to_q8_0_blocks(q_head, q_blocks);
+
+    for (p, score) in scores.iter_mut().enumerate().take(input.pos + 1) {
+        let base = p * blocks_per_kv_width + kv_h * blocks_per_head;
+        let k_head_blocks = &k_cache[base..base + blocks_per_head];
+        let mut acc = 0.0f32;
+        for b in 0..blocks_per_head {
+            acc += q_blocks[b].scaled_dot_f32(&k_head_blocks[b]);
+        }
+        *score = acc * input.scale;
+    }
+    softmax(&mut scores[0..=input.pos]);
+
+    const MAX_STACK_HEAD_DIM: usize = 256;
+    let mut v_head_stack = [0.0f32; MAX_STACK_HEAD_DIM];
+    let mut v_head_heap;
+    let v_head_f32: &mut [f32] = if input.head_dim <= MAX_STACK_HEAD_DIM {
+        &mut v_head_stack[..input.head_dim]
+    } else {
+        v_head_heap = vec![0.0f32; input.head_dim];
+        &mut v_head_heap[..]
+    };
+
+    for (p, &score) in scores.iter().enumerate().take(input.pos + 1) {
+        let base = p * blocks_per_kv_width + kv_h * blocks_per_head;
+        let v_head_blocks = &v_cache[base..base + blocks_per_head];
+        for (b, block) in v_head_blocks.iter().enumerate() {
+            let block_scale = block.scale_f32();
+            let dst = &mut v_head_f32[b * Q8_BLOCK_SIZE..(b + 1) * Q8_BLOCK_SIZE];
+            for (out, &q) in dst.iter_mut().zip(block.values().iter()) {
+                *out = q as f32 * block_scale;
+            }
+        }
+        add_weighted_f32(out_head, v_head_f32, score);
     }
 }
 
@@ -4695,8 +4835,8 @@ mod tests {
         matmul_q4_1_batch, matmul_q4_k, matmul_q4_k_batch, matmul_q5_0, matmul_q5_0_batch,
         matmul_q5_1, matmul_q5_1_batch, matmul_q5_k, matmul_q5_k_batch, matmul_q6_k,
         matmul_q6_k_batch, matmul_q8_0, matmul_q8_0_batch, matmul_q8_0_swizzled_1x4, matmul_q8_k,
-        quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, rms_norm, rms_norm_batch,
-        route_token_to_experts, run_layer_range, silu,
+        quantize_f32_to_q8_0, quantize_f32_to_q8_0_batch, quantize_row_to_q8_0_blocks, rms_norm,
+        rms_norm_batch, route_token_to_experts, run_layer_range, silu,
     };
     use crate::model::{
         LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, QuantizedMatrix,
@@ -5195,6 +5335,108 @@ mod tests {
         for (idx, (&candidate, &expected)) in candidate.iter().zip(&expected).enumerate() {
             assert!(
                 (candidate - expected).abs() < 1e-6,
+                "idx {idx} candidate {candidate} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn q8_0_attention_matches_dequantized_cache() {
+        // head_dim MUST be a multiple of Q8_BLOCK_SIZE (32) for the q8_0 arm.
+        let head_count = 4;
+        let kv_head_count = 2;
+        let head_dim = 32;
+        let context_length = 5;
+        let cache_kv_width = 64; // kv_head_count * head_dim
+        let pos = 4;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+
+        let q: Vec<f32> = (0..head_count * head_dim)
+            .map(|idx| idx as f32 * 0.017 - 0.25)
+            .collect();
+        let k_cache_f32: Vec<f32> = (0..context_length * cache_kv_width)
+            .map(|idx| 0.5 - idx as f32 * 0.009)
+            .collect();
+        let v_cache_f32: Vec<f32> = (0..context_length * cache_kv_width)
+            .map(|idx| idx as f32 * 0.013 - 0.4)
+            .collect();
+
+        // Quantize the f32 K/V patterns into q8_0 blocks (same store quantization).
+        let block_count = k_cache_f32.len() / Q8_BLOCK_SIZE;
+        let mut k_cache_q8 =
+            vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); block_count];
+        let mut v_cache_q8 =
+            vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); block_count];
+        quantize_row_to_q8_0_blocks(&k_cache_f32, &mut k_cache_q8);
+        quantize_row_to_q8_0_blocks(&v_cache_f32, &mut v_cache_q8);
+
+        // Decode the blocks back to f32 so the reference sees the SAME quantized values.
+        let mut k_cache_decoded = vec![0.0f32; k_cache_f32.len()];
+        let mut v_cache_decoded = vec![0.0f32; v_cache_f32.len()];
+        let dequantize_block = |block: &Q8_0Block, dst: &mut [f32]| {
+            let s = block.scale_f32();
+            for (out, &q) in dst.iter_mut().zip(block.values().iter()) {
+                *out = q as f32 * s;
+            }
+        };
+        for (block_idx, block) in k_cache_q8.iter().enumerate() {
+            dequantize_block(
+                block,
+                &mut k_cache_decoded[block_idx * Q8_BLOCK_SIZE..(block_idx + 1) * Q8_BLOCK_SIZE],
+            );
+        }
+        for (block_idx, block) in v_cache_q8.iter().enumerate() {
+            dequantize_block(
+                block,
+                &mut v_cache_decoded[block_idx * Q8_BLOCK_SIZE..(block_idx + 1) * Q8_BLOCK_SIZE],
+            );
+        }
+
+        let mut expected = vec![0.0; head_count * head_dim];
+        let mut expected_scores = vec![0.0; context_length];
+        apply_attention_heads(
+            &mut expected,
+            &mut expected_scores,
+            AttentionInput {
+                q: &q,
+                k_cache: KvCacheSlice::F32(&k_cache_decoded),
+                v_cache: KvCacheSlice::F32(&v_cache_decoded),
+                pos,
+                head_count,
+                kv_head_count,
+                head_dim,
+                cache_kv_width,
+                context_length,
+                scale,
+            },
+            false,
+        );
+
+        let mut candidate = vec![0.0; head_count * head_dim];
+        let mut candidate_scores = vec![0.0; head_count * context_length];
+        apply_attention_heads(
+            &mut candidate,
+            &mut candidate_scores,
+            AttentionInput {
+                q: &q,
+                k_cache: KvCacheSlice::Q8_0(&k_cache_q8),
+                v_cache: KvCacheSlice::Q8_0(&v_cache_q8),
+                pos,
+                head_count,
+                kv_head_count,
+                head_dim,
+                cache_kv_width,
+                context_length,
+                scale,
+            },
+            true,
+        );
+
+        // Loose bound: unlike the reference, the candidate additionally quantizes
+        // q_head to q8_0, so scores differ by q8_0 precision (~1/127 relative).
+        for (idx, (&candidate, &expected)) in candidate.iter().zip(&expected).enumerate() {
+            assert!(
+                (candidate - expected).abs() < 5e-2,
                 "idx {idx} candidate {candidate} expected {expected}"
             );
         }
