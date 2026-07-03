@@ -13,7 +13,8 @@ use crate::q8::{
     Q6KBlock, Q8_0Block, Q8KBlock, QK_K_BLOCK_SIZE, decode_iq4_nl_blocks, decode_q2_k_blocks,
     decode_q3_k_blocks, decode_q4_0_blocks, decode_q4_1_blocks, decode_q4_k_blocks,
     decode_q5_0_blocks, decode_q5_1_blocks, decode_q5_k_blocks, decode_q6_k_blocks,
-    decode_q8_0_blocks, decode_q8_k_blocks, swizzle_q4_0_1x4, swizzle_q8_0_1x4,
+    decode_q8_0_blocks, decode_q8_k_blocks, quantize_f32_matrix_to_q8_0_blocks, swizzle_q4_0_1x4,
+    swizzle_q8_0_1x4,
 };
 use memmap2::Mmap;
 
@@ -441,7 +442,37 @@ impl LlamaWeights {
         let output_projection = if gguf.tensors.iter().any(|t| t.name == "output.weight") {
             Some(load_quantized_matrix(&mmap, gguf, "output.weight")?)
         } else {
-            None
+            // Tied embeddings: the LM head is token_embd transposed. token_embd is Q6_K,
+            // which has no fast swizzled SDOT kernel, so loading it directly as a quantized
+            // matrix falls to a slow path. Instead, re-quantize the already-dequantized f32
+            // `token_embeddings` table (vocab_size x embedding_length) to a Q8_0-swizzled
+            // matrix. compute_logits_from_hidden then runs the fast 1x4 SDOT kernel over a
+            // ~256MB Q8_0 table instead of a scalar f32 pass over the ~1GB f32 table.
+            // (embed_token lookup still uses the f32 token_embeddings table, kept below.)
+            let rows = config.vocab_size;
+            let cols = config.embedding_length;
+            if rows.is_multiple_of(4)
+                && cols.is_multiple_of(32)
+                && token_embeddings.len() == rows * cols
+                && q8_swizzle_1x4_enabled()
+            {
+                let blocks_per_row = cols / 32;
+                let row_major = quantize_f32_matrix_to_q8_0_blocks(&token_embeddings, rows, cols);
+                let swizzled_1x4 = swizzle_q8_0_1x4(&row_major, rows, blocks_per_row);
+                let page_aligned_1x4 = q8_page_align_1x4_enabled().then(|| {
+                    PageAlignedQ8_0Swizzled1x4::from_swizzled(&swizzled_1x4, rows, blocks_per_row)
+                });
+                Some(QuantizedMatrix::Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix {
+                    swizzled_1x4,
+                    page_aligned_1x4,
+                    rows,
+                    cols,
+                }))
+            } else {
+                // Shapes don't fit the swizzle kernel; fall back to the scalar f32 tied path
+                // (out_proj = None) rather than a slow quantized path.
+                None
+            }
         };
 
         let mut layers = Vec::with_capacity(config.block_count);

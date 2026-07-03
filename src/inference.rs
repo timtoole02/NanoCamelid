@@ -2831,13 +2831,31 @@ pub fn matmul_q5_k(
 }
 
 pub fn matmul_f32(out: &mut [f32], x: &[f32], w: &[f32], rows: usize, cols: usize) {
-    for r in 0..rows {
-        let mut sum = 0.0_f32;
-        let w_row = &w[r * cols..(r + 1) * cols];
-        for c in 0..cols {
-            sum += x[c] * w_row[c];
+    // Each output row is an independent sequential dot product, so parallelizing
+    // over rows is bit-identical to the scalar loop (no change in reduction order).
+    // The tied-embedding LM head calls this over vocab_size (~128k) rows, which
+    // was single-threaded scalar and dominated decode time.
+    if should_parallelize_matmul(rows) {
+        out.par_iter_mut()
+            .with_min_len(matmul_min_rows())
+            .enumerate()
+            .for_each(|(r, dst)| {
+                let w_row = &w[r * cols..(r + 1) * cols];
+                let mut sum = 0.0_f32;
+                for c in 0..cols {
+                    sum += x[c] * w_row[c];
+                }
+                *dst = sum;
+            });
+    } else {
+        for r in 0..rows {
+            let mut sum = 0.0_f32;
+            let w_row = &w[r * cols..(r + 1) * cols];
+            for c in 0..cols {
+                sum += x[c] * w_row[c];
+            }
+            out[r] = sum;
         }
-        out[r] = sum;
     }
 }
 

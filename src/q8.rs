@@ -1969,6 +1969,68 @@ pub fn decode_q8_0_blocks(bytes: &[u8]) -> Result<Vec<Q8_0Block>, Q8BlockError> 
         .collect())
 }
 
+/// Quantize a row-major f32 matrix (`rows` x `cols`, `cols` a multiple of 32) into
+/// row-major `Q8_0Block`s using the standard Q8_0 convention: per 32-element block,
+/// `scale = max_abs / 127`, `value = round(x / scale)` clamped to [-127, 127], with the
+/// scale stored as f16 bits. This matches the activation quantizer in inference.rs
+/// (`max_abs / 127.0`) so a dot of quantized activation vs quantized weight recovers the
+/// f32 product via `w_scale * x_scale * dot_i32`.
+///
+/// Used to build a fast Q8_0-swizzled LM head from the already-dequantized tied
+/// `token_embd` table, avoiding the slow scalar f32 matmul over the ~1GB table.
+pub fn quantize_f32_matrix_to_q8_0_blocks(
+    values: &[f32],
+    rows: usize,
+    cols: usize,
+) -> Vec<Q8_0Block> {
+    assert!(
+        cols.is_multiple_of(Q8_BLOCK_SIZE),
+        "cols ({cols}) must be a multiple of {Q8_BLOCK_SIZE}"
+    );
+    assert_eq!(
+        values.len(),
+        rows * cols,
+        "values.len() ({}) != rows*cols ({})",
+        values.len(),
+        rows * cols
+    );
+
+    let blocks_per_row = cols / Q8_BLOCK_SIZE;
+    let mut blocks = Vec::with_capacity(rows * blocks_per_row);
+
+    for row in 0..rows {
+        let row_start = row * cols;
+        for b in 0..blocks_per_row {
+            let chunk = &values[row_start + b * Q8_BLOCK_SIZE..row_start + (b + 1) * Q8_BLOCK_SIZE];
+
+            let mut max_abs = 0.0_f32;
+            for &v in chunk {
+                let a = v.abs();
+                if a > max_abs {
+                    max_abs = a;
+                }
+            }
+
+            let scale = max_abs / 127.0;
+            let mut quant = [0_i8; Q8_BLOCK_SIZE];
+            if scale > 0.0 {
+                let inv_scale = 1.0 / scale;
+                for (dst, &v) in quant.iter_mut().zip(chunk) {
+                    let q = (v * inv_scale).round();
+                    *dst = q.clamp(-127.0, 127.0) as i8;
+                }
+            }
+
+            // Store the scale as f16 bits so scale_f32() decodes it identically to a
+            // native Q8_0 tensor loaded from disk.
+            let scale_bits = fast_f32_to_f16(scale);
+            blocks.push(Q8_0Block::from_parts(scale_bits, quant));
+        }
+    }
+
+    blocks
+}
+
 pub fn decode_q4_0_blocks(bytes: &[u8]) -> Result<Vec<Q4_0Block>, Q8BlockError> {
     if !bytes.len().is_multiple_of(Q4_0_BLOCK_BYTES) {
         return Err(Q8BlockError::MisalignedLength {
