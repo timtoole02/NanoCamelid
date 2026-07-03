@@ -518,6 +518,43 @@ impl LlamaWeights {
 
         let output_projection = if is_last && has_output_projection {
             Some(load_quantized_matrix(&mmap, gguf, "output.weight")?)
+        } else if is_last {
+            // Tied embeddings on the final shard: build the LM head as a Q8_0-swizzled
+            // matrix from the f32 token-embedding table (loaded above for this case) so
+            // the head runs the fast 1x4 SDOT kernel instead of a scalar f32 pass.
+            // Mirrors the single-node `load` path.
+            match token_embeddings.as_ref() {
+                Some(embeddings) => {
+                    let rows = config.vocab_size;
+                    let cols = config.embedding_length;
+                    if rows.is_multiple_of(4)
+                        && cols.is_multiple_of(32)
+                        && embeddings.len() == rows * cols
+                        && q8_swizzle_1x4_enabled()
+                    {
+                        let blocks_per_row = cols / 32;
+                        let row_major =
+                            quantize_f32_matrix_to_q8_0_blocks(embeddings, rows, cols);
+                        let swizzled_1x4 = swizzle_q8_0_1x4(&row_major, rows, blocks_per_row);
+                        let page_aligned_1x4 = q8_page_align_1x4_enabled().then(|| {
+                            PageAlignedQ8_0Swizzled1x4::from_swizzled(
+                                &swizzled_1x4,
+                                rows,
+                                blocks_per_row,
+                            )
+                        });
+                        Some(QuantizedMatrix::Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix {
+                            swizzled_1x4,
+                            page_aligned_1x4,
+                            rows,
+                            cols,
+                        }))
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
         } else {
             None
         };
