@@ -13,13 +13,14 @@ use crate::q8::{
     Q6KBlock, Q8_0Block, Q8KBlock, QK_K_BLOCK_SIZE, decode_iq4_nl_blocks, decode_q2_k_blocks,
     decode_q3_k_blocks, decode_q4_0_blocks, decode_q4_1_blocks, decode_q4_k_blocks,
     decode_q5_0_blocks, decode_q5_1_blocks, decode_q5_k_blocks, decode_q6_k_blocks,
-    decode_q8_0_blocks, decode_q8_k_blocks, quantize_f32_matrix_to_q8_0_blocks, swizzle_q4_0_1x4,
-    swizzle_q8_0_1x4,
+    decode_q8_0_blocks, decode_q8_k_blocks, quantize_f32_matrix_to_q4_0_blocks,
+    quantize_f32_matrix_to_q8_0_blocks, swizzle_q4_0_1x4, swizzle_q8_0_1x4,
 };
 use memmap2::Mmap;
 
 pub const Q4_SWIZZLE_1X4_ENV: &str = "NANOCAMELID_Q4_SWIZZLE_1X4";
 pub const Q4_PAGE_ALIGN_1X4_ENV: &str = "NANOCAMELID_Q4_PAGE_ALIGN_1X4";
+pub const Q4_HEAD_ENV: &str = "NANOCAMELID_Q4_HEAD";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LlamaModelConfig {
@@ -457,17 +458,44 @@ impl LlamaWeights {
                 && q8_swizzle_1x4_enabled()
             {
                 let blocks_per_row = cols / 32;
-                let row_major = quantize_f32_matrix_to_q8_0_blocks(&token_embeddings, rows, cols);
-                let swizzled_1x4 = swizzle_q8_0_1x4(&row_major, rows, blocks_per_row);
-                let page_aligned_1x4 = q8_page_align_1x4_enabled().then(|| {
-                    PageAlignedQ8_0Swizzled1x4::from_swizzled(&swizzled_1x4, rows, blocks_per_row)
-                });
-                Some(QuantizedMatrix::Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix {
-                    swizzled_1x4,
-                    page_aligned_1x4,
-                    rows,
-                    cols,
-                }))
+                if q4_head_enabled() {
+                    // Env-gated: build the tied LM head as a Q4_0-swizzled matrix instead of
+                    // Q8_0. Halves head bandwidth (~147MB vs ~279MB/token for a 128k vocab),
+                    // reusing the existing fast Q4_0Swizzled1x4 SDOT kernel.
+                    let row_major =
+                        quantize_f32_matrix_to_q4_0_blocks(&token_embeddings, rows, cols);
+                    let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, blocks_per_row);
+                    let page_aligned_1x4 = q4_page_align_1x4_enabled().then(|| {
+                        PageAlignedQ4_0Swizzled1x4::from_swizzled(
+                            &swizzled_1x4,
+                            rows,
+                            blocks_per_row,
+                        )
+                    });
+                    Some(QuantizedMatrix::Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix {
+                        swizzled_1x4,
+                        page_aligned_1x4,
+                        rows,
+                        cols,
+                    }))
+                } else {
+                    let row_major =
+                        quantize_f32_matrix_to_q8_0_blocks(&token_embeddings, rows, cols);
+                    let swizzled_1x4 = swizzle_q8_0_1x4(&row_major, rows, blocks_per_row);
+                    let page_aligned_1x4 = q8_page_align_1x4_enabled().then(|| {
+                        PageAlignedQ8_0Swizzled1x4::from_swizzled(
+                            &swizzled_1x4,
+                            rows,
+                            blocks_per_row,
+                        )
+                    });
+                    Some(QuantizedMatrix::Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix {
+                        swizzled_1x4,
+                        page_aligned_1x4,
+                        rows,
+                        cols,
+                    }))
+                }
             } else {
                 // Shapes don't fit the swizzle kernel; fall back to the scalar f32 tied path
                 // (out_proj = None) rather than a slow quantized path.
@@ -533,22 +561,44 @@ impl LlamaWeights {
                         && q8_swizzle_1x4_enabled()
                     {
                         let blocks_per_row = cols / 32;
-                        let row_major =
-                            quantize_f32_matrix_to_q8_0_blocks(embeddings, rows, cols);
-                        let swizzled_1x4 = swizzle_q8_0_1x4(&row_major, rows, blocks_per_row);
-                        let page_aligned_1x4 = q8_page_align_1x4_enabled().then(|| {
-                            PageAlignedQ8_0Swizzled1x4::from_swizzled(
-                                &swizzled_1x4,
+                        if q4_head_enabled() {
+                            // Env-gated Q4_0-swizzled tied head (halves head bandwidth).
+                            // Mirrors the single-node `load` path.
+                            let row_major =
+                                quantize_f32_matrix_to_q4_0_blocks(embeddings, rows, cols);
+                            let swizzled_1x4 =
+                                swizzle_q4_0_1x4(&row_major, rows, blocks_per_row);
+                            let page_aligned_1x4 = q4_page_align_1x4_enabled().then(|| {
+                                PageAlignedQ4_0Swizzled1x4::from_swizzled(
+                                    &swizzled_1x4,
+                                    rows,
+                                    blocks_per_row,
+                                )
+                            });
+                            Some(QuantizedMatrix::Q4_0Swizzled1x4(Q4_0Swizzled1x4Matrix {
+                                swizzled_1x4,
+                                page_aligned_1x4,
                                 rows,
-                                blocks_per_row,
-                            )
-                        });
-                        Some(QuantizedMatrix::Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix {
-                            swizzled_1x4,
-                            page_aligned_1x4,
-                            rows,
-                            cols,
-                        }))
+                                cols,
+                            }))
+                        } else {
+                            let row_major =
+                                quantize_f32_matrix_to_q8_0_blocks(embeddings, rows, cols);
+                            let swizzled_1x4 = swizzle_q8_0_1x4(&row_major, rows, blocks_per_row);
+                            let page_aligned_1x4 = q8_page_align_1x4_enabled().then(|| {
+                                PageAlignedQ8_0Swizzled1x4::from_swizzled(
+                                    &swizzled_1x4,
+                                    rows,
+                                    blocks_per_row,
+                                )
+                            });
+                            Some(QuantizedMatrix::Q8_0Swizzled1x4(Q8_0Swizzled1x4Matrix {
+                                swizzled_1x4,
+                                page_aligned_1x4,
+                                rows,
+                                cols,
+                            }))
+                        }
                     } else {
                         None
                     }
@@ -1218,6 +1268,16 @@ fn q4_page_align_1x4_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(Q4_PAGE_ALIGN_1X4_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
+fn q4_head_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q4_HEAD_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
             .unwrap_or(false)
