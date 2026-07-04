@@ -94,3 +94,27 @@ even against the re-based fast baselines the criteria never anticipated.
 - Uneven KV-head splits (8/3 = 3-3-2) in `build_tp_shards`.
 - Stop-token handling in the TP decode loop (benches run fixed-length).
 - camelid1's PSU (a capped straggler gates every all-reduce).
+
+## Weighted TP-3 (shard-direct): the capacity-row payoff
+
+`load_tp_shard_direct` slices every tensor at the block-byte level from the
+GGUF (peak memory = the shard; Q4_0/Q8_0/Q6_K), the master ships the
+embedded hidden with each token (workers never load embeddings), and
+per-shard KV-head shares let a slow node hold a small slice. Master
+camelid1 (2-core cap) takes 2 of 8 KV heads; camelid2/camelid3 take 3
+each. camelid3's resident webui had to be stopped to fit its 13.8G shard
+(user-approved; its nanoserve-stage service kept running).
+
+| row | baseline | weighted TP-3 | speedup |
+|---|---|---|---|
+| 3B Q4_0 | 5.33 (production single node) | **10.21 tok/s** | **1.91x — the campaign's ≥1.8x three-node gate: MET** |
+| 70B Q4_0 | 0.160 (three-Pi pipeline, capped master) | **0.685 tok/s** | **4.3x** |
+
+70B master breakdown: local compute 1402.7ms (the capped 2/8 straggler —
+a healthy PSU directly buys ~2x here), sync 93.3ms (160 reduces × 32KB ×
+2 workers ≈ 6% of the token), head merge 30.1ms. Parity: loopback TP-3
+token-identical; 3B and 70B decoded text matches the production/reference
+streams over the full runs.
+
+Pipeline sums stage times; tensor parallelism takes the max. That is the
+entire 70B story: 6.46s/token became 1.53s/token on identical hardware.
