@@ -1597,6 +1597,186 @@ impl Q5KBlock {
     }
 }
 
+/// SDOT core for one Q4_K/Q5_K "pair" (two 32-lane sub-blocks). Returns the
+/// four exact integer sums (low Σq·x, high Σq·x, low Σx, high Σx) via inline
+/// `sdot` (the activation sums use a ones vector). Stable-safe: uses the same
+/// `.arch_extension dotprod` asm idiom as the Q6_K kernel, not the unstable
+/// `vdotq_s32` intrinsic.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn qk_pair_sdot(
+    low0: std::arch::aarch64::int8x16_t,
+    low1: std::arch::aarch64::int8x16_t,
+    high0: std::arch::aarch64::int8x16_t,
+    high1: std::arch::aarch64::int8x16_t,
+    xl0: std::arch::aarch64::int8x16_t,
+    xl1: std::arch::aarch64::int8x16_t,
+    xh0: std::arch::aarch64::int8x16_t,
+    xh1: std::arch::aarch64::int8x16_t,
+    ones: std::arch::aarch64::int8x16_t,
+) -> (i32, i32, i32, i32) {
+    use std::arch::{
+        aarch64::{vaddvq_s32, vdupq_n_s32},
+        asm,
+    };
+    let mut awl = vdupq_n_s32(0);
+    let mut awh = vdupq_n_s32(0);
+    let mut aal = vdupq_n_s32(0);
+    let mut aah = vdupq_n_s32(0);
+    unsafe {
+        asm!(
+            ".arch_extension dotprod",
+            "sdot {awl:v}.4s, {l0:v}.16b, {xl0:v}.16b",
+            "sdot {awl:v}.4s, {l1:v}.16b, {xl1:v}.16b",
+            "sdot {awh:v}.4s, {h0:v}.16b, {xh0:v}.16b",
+            "sdot {awh:v}.4s, {h1:v}.16b, {xh1:v}.16b",
+            "sdot {aal:v}.4s, {ones:v}.16b, {xl0:v}.16b",
+            "sdot {aal:v}.4s, {ones:v}.16b, {xl1:v}.16b",
+            "sdot {aah:v}.4s, {ones:v}.16b, {xh0:v}.16b",
+            "sdot {aah:v}.4s, {ones:v}.16b, {xh1:v}.16b",
+            awl = inout(vreg) awl,
+            awh = inout(vreg) awh,
+            aal = inout(vreg) aal,
+            aah = inout(vreg) aah,
+            l0 = in(vreg) low0,
+            l1 = in(vreg) low1,
+            h0 = in(vreg) high0,
+            h1 = in(vreg) high1,
+            xl0 = in(vreg) xl0,
+            xl1 = in(vreg) xl1,
+            xh0 = in(vreg) xh0,
+            xh1 = in(vreg) xh1,
+            ones = in(vreg) ones,
+            options(nostack, preserves_flags),
+        );
+    }
+    (vaddvq_s32(awl), vaddvq_s32(awh), vaddvq_s32(aal), vaddvq_s32(aah))
+}
+
+/// AArch64 dotprod dot product for a Q4_K super-block, bit-exact with
+/// `Q4KBlock::dot_q8_scaled_preloaded`. Only the four integer inner sums are
+/// vectorized (via `qk_pair_sdot`); the f32 scale/min combine is byte-identical
+/// to the scalar path, so single- and batch-token results stay bit-exact.
+/// Row-dot per sub-block j is `x_scales[j] * (scale[j]·Σq·x − min[j]·Σx)` with
+/// quants unsigned (offset carried by the min term).
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn q4k_dot_preloaded_neon(
+    unpacked: &Q4KUnpacked,
+    x_i8: &[i8],
+    x_scales: &[f32],
+) -> f32 {
+    use std::arch::aarch64::{
+        int8x16_t, vandq_u8, vdupq_n_s8, vdupq_n_u8, vld1q_s8, vld1q_u8, vreinterpretq_s8_u8,
+        vshrq_n_u8,
+    };
+    debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+    debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+    let mask = vdupq_n_u8(0x0f);
+    let ones: int8x16_t = vdupq_n_s8(1);
+    let vptr = unpacked.values.as_ptr();
+    let xptr = x_i8.as_ptr();
+    let mut sum = 0.0_f32;
+    for pair_idx in 0..4 {
+        let low_idx = pair_idx * 2;
+        let high_idx = low_idx + 1;
+        let value_base = pair_idx * 32;
+        let x_base = pair_idx * 64;
+
+        let v0 = vld1q_u8(vptr.add(value_base));
+        let v1 = vld1q_u8(vptr.add(value_base + 16));
+        let low0 = vreinterpretq_s8_u8(vandq_u8(v0, mask));
+        let low1 = vreinterpretq_s8_u8(vandq_u8(v1, mask));
+        let high0 = vreinterpretq_s8_u8(vshrq_n_u8::<4>(v0));
+        let high1 = vreinterpretq_s8_u8(vshrq_n_u8::<4>(v1));
+
+        let xl0 = vld1q_s8(xptr.add(x_base));
+        let xl1 = vld1q_s8(xptr.add(x_base + 16));
+        let xh0 = vld1q_s8(xptr.add(x_base + 32));
+        let xh1 = vld1q_s8(xptr.add(x_base + 48));
+
+        let (low_weighted, high_weighted, low_act, high_act) =
+            qk_pair_sdot(low0, low1, high0, high1, xl0, xl1, xh0, xh1, ones);
+
+        sum += x_scales[low_idx]
+            * (unpacked.scales[low_idx] * low_weighted as f32
+                - unpacked.mins[low_idx] * low_act as f32);
+        sum += x_scales[high_idx]
+            * (unpacked.scales[high_idx] * high_weighted as f32
+                - unpacked.mins[high_idx] * high_act as f32);
+    }
+    sum
+}
+
+/// AArch64 dotprod dot product for a Q5_K super-block, bit-exact with
+/// `Q5KBlock::dot_q8_scaled_preloaded`. Same as the Q4_K kernel with the 5th
+/// (high) bit merged into each quant before the sdot: the low nibble uses the
+/// `u1` qh mask, the high nibble `u2`, both shifting left by 2 each pair.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn q5k_dot_preloaded_neon(
+    unpacked: &Q5KUnpacked,
+    x_i8: &[i8],
+    x_scales: &[f32],
+) -> f32 {
+    use std::arch::aarch64::{
+        int8x16_t, vaddq_u8, vandq_u8, vdupq_n_s8, vdupq_n_u8, vld1q_s8, vld1q_u8,
+        vreinterpretq_s8_u8, vshrq_n_u8, vtstq_u8,
+    };
+    debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+    debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+    let mask = vdupq_n_u8(0x0f);
+    let sixteen = vdupq_n_u8(16);
+    let ones: int8x16_t = vdupq_n_s8(1);
+    let vptr = unpacked.values.as_ptr();
+    let hptr = unpacked.high_bits.as_ptr();
+    let xptr = x_i8.as_ptr();
+    let qh0 = vld1q_u8(hptr); // high_bits[0..16]; reused each pair (only the tested bit changes)
+    let qh1 = vld1q_u8(hptr.add(16)); // high_bits[16..32]
+    let mut sum = 0.0_f32;
+    for pair_idx in 0..4 {
+        let low_idx = pair_idx * 2;
+        let high_idx = low_idx + 1;
+        let value_base = pair_idx * 32;
+        let x_base = pair_idx * 64;
+        let u1 = vdupq_n_u8(1_u8 << (2 * pair_idx));
+        let u2 = vdupq_n_u8(2_u8 << (2 * pair_idx));
+
+        let v0 = vld1q_u8(vptr.add(value_base));
+        let v1 = vld1q_u8(vptr.add(value_base + 16));
+        let low0 = vreinterpretq_s8_u8(vaddq_u8(
+            vandq_u8(v0, mask),
+            vandq_u8(vtstq_u8(qh0, u1), sixteen),
+        ));
+        let low1 = vreinterpretq_s8_u8(vaddq_u8(
+            vandq_u8(v1, mask),
+            vandq_u8(vtstq_u8(qh1, u1), sixteen),
+        ));
+        let high0 = vreinterpretq_s8_u8(vaddq_u8(
+            vshrq_n_u8::<4>(v0),
+            vandq_u8(vtstq_u8(qh0, u2), sixteen),
+        ));
+        let high1 = vreinterpretq_s8_u8(vaddq_u8(
+            vshrq_n_u8::<4>(v1),
+            vandq_u8(vtstq_u8(qh1, u2), sixteen),
+        ));
+
+        let xl0 = vld1q_s8(xptr.add(x_base));
+        let xl1 = vld1q_s8(xptr.add(x_base + 16));
+        let xh0 = vld1q_s8(xptr.add(x_base + 32));
+        let xh1 = vld1q_s8(xptr.add(x_base + 48));
+
+        let (low_weighted, high_weighted, low_act, high_act) =
+            qk_pair_sdot(low0, low1, high0, high1, xl0, xl1, xh0, xh1, ones);
+
+        sum += x_scales[low_idx]
+            * (unpacked.scales[low_idx] * low_weighted as f32
+                - unpacked.mins[low_idx] * low_act as f32);
+        sum += x_scales[high_idx]
+            * (unpacked.scales[high_idx] * high_weighted as f32
+                - unpacked.mins[high_idx] * high_act as f32);
+    }
+    sum
+}
+
 #[inline]
 fn q4_k_scale_min(idx: usize, scales: &[u8; 12]) -> (u8, u8) {
     if idx < 4 {
