@@ -416,3 +416,136 @@ where
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// P4.3: fast-kernel shards and a sharded LM head.
+
+/// Convert a shard's row-major Q8_0/Q4_0 matrices to the swizzled 1x4 layout
+/// so the fast SDOT kernels apply. Row-major matrices whose row counts are
+/// not 4-aligned are left as they are. Parity runs should skip this: the
+/// swizzled kernels are a different (faster) kernel class than the pinned
+/// scalar reference.
+pub fn swizzle_shards(shards: &mut [TpShard]) {
+    for shard in shards.iter_mut() {
+        let cfg_attn_out = shard.config.attention_output_width;
+        let cfg_kv = shard.config.kv_width;
+        let cfg_ffn = shard.config.feed_forward_length;
+        let emb = shard.config.embedding_length;
+        for layer in shard.layers.iter_mut() {
+            swizzle_matrix(&mut layer.wq, cfg_attn_out, emb);
+            swizzle_matrix(&mut layer.wk, cfg_kv, emb);
+            swizzle_matrix(&mut layer.wav, cfg_kv, emb);
+            swizzle_matrix(&mut layer.wo, emb, cfg_attn_out);
+            if let LlamaFfnWeights::Dense { w1, w3, w2 } = &mut layer.ffn {
+                swizzle_matrix(w1, cfg_ffn, emb);
+                swizzle_matrix(w3, cfg_ffn, emb);
+                swizzle_matrix(w2, emb, cfg_ffn);
+            }
+        }
+    }
+}
+
+fn swizzle_matrix(matrix: &mut QuantizedMatrix, rows: usize, cols: usize) {
+    if !rows.is_multiple_of(4) || !cols.is_multiple_of(32) {
+        return;
+    }
+    let bpr = cols / 32;
+    let replacement = match matrix {
+        QuantizedMatrix::Q8_0(blocks) if blocks.len() == rows * bpr => {
+            QuantizedMatrix::Q8_0Swizzled1x4(crate::model::Q8_0Swizzled1x4Matrix {
+                swizzled_1x4: crate::q8::swizzle_q8_0_1x4(blocks, rows, bpr),
+                page_aligned_1x4: None,
+                rows,
+                cols,
+            })
+        }
+        QuantizedMatrix::Q4_0(blocks) if blocks.len() == rows * bpr => {
+            QuantizedMatrix::Q4_0Swizzled1x4(crate::model::Q4_0Swizzled1x4Matrix {
+                swizzled_1x4: crate::q8::swizzle_q4_0_1x4(blocks, rows, bpr),
+                page_aligned_1x4: None,
+                rows,
+                cols,
+            })
+        }
+        _ => return,
+    };
+    *matrix = replacement;
+}
+
+/// A row-parallel slice of the LM head: rows [row_start, row_start+rows) of
+/// the vocab, quantized to the Q8-swizzled layout (the production tied-head
+/// path).
+pub struct TpHeadShard {
+    pub matrix: QuantizedMatrix,
+    pub row_start: usize,
+    pub rows: usize,
+    pub logits: Vec<f32>,
+}
+
+/// Split a tied f32 embedding table into `shard_count` Q8-swizzled head
+/// slices. Row boundaries stay 4-aligned; the last shard absorbs the
+/// remainder.
+pub fn build_tp_head_shards(
+    embeddings: &[f32],
+    vocab: usize,
+    emb: usize,
+    shard_count: usize,
+) -> Result<Vec<TpHeadShard>, String> {
+    if embeddings.len() != vocab * emb || !emb.is_multiple_of(32) {
+        return Err("head shard: embedding table shape mismatch".to_owned());
+    }
+    let base = (vocab / shard_count) & !3; // 4-aligned slice
+    let mut shards = Vec::with_capacity(shard_count);
+    let mut start = 0usize;
+    for s in 0..shard_count {
+        let rows = if s + 1 == shard_count { vocab - start } else { base };
+        let slice = &embeddings[start * emb..(start + rows) * emb];
+        let row_major = crate::q8::quantize_f32_matrix_to_q8_0_blocks(slice, rows, emb);
+        let matrix = if rows.is_multiple_of(4) {
+            QuantizedMatrix::Q8_0Swizzled1x4(crate::model::Q8_0Swizzled1x4Matrix {
+                swizzled_1x4: crate::q8::swizzle_q8_0_1x4(&row_major, rows, emb / 32),
+                page_aligned_1x4: None,
+                rows,
+                cols: emb,
+            })
+        } else {
+            QuantizedMatrix::Q8_0(row_major)
+        };
+        shards.push(TpHeadShard {
+            matrix,
+            row_start: start,
+            rows,
+            logits: vec![0.0; rows],
+        });
+        start += rows;
+    }
+    Ok(shards)
+}
+
+/// Compute this node's head slice over the (already reduced) hidden state
+/// and return (global_token_id, logit) of the local argmax. The caller
+/// merges across nodes with strict-greater comparison and lowest row_start
+/// winning ties, which reproduces the full-scan first-max rule.
+pub fn head_shard_argmax(
+    head: &mut TpHeadShard,
+    hidden: &[f32],
+    output_norm: &[f32],
+    rt: &mut TpRuntime,
+    ws: &mut LlamaWorkspace,
+    epsilon: f32,
+    options: LlamaRuntimeOptions,
+) -> (u32, f32) {
+    inference::rms_norm(&mut rt.norm_x, hidden, output_norm, epsilon);
+    inference::quantize_f32_to_q8_0(&rt.norm_x, &mut ws.x_i8, &mut ws.x_scales);
+    inference::matmul_quantized(
+        &mut head.logits,
+        &ws.x_i8,
+        &ws.x_scales,
+        &head.matrix,
+        head.rows,
+        rt.norm_x.len(),
+        options.q8_selector,
+    );
+    let local = inference::sample_logits(&head.logits, 0.0);
+    ((head.row_start + local) as u32, head.logits[local])
+}

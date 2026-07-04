@@ -60,3 +60,37 @@ at ~10% of the token budget. The ≥1.8x three-node promotion gate is not
 yet testable (item 3), and beating the *production* single-node number
 requires items 1–2. All three are mechanical, none require new protocol
 work, and the sync headroom says 3-node TP stays wire-feasible.
+
+## P4.3 fast lane (same session): shard-then-swizzle + sharded head
+
+Two additions, both in `tp.rs`:
+- `swizzle_shards`: converts shard matrices to the swizzled 1x4 layout
+  after slicing, so the production SDOT kernels apply to TP.
+- `build_tp_head_shards` / `head_shard_argmax`: row-parallel Q8-swizzled
+  LM head; each node computes its vocab slice and sends (argmax, logit) —
+  12 bytes — with ties resolved to the lower row range, reproducing the
+  full-scan first-max rule.
+
+Fast mode is the default; `NANOCAMELID_TP_PARITY=1` keeps the scalar
+row-major parity configuration.
+
+### Fast TP-2 vs the production single-node path (camelid2+camelid3, GbE)
+
+| row | single node (nanocamelid chat) | fast TP-2 | speedup | layers | sync | head |
+|---|---|---|---|---|---|---|
+| 1B Q4_0 | 13.42 tok/s | **20.44** | **1.52x** | 28.3ms | 10.2ms | 11.7ms |
+| 3B Q4_0 | 5.33 tok/s | **8.80** | **1.65x** | 77.0ms | 21.6ms | 17.3ms |
+
+The 3B decoded text matches the production single-node stream word for
+word over the full 48 tokens. Token-level near-tie flips remain possible
+in principle (the P4.1 reduction-order drift class); per-row
+token-identical receipts stay the promotion gate.
+
+The conductor's campaign success criteria — "3B: 2.22 → 5+ tok/s, 1B:
+4.18 → 8+ tok/s" — are both **exceeded at two nodes** (8.80 / 20.44),
+even against the re-based fast baselines the criteria never anticipated.
+
+### Still open for the 3-node run
+- Uneven KV-head splits (8/3 = 3-3-2) in `build_tp_shards`.
+- Stop-token handling in the TP decode loop (benches run fixed-length).
+- camelid1's PSU (a capped straggler gates every all-reduce).

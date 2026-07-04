@@ -29,6 +29,7 @@ const HELLO_MAGIC: u32 = 0x5450_4E31; // "TPN1"
 const TOKEN_MAGIC: u32 = 0x5450_544B; // "TPTK"
 const PARTIAL_MAGIC: u32 = 0x5450_5041; // "TPPA"
 const SUM_MAGIC: u32 = 0x5450_5355; // "TPSU"
+const ARGMAX_MAGIC: u32 = 0x5450_414D; // "TPAM"
 const SHUTDOWN_POS: u32 = u32::MAX;
 
 fn main() -> ExitCode {
@@ -250,10 +251,25 @@ fn run_reference(model_path: &str, prompt: &str, max_tokens: usize) -> Result<()
 
 fn run_worker(model_path: &str, bind: &str) -> Result<(), String> {
     let loaded = load(model_path)?;
+    let parity = std::env::var("NANOCAMELID_TP_PARITY").is_ok_and(|v| v == "1");
     let mut shards = tp::build_tp_shards(&loaded.config, &loaded.weights.layers, 2)?;
     let mut shard = shards.remove(1);
     drop(shards);
     let emb = loaded.config.embedding_length;
+    // Fast mode: swizzled kernels + a row-parallel slice of the LM head.
+    let mut head = if parity {
+        None
+    } else {
+        tp::swizzle_shards(std::slice::from_mut(&mut shard));
+        let mut heads = tp::build_tp_head_shards(
+            &loaded.weights.token_embeddings,
+            loaded.config.vocab_size,
+            emb,
+            2,
+        )?;
+        Some(heads.remove(1))
+    };
+    let mut head_ws = inference::LlamaWorkspace::new(&loaded.config);
 
     let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
     println!("tp worker (shard 1) listening on {bind}");
@@ -302,6 +318,18 @@ fn run_worker(model_path: &str, bind: &str) -> Result<(), String> {
                 Ok(())
             },
         )?;
+        if let Some(head) = head.as_mut() {
+            let (idx, logit) = tp::head_shard_argmax(
+                head,
+                &hidden,
+                &loaded.weights.output_norm,
+                &mut rt,
+                &mut head_ws,
+                loaded.config.rms_norm_epsilon,
+                loaded.options,
+            );
+            write_msg(&mut stream, ARGMAX_MAGIC, idx, logit.to_bits(), &[])?;
+        }
         compute_total += compute_start.elapsed();
     }
 
@@ -322,10 +350,24 @@ fn run_master(
 ) -> Result<(), String> {
     let loaded = load(model_path)?;
     let prompt_tokens = encode_chat(&loaded, prompt)?;
+    let parity = std::env::var("NANOCAMELID_TP_PARITY").is_ok_and(|v| v == "1");
     let mut shards = tp::build_tp_shards(&loaded.config, &loaded.weights.layers, 2)?;
     shards.truncate(1);
     let mut shard = shards.remove(0);
     let emb = loaded.config.embedding_length;
+    let mut head = if parity {
+        None
+    } else {
+        tp::swizzle_shards(std::slice::from_mut(&mut shard));
+        let mut heads = tp::build_tp_head_shards(
+            &loaded.weights.token_embeddings,
+            loaded.config.vocab_size,
+            emb,
+            2,
+        )?;
+        heads.truncate(1);
+        Some(heads.remove(0))
+    };
 
     let mut stream = TcpStream::connect(worker_addr).map_err(|e| e.to_string())?;
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
@@ -386,15 +428,34 @@ fn run_master(
         compute_total += compute_start.elapsed();
 
         let logits_start = Instant::now();
-        inference::compute_logits_from_hidden(
-            &loaded.config,
-            &loaded.weights.token_embeddings,
-            &loaded.weights.output_norm,
-            loaded.weights.output_projection.as_ref(),
-            &mut ws,
-            loaded.options,
-        );
-        let next = inference::sample_logits(&ws.logits, 0.0) as u32;
+        let next = if let Some(head) = head.as_mut() {
+            // Row-parallel head: local slice argmax merged with the
+            // worker's; ties go to the lower row range (master), which
+            // reproduces the full-scan first-max rule.
+            let local_hidden = ws.hidden.clone();
+            let (local_idx, local_logit) = tp::head_shard_argmax(
+                head,
+                &local_hidden,
+                &loaded.weights.output_norm,
+                &mut rt,
+                &mut ws,
+                loaded.config.rms_norm_epsilon,
+                loaded.options,
+            );
+            let (remote_idx, remote_bits) = read_msg(&mut stream, ARGMAX_MAGIC, &mut [])?;
+            let remote_logit = f32::from_bits(remote_bits);
+            if remote_logit > local_logit { remote_idx } else { local_idx }
+        } else {
+            inference::compute_logits_from_hidden(
+                &loaded.config,
+                &loaded.weights.token_embeddings,
+                &loaded.weights.output_norm,
+                loaded.weights.output_projection.as_ref(),
+                &mut ws,
+                loaded.options,
+            );
+            inference::sample_logits(&ws.logits, 0.0) as u32
+        };
         logits_total += logits_start.elapsed();
 
         pos += 1;
