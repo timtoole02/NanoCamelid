@@ -1,22 +1,23 @@
-// Phase 4 P4.2: two-node tensor parallelism over TCP.
+// N-node tensor parallelism over TCP (weighted, shard-direct).
 //
-// Both nodes load the same GGUF, build both TP shards locally, and keep only
-// their own (shard 0 = master, shard 1 = worker). Every token: the master
-// sends (pos, token id); both nodes run every layer on their shard; at each
-// of the two per-layer reduction points the worker sends its partial and the
-// master returns the global sum (fixed order: shard0 + shard1, so both sides
-// hold bit-identical activations). Embeddings are replicated; the head runs
-// on the master only.
+// Shares are per-shard KV-head counts (e.g. "2,3,3" on an 8-KV-head model
+// gives a half-speed node the small slice). The master is shard 0; workers
+// are shards 1..N in address order. Every node loads ONLY its slice straight
+// from the GGUF (peak memory = the shard); the master additionally holds the
+// f32 embedding table and ships the embedded hidden state with each token,
+// so workers never touch embeddings. Per layer, two reductions: each worker
+// sends its partial, the master sums in fixed shard order and broadcasts.
+// The LM head is row-parallel: every node reports its slice argmax and the
+// master merges (ties resolve to the lowest row range = full-scan rule).
 //
-//   cluster_tp_node worker      <model.gguf> <bind_addr>
-//   cluster_tp_node master-chat <model.gguf> <worker_addr> "<prompt>" [max_tokens]
+//   cluster_tp_node worker      <model.gguf> <bind_addr> <shard_idx> <shares>
+//   cluster_tp_node master-chat <model.gguf> <worker1,worker2,...> <shares> "<prompt>" [max_tokens]
 //   cluster_tp_node reference   <model.gguf> "<prompt>" [max_tokens]
 //
-// NANOCAMELID_TP_PARITY=1 pins the scalar Q8 kernel (use for parity A/Bs
-// against `reference`, which honors the same flag). Weights load with the
-// 1x4 swizzle disabled on every mode (shards slice row-major blocks), so
-// `reference` here — not `nanocamelid chat` — is the like-for-like baseline.
+// NANOCAMELID_TP_PARITY=1 pins the scalar Q8 kernel and keeps shards in the
+// row-major class; `reference` honors the same flag.
 
+use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -25,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use nanocamelid::{gguf, inference, model, q8, tokenizer, tp};
 
-const HELLO_MAGIC: u32 = 0x5450_4E31; // "TPN1"
+const HELLO_MAGIC: u32 = 0x5450_4E32; // "TPN2"
 const TOKEN_MAGIC: u32 = 0x5450_544B; // "TPTK"
 const PARTIAL_MAGIC: u32 = 0x5450_5041; // "TPPA"
 const SUM_MAGIC: u32 = 0x5450_5355; // "TPSU"
@@ -58,9 +59,12 @@ fn rope_scaling_from_gguf(gguf: &gguf::GgufFile) -> inference::RopeScaling {
     }
 }
 
+fn parity_mode() -> bool {
+    std::env::var("NANOCAMELID_TP_PARITY").is_ok_and(|v| v == "1")
+}
+
 fn runtime_options(gguf: &gguf::GgufFile) -> inference::LlamaRuntimeOptions {
-    let parity = std::env::var("NANOCAMELID_TP_PARITY").is_ok_and(|v| v == "1");
-    let selector = if parity {
+    let selector = if parity_mode() {
         q8::Q8DotKernelSelector {
             requested: Some(q8::Q8DotKernel::Scalar),
             selected: q8::Q8DotKernel::Scalar,
@@ -76,38 +80,23 @@ fn runtime_options(gguf: &gguf::GgufFile) -> inference::LlamaRuntimeOptions {
     }
 }
 
-struct LoadedModel {
-    config: model::LlamaModelConfig,
-    weights: model::LlamaWeights,
-    tokenizer: tokenizer::Tokenizer,
-    options: inference::LlamaRuntimeOptions,
+fn parse_shares(csv: &str) -> Result<Vec<usize>, String> {
+    csv.split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<usize>()
+                .map_err(|_| format!("bad share {part:?}"))
+        })
+        .collect()
 }
 
-fn load(model_path: &str) -> Result<LoadedModel, String> {
-    // Shards slice row-major blocks; must be set before any load.
-    unsafe {
-        std::env::set_var("NANOCAMELID_Q4_SWIZZLE_1X4", "0");
-        std::env::set_var("NANOCAMELID_Q8_SWIZZLE_1X4", "0");
-    }
-    let path = Path::new(model_path);
-    let gguf = gguf::read_file(path).map_err(|e| e.to_string())?;
-    let mut config = model::LlamaModelConfig::from_gguf(&gguf).map_err(|e| e.to_string())?;
-    if config.context_length > 512 {
-        config.context_length = 512;
-    }
-    let tok = tokenizer::Tokenizer::from_gguf(&gguf).map_err(|e| e.to_string())?;
-    let options = runtime_options(&gguf);
-    println!("Loading weights: {model_path}");
-    let weights = model::LlamaWeights::load(path, &config, &gguf)?;
-    Ok(LoadedModel {
-        config,
-        weights,
-        tokenizer: tok,
-        options,
-    })
-}
-
-fn write_msg<W: Write>(w: &mut W, magic: u32, a: u32, b: u32, payload: &[f32]) -> Result<(), String> {
+fn write_msg<W: Write>(
+    w: &mut W,
+    magic: u32,
+    a: u32,
+    b: u32,
+    payload: &[f32],
+) -> Result<(), String> {
     let mut msg = Vec::with_capacity(12 + payload.len() * 4);
     msg.extend_from_slice(&magic.to_le_bytes());
     msg.extend_from_slice(&a.to_le_bytes());
@@ -148,20 +137,78 @@ fn reduce_tag(layer_idx: usize, phase: tp::ReducePhase) -> u32 {
     ((layer_idx as u32) << 1) | matches!(phase, tp::ReducePhase::Ffn) as u32
 }
 
+struct LoadedBase {
+    config: model::LlamaModelConfig,
+    gguf: gguf::GgufFile,
+    tokenizer: tokenizer::Tokenizer,
+    options: inference::LlamaRuntimeOptions,
+}
+
+fn load_base(model_path: &str) -> Result<LoadedBase, String> {
+    // Shard slicing and the reference both work on row-major blocks.
+    unsafe {
+        std::env::set_var("NANOCAMELID_Q4_SWIZZLE_1X4", "0");
+        std::env::set_var("NANOCAMELID_Q8_SWIZZLE_1X4", "0");
+    }
+    let path = Path::new(model_path);
+    let gguf = gguf::read_file(path).map_err(|e| e.to_string())?;
+    let mut config = model::LlamaModelConfig::from_gguf(&gguf).map_err(|e| e.to_string())?;
+    if config.context_length > 512 {
+        config.context_length = 512;
+    }
+    let tok = tokenizer::Tokenizer::from_gguf(&gguf).map_err(|e| e.to_string())?;
+    let options = runtime_options(&gguf);
+    Ok(LoadedBase {
+        config,
+        gguf,
+        tokenizer: tok,
+        options,
+    })
+}
+
+fn encode_chat(base: &LoadedBase, prompt: &str) -> Result<Vec<u32>, String> {
+    let rendered = base
+        .tokenizer
+        .render_chat_prompt(&[tokenizer::ChatMessage {
+            role: "user",
+            content: prompt,
+        }]);
+    base.tokenizer
+        .encode(&rendered.text, rendered.add_special, rendered.parse_special)
+        .map_err(|e| e.to_string())
+}
+
+fn is_stop(base: &LoadedBase, token: u32) -> bool {
+    Some(token) == base.tokenizer.special.eos
+        || Some(token) == base.tokenizer.special.eot
+        || Some(token) == base.tokenizer.special.eom
+}
+
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("worker") => {
             let model_path = args.next().ok_or("missing model path")?;
-            let bind = args.next().unwrap_or_else(|| "0.0.0.0:5915".to_owned());
-            run_worker(&model_path, &bind)
+            let bind = args.next().ok_or("missing bind addr")?;
+            let shard_idx: usize = args
+                .next()
+                .and_then(|v| v.parse().ok())
+                .ok_or("missing shard idx")?;
+            let shares = parse_shares(&args.next().ok_or("missing shares")?)?;
+            run_worker(&model_path, &bind, shard_idx, &shares)
         }
         Some("master-chat") => {
             let model_path = args.next().ok_or("missing model path")?;
-            let worker = args.next().ok_or("missing worker addr")?;
+            let workers: Vec<String> = args
+                .next()
+                .ok_or("missing worker list")?
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .collect();
+            let shares = parse_shares(&args.next().ok_or("missing shares")?)?;
             let prompt = args.next().ok_or("missing prompt")?;
             let max_tokens: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or(64);
-            run_master(&model_path, &worker, &prompt, max_tokens)
+            run_master(&model_path, &workers, &shares, &prompt, max_tokens)
         }
         Some("reference") => {
             let model_path = args.next().ok_or("missing model path")?;
@@ -173,42 +220,29 @@ fn run() -> Result<(), String> {
     }
 }
 
-fn encode_chat(
-    loaded: &LoadedModel,
-    prompt: &str,
-) -> Result<Vec<u32>, String> {
-    let rendered = loaded.tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
-        role: "user",
-        content: prompt,
-    }]);
-    loaded
-        .tokenizer
-        .encode(&rendered.text, rendered.add_special, rendered.parse_special)
-        .map_err(|e| e.to_string())
-}
-
 fn run_reference(model_path: &str, prompt: &str, max_tokens: usize) -> Result<(), String> {
-    let loaded = load(model_path)?;
-    let prompt_tokens = encode_chat(&loaded, prompt)?;
+    let base = load_base(model_path)?;
+    let prompt_tokens = encode_chat(&base, prompt)?;
+    println!("Loading full weights (reference)...");
+    let weights = model::LlamaWeights::load(Path::new(model_path), &base.config, &base.gguf)?;
     let mut cache = inference::LlamaKvCache::new(
-        loaded.config.block_count,
-        loaded.config.context_length,
-        loaded.config.kv_width,
+        base.config.block_count,
+        base.config.context_length,
+        base.config.kv_width,
     );
-    let mut ws = inference::LlamaWorkspace::new(&loaded.config);
+    let mut ws = inference::LlamaWorkspace::new(&base.config);
     let mut generated = Vec::new();
     let mut pos = 0usize;
-    let started = Instant::now();
     let mut decode_started = None;
     for (i, &t) in prompt_tokens.iter().enumerate() {
         inference::forward_pass(
             t as usize,
             pos,
-            &loaded.config,
-            &loaded.weights,
+            &base.config,
+            &weights,
             &mut cache,
             &mut ws,
-            loaded.options,
+            base.options,
         );
         pos += 1;
         if i + 1 == prompt_tokens.len() {
@@ -216,16 +250,19 @@ fn run_reference(model_path: &str, prompt: &str, max_tokens: usize) -> Result<()
         }
     }
     let mut next = inference::sample_logits(&ws.logits, 0.0) as u32;
-    while generated.len() < max_tokens && pos < loaded.config.context_length {
+    while generated.len() < max_tokens && pos < base.config.context_length {
+        if is_stop(&base, next) {
+            break;
+        }
         generated.push(next);
         inference::forward_pass(
             next as usize,
             pos,
-            &loaded.config,
-            &loaded.weights,
+            &base.config,
+            &weights,
             &mut cache,
             &mut ws,
-            loaded.options,
+            base.options,
         );
         pos += 1;
         next = inference::sample_logits(&ws.logits, 0.0) as u32;
@@ -236,78 +273,76 @@ fn run_reference(model_path: &str, prompt: &str, max_tokens: usize) -> Result<()
     println!("generated_tokens: {generated:?}");
     println!(
         "generated_text: {:?}",
-        loaded.tokenizer.decode(&generated, true).unwrap_or_default()
+        base.tokenizer.decode(&generated, true).unwrap_or_default()
     );
     println!(
-        "json: {{\"benchmark\":\"tp-reference\",\"prompt_tokens\":{},\"generated\":{},\"total_seconds\":{:.3},\"decode_tokens_per_sec\":{:.3}}}",
+        "json: {{\"benchmark\":\"tp-reference\",\"prompt_tokens\":{},\"generated\":{},\"decode_tokens_per_sec\":{:.3}}}",
         prompt_tokens.len(),
         generated.len(),
-        started.elapsed().as_secs_f64(),
-        if decode_secs > 0.0 { generated.len() as f64 / decode_secs } else { 0.0 },
+        if decode_secs > 0.0 {
+            generated.len() as f64 / decode_secs
+        } else {
+            0.0
+        },
     );
     println!("result: PASS");
     Ok(())
 }
 
-fn run_worker(model_path: &str, bind: &str) -> Result<(), String> {
-    let loaded = load(model_path)?;
-    let parity = std::env::var("NANOCAMELID_TP_PARITY").is_ok_and(|v| v == "1");
-    let mut shards = tp::build_tp_shards(&loaded.config, &loaded.weights.layers, 2)?;
-    let mut shard = shards.remove(1);
-    drop(shards);
-    let emb = loaded.config.embedding_length;
-    // Fast mode: swizzled kernels + a row-parallel slice of the LM head.
-    let mut head = if parity {
-        None
-    } else {
-        tp::swizzle_shards(std::slice::from_mut(&mut shard));
-        let mut heads = tp::build_tp_head_shards(
-            &loaded.weights.token_embeddings,
-            loaded.config.vocab_size,
-            emb,
-            2,
-        )?;
-        Some(heads.remove(1))
-    };
-    let mut head_ws = inference::LlamaWorkspace::new(&loaded.config);
+fn run_worker(
+    model_path: &str,
+    bind: &str,
+    shard_idx: usize,
+    shares: &[usize],
+) -> Result<(), String> {
+    let base = load_base(model_path)?;
+    println!("Loading shard {shard_idx} of {shares:?} (direct)...");
+    let mut node = tp::load_tp_shard_direct(
+        Path::new(model_path),
+        &base.config,
+        &base.gguf,
+        shares,
+        shard_idx,
+        !parity_mode(),
+    )?;
+    let emb = base.config.embedding_length;
 
     let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
-    println!("tp worker (shard 1) listening on {bind}");
+    println!("tp worker (shard {shard_idx}) listening on {bind}");
     let (mut stream, peer) = listener.accept().map_err(|e| e.to_string())?;
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
     println!("master connected: {peer}");
     write_msg(
         &mut stream,
         HELLO_MAGIC,
-        loaded.config.block_count as u32,
-        emb as u32,
+        shard_idx as u32,
+        base.config.block_count as u32,
         &[],
     )?;
 
-    let mut rt = tp::TpRuntime::new(&loaded.config);
+    let mut rt = tp::TpRuntime::new(&base.config);
     let mut hidden = vec![0.0_f32; emb];
+    let mut head_ws = inference::LlamaWorkspace::new(&base.config);
     let mut compute_total = Duration::ZERO;
     let mut wait_total = Duration::ZERO;
     let mut tokens = 0u64;
 
     loop {
         let wait_start = Instant::now();
-        let (pos, token) = read_msg(&mut stream, TOKEN_MAGIC, &mut [])?;
+        let (pos, _token) = read_msg(&mut stream, TOKEN_MAGIC, &mut hidden)?;
         wait_total += wait_start.elapsed();
         if pos == SHUTDOWN_POS {
             break;
         }
         tokens += 1;
         let compute_start = Instant::now();
-        let emb_start = token as usize * emb;
-        hidden.copy_from_slice(&loaded.weights.token_embeddings[emb_start..emb_start + emb]);
-        let stream_cell = std::cell::RefCell::new(&mut stream);
+        let stream_cell = RefCell::new(&mut stream);
         tp::tp_forward_token_reduced(
             &mut hidden,
-            std::slice::from_mut(&mut shard),
+            std::slice::from_mut(&mut node.shard),
             &mut rt,
             pos as usize,
-            loaded.options,
+            base.options,
             |partial, layer_idx, phase| {
                 let mut s = stream_cell.borrow_mut();
                 write_msg(*s, PARTIAL_MAGIC, reduce_tag(layer_idx, phase), 0, partial)?;
@@ -318,23 +353,21 @@ fn run_worker(model_path: &str, bind: &str) -> Result<(), String> {
                 Ok(())
             },
         )?;
-        if let Some(head) = head.as_mut() {
-            let (idx, logit) = tp::head_shard_argmax(
-                head,
-                &hidden,
-                &loaded.weights.output_norm,
-                &mut rt,
-                &mut head_ws,
-                loaded.config.rms_norm_epsilon,
-                loaded.options,
-            );
-            write_msg(&mut stream, ARGMAX_MAGIC, idx, logit.to_bits(), &[])?;
-        }
+        let (idx, logit) = tp::head_shard_argmax(
+            &mut node.head,
+            &hidden,
+            &node.output_norm,
+            &mut rt,
+            &mut head_ws,
+            base.config.rms_norm_epsilon,
+            base.options,
+        );
+        write_msg(&mut stream, ARGMAX_MAGIC, idx, logit.to_bits(), &[])?;
         compute_total += compute_start.elapsed();
     }
 
     println!(
-        "json: {{\"benchmark\":\"tp-node\",\"role\":\"worker\",\"tokens\":{tokens},\"compute_total_ms\":{:.1},\"wait_total_ms\":{:.1}}}",
+        "json: {{\"benchmark\":\"tp-node\",\"role\":\"worker\",\"shard\":{shard_idx},\"tokens\":{tokens},\"compute_total_ms\":{:.1},\"wait_total_ms\":{:.1}}}",
         compute_total.as_secs_f64() * 1000.0,
         wait_total.as_secs_f64() * 1000.0,
     );
@@ -344,47 +377,60 @@ fn run_worker(model_path: &str, bind: &str) -> Result<(), String> {
 
 fn run_master(
     model_path: &str,
-    worker_addr: &str,
+    worker_addrs: &[String],
+    shares: &[usize],
     prompt: &str,
     max_tokens: usize,
 ) -> Result<(), String> {
-    let loaded = load(model_path)?;
-    let prompt_tokens = encode_chat(&loaded, prompt)?;
-    let parity = std::env::var("NANOCAMELID_TP_PARITY").is_ok_and(|v| v == "1");
-    let mut shards = tp::build_tp_shards(&loaded.config, &loaded.weights.layers, 2)?;
-    shards.truncate(1);
-    let mut shard = shards.remove(0);
-    let emb = loaded.config.embedding_length;
-    let mut head = if parity {
-        None
-    } else {
-        tp::swizzle_shards(std::slice::from_mut(&mut shard));
-        let mut heads = tp::build_tp_head_shards(
-            &loaded.weights.token_embeddings,
-            loaded.config.vocab_size,
-            emb,
-            2,
-        )?;
-        heads.truncate(1);
-        Some(heads.remove(0))
-    };
-
-    let mut stream = TcpStream::connect(worker_addr).map_err(|e| e.to_string())?;
-    stream.set_nodelay(true).map_err(|e| e.to_string())?;
-    let (blocks, wemb) = read_msg(&mut stream, HELLO_MAGIC, &mut [])?;
-    if blocks as usize != loaded.config.block_count || wemb as usize != emb {
-        return Err("worker/master model shape mismatch".to_owned());
+    let base = load_base(model_path)?;
+    if shares.len() != worker_addrs.len() + 1 {
+        return Err(format!(
+            "{} shares for master + {} workers",
+            shares.len(),
+            worker_addrs.len()
+        ));
     }
-    println!("worker hello ok: {blocks} layers, emb {wemb}");
+    let prompt_tokens = encode_chat(&base, prompt)?;
+    println!("Loading shard 0 of {shares:?} (direct)...");
+    let mut node = tp::load_tp_shard_direct(
+        Path::new(model_path),
+        &base.config,
+        &base.gguf,
+        shares,
+        0,
+        !parity_mode(),
+    )?;
+    let emb = base.config.embedding_length;
+    println!("Loading embedding table...");
+    let embeddings = tp::load_embeddings_f32(
+        Path::new(model_path),
+        &base.gguf,
+        base.config.vocab_size,
+        emb,
+    )?;
 
-    let mut rt = tp::TpRuntime::new(&loaded.config);
-    let mut ws = inference::LlamaWorkspace::new(&loaded.config);
+    let mut streams = Vec::with_capacity(worker_addrs.len());
+    for (i, addr) in worker_addrs.iter().enumerate() {
+        let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
+        stream.set_nodelay(true).map_err(|e| e.to_string())?;
+        let (idx, blocks) = read_msg(&mut stream, HELLO_MAGIC, &mut [])?;
+        if idx as usize != i + 1 || blocks as usize != base.config.block_count {
+            return Err(format!(
+                "worker {addr} hello mismatch (shard {idx}, {blocks} layers)"
+            ));
+        }
+        println!("worker {addr} ok (shard {idx})");
+        streams.push(stream);
+    }
+
+    let mut rt = tp::TpRuntime::new(&base.config);
+    let mut ws = inference::LlamaWorkspace::new(&base.config);
+    let mut head_ws = inference::LlamaWorkspace::new(&base.config);
     let mut remote = vec![0.0_f32; emb];
     let mut generated = Vec::new();
     let mut compute_total = Duration::ZERO;
     let mut sync_total = Duration::ZERO;
     let mut logits_total = Duration::ZERO;
-    let started = Instant::now();
     let mut decode_started = None;
     let mut pos = 0usize;
     let mut token = *prompt_tokens.first().ok_or("empty prompt")?;
@@ -392,34 +438,42 @@ fn run_master(
     let mut step = 0usize;
 
     loop {
-        // Lockstep: announce the token, then both sides compute.
-        write_msg(&mut stream, TOKEN_MAGIC, pos as u32, token, &[])?;
         let compute_start = Instant::now();
         let emb_start = token as usize * emb;
-        ws.hidden.copy_from_slice(&loaded.weights.token_embeddings[emb_start..emb_start + emb]);
+        ws.hidden
+            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        // Ship the embedded hidden with the token so workers skip embeddings.
+        for stream in streams.iter_mut() {
+            write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
+        }
         {
-            let stream_cell = std::cell::RefCell::new(&mut stream);
-            let remote_cell = std::cell::RefCell::new(&mut remote);
-            let sync_cell = std::cell::RefCell::new(&mut sync_total);
+            let streams_cell = RefCell::new(&mut streams);
+            let remote_cell = RefCell::new(&mut remote);
+            let sync_cell = RefCell::new(&mut sync_total);
             tp::tp_forward_token_reduced(
                 &mut ws.hidden,
-                std::slice::from_mut(&mut shard),
+                std::slice::from_mut(&mut node.shard),
                 &mut rt,
                 pos,
-                loaded.options,
+                base.options,
                 |partial, layer_idx, phase| {
-                    let mut s = stream_cell.borrow_mut();
+                    let mut ss = streams_cell.borrow_mut();
                     let mut r = remote_cell.borrow_mut();
                     let sync_start = Instant::now();
-                    let (tag, _) = read_msg(*s, PARTIAL_MAGIC, *r)?;
-                    if tag != reduce_tag(layer_idx, phase) {
-                        return Err(format!("reduce tag mismatch at layer {layer_idx}"));
+                    let tag = reduce_tag(layer_idx, phase);
+                    // Fixed order: shard0 + shard1 + shard2 ...
+                    for stream in ss.iter_mut() {
+                        let (got, _) = read_msg(stream, PARTIAL_MAGIC, *r)?;
+                        if got != tag {
+                            return Err(format!("reduce tag mismatch at layer {layer_idx}"));
+                        }
+                        for (local, &rem) in partial.iter_mut().zip(r.iter()) {
+                            *local += rem;
+                        }
                     }
-                    // Fixed order: shard0 partial + shard1 partial.
-                    for (local, &rem) in partial.iter_mut().zip(r.iter()) {
-                        *local += rem;
+                    for stream in ss.iter_mut() {
+                        write_msg(stream, SUM_MAGIC, tag, 0, partial)?;
                     }
-                    write_msg(*s, SUM_MAGIC, tag, 0, partial)?;
                     **sync_cell.borrow_mut() += sync_start.elapsed();
                     Ok(())
                 },
@@ -428,34 +482,25 @@ fn run_master(
         compute_total += compute_start.elapsed();
 
         let logits_start = Instant::now();
-        let next = if let Some(head) = head.as_mut() {
-            // Row-parallel head: local slice argmax merged with the
-            // worker's; ties go to the lower row range (master), which
-            // reproduces the full-scan first-max rule.
-            let local_hidden = ws.hidden.clone();
-            let (local_idx, local_logit) = tp::head_shard_argmax(
-                head,
-                &local_hidden,
-                &loaded.weights.output_norm,
-                &mut rt,
-                &mut ws,
-                loaded.config.rms_norm_epsilon,
-                loaded.options,
-            );
-            let (remote_idx, remote_bits) = read_msg(&mut stream, ARGMAX_MAGIC, &mut [])?;
-            let remote_logit = f32::from_bits(remote_bits);
-            if remote_logit > local_logit { remote_idx } else { local_idx }
-        } else {
-            inference::compute_logits_from_hidden(
-                &loaded.config,
-                &loaded.weights.token_embeddings,
-                &loaded.weights.output_norm,
-                loaded.weights.output_projection.as_ref(),
-                &mut ws,
-                loaded.options,
-            );
-            inference::sample_logits(&ws.logits, 0.0) as u32
-        };
+        let (mut best_idx, mut best_logit) = tp::head_shard_argmax(
+            &mut node.head,
+            &ws.hidden,
+            &node.output_norm,
+            &mut rt,
+            &mut head_ws,
+            base.config.rms_norm_epsilon,
+            base.options,
+        );
+        for stream in streams.iter_mut() {
+            let (idx, bits) = read_msg(stream, ARGMAX_MAGIC, &mut [])?;
+            let logit = f32::from_bits(bits);
+            // Strict greater: ties resolve to the lowest row range.
+            if logit > best_logit {
+                best_logit = logit;
+                best_idx = idx;
+            }
+        }
+        let next = best_idx;
         logits_total += logits_start.elapsed();
 
         pos += 1;
@@ -467,13 +512,19 @@ fn run_master(
         if step == total_prompt {
             decode_started = Some(Instant::now());
         }
+        if is_stop(&base, next) {
+            break;
+        }
         generated.push(next);
         token = next;
-        if generated.len() >= max_tokens || pos >= loaded.config.context_length {
+        if generated.len() >= max_tokens || pos >= base.config.context_length {
             break;
         }
     }
-    write_msg(&mut stream, TOKEN_MAGIC, SHUTDOWN_POS, 0, &[])?;
+    let zeros = vec![0.0_f32; emb];
+    for stream in streams.iter_mut() {
+        write_msg(stream, TOKEN_MAGIC, SHUTDOWN_POS, 0, &zeros)?;
+    }
 
     let decode_secs = decode_started
         .map(|s| s.elapsed().as_secs_f64())
@@ -482,14 +533,18 @@ fn run_master(
     println!("generated_tokens: {generated:?}");
     println!(
         "generated_text: {:?}",
-        loaded.tokenizer.decode(&generated, true).unwrap_or_default()
+        base.tokenizer.decode(&generated, true).unwrap_or_default()
     );
     println!(
-        "json: {{\"benchmark\":\"tp-node\",\"role\":\"master\",\"shards\":2,\"prompt_tokens\":{},\"generated\":{},\"total_seconds\":{:.3},\"decode_tokens_per_sec\":{:.3},\"local_compute_avg_ms\":{:.2},\"sync_avg_ms\":{:.2},\"logits_avg_ms\":{:.2}}}",
+        "json: {{\"benchmark\":\"tp-node\",\"role\":\"master\",\"shards\":{},\"shares\":{shares:?},\"prompt_tokens\":{},\"generated\":{},\"decode_tokens_per_sec\":{:.3},\"local_compute_avg_ms\":{:.2},\"sync_avg_ms\":{:.2},\"logits_avg_ms\":{:.2}}}",
+        shares.len(),
         total_prompt,
         generated.len(),
-        started.elapsed().as_secs_f64(),
-        if decode_secs > 0.0 { generated.len() as f64 / decode_secs } else { 0.0 },
+        if decode_secs > 0.0 {
+            generated.len() as f64 / decode_secs
+        } else {
+            0.0
+        },
         (compute_total - sync_total).as_secs_f64() * 1000.0 / steps,
         sync_total.as_secs_f64() * 1000.0 / steps,
         logits_total.as_secs_f64() * 1000.0 / steps,

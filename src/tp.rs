@@ -475,8 +475,15 @@ fn swizzle_matrix(matrix: &mut QuantizedMatrix, rows: usize, cols: usize) {
 /// A row-parallel slice of the LM head: rows [row_start, row_start+rows) of
 /// the vocab, quantized to the Q8-swizzled layout (the production tied-head
 /// path).
+pub enum TpHeadMatrix {
+    Quantized(QuantizedMatrix),
+    /// Dequantized rows for parity runs on tied-head models: reproduces the
+    /// reference's f32 head fold bit-exactly.
+    F32(Vec<f32>),
+}
+
 pub struct TpHeadShard {
-    pub matrix: QuantizedMatrix,
+    pub matrix: TpHeadMatrix,
     pub row_start: usize,
     pub rows: usize,
     pub logits: Vec<f32>,
@@ -512,7 +519,7 @@ pub fn build_tp_head_shards(
             QuantizedMatrix::Q8_0(row_major)
         };
         shards.push(TpHeadShard {
-            matrix,
+            matrix: TpHeadMatrix::Quantized(matrix),
             row_start: start,
             rows,
             logits: vec![0.0; rows],
@@ -536,16 +543,477 @@ pub fn head_shard_argmax(
     options: LlamaRuntimeOptions,
 ) -> (u32, f32) {
     inference::rms_norm(&mut rt.norm_x, hidden, output_norm, epsilon);
-    inference::quantize_f32_to_q8_0(&rt.norm_x, &mut ws.x_i8, &mut ws.x_scales);
-    inference::matmul_quantized(
-        &mut head.logits,
-        &ws.x_i8,
-        &ws.x_scales,
-        &head.matrix,
-        head.rows,
-        rt.norm_x.len(),
-        options.q8_selector,
-    );
+    match &head.matrix {
+        TpHeadMatrix::Quantized(matrix) => {
+            inference::quantize_f32_to_q8_0(&rt.norm_x, &mut ws.x_i8, &mut ws.x_scales);
+            inference::matmul_quantized(
+                &mut head.logits,
+                &ws.x_i8,
+                &ws.x_scales,
+                matrix,
+                head.rows,
+                rt.norm_x.len(),
+                options.q8_selector,
+            );
+        }
+        TpHeadMatrix::F32(rows_f32) => {
+            inference::matmul_f32(
+                &mut head.logits,
+                &rt.norm_x,
+                rows_f32,
+                head.rows,
+                rt.norm_x.len(),
+            );
+        }
+    }
     let local = inference::sample_logits(&head.logits, 0.0);
     ((head.row_start + local) as u32, head.logits[local])
+}
+
+// ---------------------------------------------------------------------------
+// Weighted uneven shards, loaded shard-direct from the GGUF (peak memory =
+// the shard itself). Shares are per-shard KV-head counts (e.g. [2, 3, 3] on
+// 8 KV heads gives a half-speed node the small slice). Q attention heads and
+// the FFN width split proportionally; norms are replicated; nothing reads a
+// tensor wider than its slice.
+
+use crate::gguf::{GgufFile, GgufTensorDescriptor, GgufTensorType};
+use memmap2::Mmap;
+use std::path::Path;
+
+pub struct TpShardGeometry {
+    pub shard_idx: usize,
+    pub q_start: usize,
+    pub q_heads: usize,
+    pub kv_start: usize,
+    pub kv_heads: usize,
+    pub ffn_start: usize,
+    pub ffn_len: usize,
+    pub head_row_start: usize,
+    pub head_rows: usize,
+}
+
+/// Validate shares against the model config and compute shard geometry.
+pub fn shard_geometry(
+    config: &LlamaModelConfig,
+    shares: &[usize],
+    shard_idx: usize,
+) -> Result<TpShardGeometry, String> {
+    let kv_total = config.attention_head_count_kv;
+    if shares.is_empty() || shard_idx >= shares.len() {
+        return Err("bad shard index".to_owned());
+    }
+    if shares.iter().sum::<usize>() != kv_total {
+        return Err(format!(
+            "shares {shares:?} must sum to {kv_total} kv heads"
+        ));
+    }
+    if shares.iter().any(|&s| s == 0) {
+        return Err("every shard needs at least one kv head".to_owned());
+    }
+    let q_per_kv = config.attention_head_count / kv_total;
+    for &s in shares {
+        if (config.feed_forward_length * s) % (kv_total * 32) != 0 {
+            return Err(format!(
+                "ffn {} not 32-block divisible for share {s}/{kv_total}",
+                config.feed_forward_length
+            ));
+        }
+    }
+    let kv_start: usize = shares[..shard_idx].iter().sum();
+    let ffn_unit = config.feed_forward_length / kv_total;
+    // Head rows: proportional to shares, 4-aligned, remainder to the last.
+    let vocab = config.vocab_size;
+    let mut head_starts = Vec::with_capacity(shares.len() + 1);
+    let mut acc = 0usize;
+    for &s in shares {
+        head_starts.push(acc);
+        acc += (vocab * s / kv_total) & !3;
+    }
+    head_starts.push(vocab);
+    let head_row_start = head_starts[shard_idx];
+    let head_rows = if shard_idx + 1 == shares.len() {
+        vocab - head_row_start
+    } else {
+        head_starts[shard_idx + 1] - head_row_start
+    };
+    Ok(TpShardGeometry {
+        shard_idx,
+        q_start: kv_start * q_per_kv,
+        q_heads: shares[shard_idx] * q_per_kv,
+        kv_start,
+        kv_heads: shares[shard_idx],
+        ffn_start: kv_start * ffn_unit,
+        ffn_len: shares[shard_idx] * ffn_unit,
+        head_row_start,
+        head_rows,
+    })
+}
+
+fn find_tensor<'a>(gguf: &'a GgufFile, name: &str) -> Result<&'a GgufTensorDescriptor, String> {
+    gguf.tensors
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| format!("tensor {name} not found"))
+}
+
+fn tensor_all_bytes<'a>(mmap: &'a Mmap, desc: &GgufTensorDescriptor) -> Result<&'a [u8], String> {
+    let start = desc.absolute_offset as usize;
+    let end = start + desc.n_bytes as usize;
+    mmap.get(start..end)
+        .ok_or_else(|| format!("tensor {} out of file bounds", desc.name))
+}
+
+fn decode_block_run(
+    bytes: &[u8],
+    tensor_type: GgufTensorType,
+    name: &str,
+) -> Result<QuantizedMatrix, String> {
+    match tensor_type {
+        GgufTensorType::Q4_0 => crate::q8::decode_q4_0_blocks(bytes)
+            .map(QuantizedMatrix::Q4_0)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q8_0 => crate::q8::decode_q8_0_blocks(bytes)
+            .map(QuantizedMatrix::Q8_0)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q6K => crate::q8::decode_q6_k_blocks(bytes)
+            .map(QuantizedMatrix::Q6K)
+            .map_err(|e| format!("{name}: {e}")),
+        other => Err(format!(
+            "{name}: shard-direct loading supports Q4_0/Q8_0/Q6_K, got {other:?}"
+        )),
+    }
+}
+
+/// Load rows [r0, r1) of a row-major quantized 2D tensor straight from the
+/// file: a contiguous block-byte run, decoded without touching other rows.
+fn load_rows_direct(
+    mmap: &Mmap,
+    gguf: &GgufFile,
+    name: &str,
+    cols: usize,
+    r0: usize,
+    r1: usize,
+) -> Result<QuantizedMatrix, String> {
+    let desc = find_tensor(gguf, name)?;
+    let (block_vals, block_bytes) = desc
+        .tensor_type
+        .layout()
+        .ok_or_else(|| format!("{name}: no layout"))?;
+    let block_vals = block_vals as usize;
+    if cols % block_vals != 0 {
+        return Err(format!("{name}: cols {cols} not divisible by block {block_vals}"));
+    }
+    let bpr = cols / block_vals;
+    let bytes = tensor_all_bytes(mmap, desc)?;
+    let row_bytes = bpr * block_bytes as usize;
+    decode_block_run(
+        &bytes[r0 * row_bytes..r1 * row_bytes],
+        desc.tensor_type,
+        name,
+    )
+}
+
+/// Load columns [c0, c1) of every row of a row-major quantized 2D tensor:
+/// a per-row gather of a block-byte range.
+fn load_cols_direct(
+    mmap: &Mmap,
+    gguf: &GgufFile,
+    name: &str,
+    rows: usize,
+    cols: usize,
+    c0: usize,
+    c1: usize,
+) -> Result<QuantizedMatrix, String> {
+    let desc = find_tensor(gguf, name)?;
+    let (block_vals, block_bytes) = desc
+        .tensor_type
+        .layout()
+        .ok_or_else(|| format!("{name}: no layout"))?;
+    if block_vals != 32 || c0 % 32 != 0 || c1 % 32 != 0 {
+        return Err(format!("{name}: column slice not block-aligned"));
+    }
+    let bpr = cols / 32;
+    let bb = block_bytes as usize;
+    let bytes = tensor_all_bytes(mmap, desc)?;
+    let (b0, b1) = (c0 / 32, c1 / 32);
+    let mut gathered = Vec::with_capacity(rows * (b1 - b0) * bb);
+    for r in 0..rows {
+        let start = (r * bpr + b0) * bb;
+        gathered.extend_from_slice(&bytes[start..start + (b1 - b0) * bb]);
+    }
+    decode_block_run(&gathered, desc.tensor_type, name)
+}
+
+fn load_norm(mmap: &Mmap, gguf: &GgufFile, name: &str, len: usize) -> Result<Vec<f32>, String> {
+    let desc = find_tensor(gguf, name)?;
+    let bytes = tensor_all_bytes(mmap, desc)?;
+    match desc.tensor_type {
+        GgufTensorType::F32 => {
+            if bytes.len() != len * 4 {
+                return Err(format!("{name}: length mismatch"));
+            }
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect())
+        }
+        GgufTensorType::F16 => {
+            if bytes.len() != len * 2 {
+                return Err(format!("{name}: length mismatch"));
+            }
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| half_to_f32(u16::from_le_bytes(c.try_into().unwrap())))
+                .collect())
+        }
+        other => Err(format!("{name}: expected F32/F16 norm, got {other:?}")),
+    }
+}
+
+fn half_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 1) as u32;
+    let exp = ((bits >> 10) & 0x1f) as u32;
+    let frac = (bits & 0x3ff) as u32;
+    let f = match (exp, frac) {
+        (0, 0) => sign << 31,
+        (0, _) => {
+            // subnormal
+            let mut e = 127 - 15 + 1;
+            let mut m = frac;
+            while m & 0x400 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            (sign << 31) | ((e as u32) << 23) | ((m as u32 & 0x3ff) << 13)
+        }
+        (0x1f, 0) => (sign << 31) | 0x7f80_0000,
+        (0x1f, _) => (sign << 31) | 0x7fc0_0000,
+        _ => (sign << 31) | ((exp + 127 - 15) << 23) | (frac << 13),
+    };
+    f32::from_bits(f)
+}
+
+/// A shard-direct TP node: its layer slices, its head slice, and the
+/// replicated output norm. Workers never hold the embedding table (the
+/// master ships the embedded hidden state with each token).
+pub struct TpNodeShard {
+    pub shard: TpShard,
+    pub geometry: TpShardGeometry,
+    pub output_norm: Vec<f32>,
+    pub head: TpHeadShard,
+}
+
+/// Build one shard directly from the GGUF. Peak memory is the shard plus a
+/// single tensor slice. The head slice comes from `output.weight` when the
+/// model is untied, otherwise from the same rows of the embedding table;
+/// both end up Q8-swizzled unless `fast` is false (parity runs keep the
+/// row-major class... the head stays as loaded either way; parity compares
+/// like against like).
+pub fn load_tp_shard_direct(
+    path: &Path,
+    config: &LlamaModelConfig,
+    gguf: &GgufFile,
+    shares: &[usize],
+    shard_idx: usize,
+    fast: bool,
+) -> Result<TpNodeShard, String> {
+    if config.expert_count != 0 {
+        return Err("tensor parallelism covers dense models only".to_owned());
+    }
+    let geo = shard_geometry(config, shares, shard_idx)?;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+    let emb = config.embedding_length;
+    let head_dim = config.head_dim;
+
+    let q0 = geo.q_start * head_dim;
+    let q1 = (geo.q_start + geo.q_heads) * head_dim;
+    let k0 = geo.kv_start * head_dim;
+    let k1 = (geo.kv_start + geo.kv_heads) * head_dim;
+    let f0 = geo.ffn_start;
+    let f1 = geo.ffn_start + geo.ffn_len;
+
+    let mut layers = Vec::with_capacity(config.block_count);
+    for i in 0..config.block_count {
+        layers.push(LlamaLayerWeights {
+            attention_norm: load_norm(&mmap, gguf, &format!("blk.{i}.attn_norm.weight"), emb)?,
+            wq: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_q.weight"), emb, q0, q1)?,
+            wk: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_k.weight"), emb, k0, k1)?,
+            wav: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_v.weight"), emb, k0, k1)?,
+            wq_bias: None,
+            wk_bias: None,
+            wav_bias: None,
+            wo: load_cols_direct(
+                &mmap,
+                gguf,
+                &format!("blk.{i}.attn_output.weight"),
+                emb,
+                config.attention_output_width,
+                q0,
+                q1,
+            )?,
+            ffn_norm: load_norm(&mmap, gguf, &format!("blk.{i}.ffn_norm.weight"), emb)?,
+            ffn: LlamaFfnWeights::Dense {
+                w1: load_rows_direct(&mmap, gguf, &format!("blk.{i}.ffn_gate.weight"), emb, f0, f1)?,
+                w3: load_rows_direct(&mmap, gguf, &format!("blk.{i}.ffn_up.weight"), emb, f0, f1)?,
+                w2: load_cols_direct(
+                    &mmap,
+                    gguf,
+                    &format!("blk.{i}.ffn_down.weight"),
+                    emb,
+                    config.feed_forward_length,
+                    f0,
+                    f1,
+                )?,
+            },
+        });
+    }
+
+    let mut shard_config = config.clone();
+    shard_config.attention_head_count = geo.q_heads;
+    shard_config.attention_head_count_kv = geo.kv_heads;
+    shard_config.attention_output_width = geo.q_heads * head_dim;
+    shard_config.kv_width = geo.kv_heads * head_dim;
+    shard_config.feed_forward_length = geo.ffn_len;
+
+    let cache = LlamaKvCache::new(
+        shard_config.block_count,
+        shard_config.context_length,
+        shard_config.kv_width,
+    );
+    let ws = LlamaWorkspace::new(&shard_config);
+    let mut shard = TpShard {
+        config: shard_config,
+        layers,
+        cache,
+        ws,
+    };
+    if fast {
+        swizzle_shards(std::slice::from_mut(&mut shard));
+    }
+
+    let output_norm = load_norm(&mmap, gguf, "output_norm.weight", emb)?;
+
+    // Head slice: untied models slice output.weight rows; tied models slice
+    // the embedding table rows and re-quantize to the fast head layout.
+    let untied = gguf.tensors.iter().any(|t| t.name == "output.weight");
+    let head_matrix = if untied {
+        // Untied: head rows are complete rows of output.weight, so the
+        // sliced matmul is bit-identical to the reference full scan.
+        let mut m = load_rows_direct(
+            &mmap,
+            gguf,
+            "output.weight",
+            emb,
+            geo.head_row_start,
+            geo.head_row_start + geo.head_rows,
+        )?;
+        if fast {
+            swizzle_matrix(&mut m, geo.head_rows, emb);
+        }
+        TpHeadMatrix::Quantized(m)
+    } else {
+        // Tied head: our embedding rows, dequantized. Parity runs keep them
+        // f32 (matches the reference fold); fast runs requantize to the
+        // production Q8-swizzled head layout.
+        let table = load_rows_direct(
+            &mmap,
+            gguf,
+            "token_embd.weight",
+            emb,
+            geo.head_row_start,
+            geo.head_row_start + geo.head_rows,
+        )?;
+        let f32_rows = dequantize_matrix_f32(&table, geo.head_rows, emb)?;
+        if fast {
+            let row_major =
+                crate::q8::quantize_f32_matrix_to_q8_0_blocks(&f32_rows, geo.head_rows, emb);
+            if geo.head_rows.is_multiple_of(4) {
+                TpHeadMatrix::Quantized(QuantizedMatrix::Q8_0Swizzled1x4(
+                    crate::model::Q8_0Swizzled1x4Matrix {
+                        swizzled_1x4: crate::q8::swizzle_q8_0_1x4(&row_major, geo.head_rows, emb / 32),
+                        page_aligned_1x4: None,
+                        rows: geo.head_rows,
+                        cols: emb,
+                    },
+                ))
+            } else {
+                TpHeadMatrix::Quantized(QuantizedMatrix::Q8_0(row_major))
+            }
+        } else {
+            TpHeadMatrix::F32(f32_rows)
+        }
+    };
+    let head = TpHeadShard {
+        matrix: head_matrix,
+        row_start: geo.head_row_start,
+        rows: geo.head_rows,
+        logits: vec![0.0; geo.head_rows],
+    };
+
+    Ok(TpNodeShard {
+        shard,
+        geometry: geo,
+        output_norm,
+        head,
+    })
+}
+
+fn dequantize_matrix_f32(
+    matrix: &QuantizedMatrix,
+    rows: usize,
+    cols: usize,
+) -> Result<Vec<f32>, String> {
+    let mut out = vec![0.0_f32; rows * cols];
+    match matrix {
+        QuantizedMatrix::Q8_0(blocks) => {
+            for (i, block) in blocks.iter().enumerate() {
+                let scale = block.scale_f32();
+                for (o, &v) in out[i * 32..(i + 1) * 32].iter_mut().zip(block.values()) {
+                    *o = scale * v as f32;
+                }
+            }
+        }
+        QuantizedMatrix::Q4_0(blocks) => {
+            for (i, block) in blocks.iter().enumerate() {
+                let scale = block.scale_f32();
+                let values = block.unpack_values();
+                for (o, &v) in out[i * 32..(i + 1) * 32].iter_mut().zip(values.iter()) {
+                    *o = scale * v as f32;
+                }
+            }
+        }
+        QuantizedMatrix::Q6K(blocks) => {
+            let mut buf = [0.0_f32; 256];
+            for (i, block) in blocks.iter().enumerate() {
+                block.dequantize(&mut buf);
+                out[i * 256..(i + 1) * 256].copy_from_slice(&buf);
+            }
+        }
+        _ => return Err("dequantize: unsupported matrix class".to_owned()),
+    }
+    Ok(out)
+}
+
+/// Dequantize a full embedding table to f32 (master-side lookup table).
+pub fn load_embeddings_f32(
+    path: &Path,
+    gguf: &GgufFile,
+    vocab: usize,
+    emb: usize,
+) -> Result<Vec<f32>, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+    let desc = find_tensor(gguf, "token_embd.weight")?;
+    match desc.tensor_type {
+        GgufTensorType::F32 | GgufTensorType::F16 => {
+            load_norm(&mmap, gguf, "token_embd.weight", vocab * emb)
+        }
+        GgufTensorType::Q4_0 | GgufTensorType::Q8_0 | GgufTensorType::Q6K => {
+            let matrix = load_rows_direct(&mmap, gguf, "token_embd.weight", emb, 0, vocab)?;
+            dequantize_matrix_f32(&matrix, vocab, emb)
+        }
+        other => Err(format!("token_embd: unsupported type {other:?}")),
+    }
 }
