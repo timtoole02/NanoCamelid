@@ -33,6 +33,41 @@ const SUM_MAGIC: u32 = 0x5450_5355; // "TPSU"
 const ARGMAX_MAGIC: u32 = 0x5450_414D; // "TPAM"
 const SHUTDOWN_POS: u32 = u32::MAX;
 
+include!(concat!(env!("OUT_DIR"), "/webui_assets.rs"));
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+}
+
+fn normalized_model_id(filename: &str) -> String {
+    let stem = filename.strip_suffix(".gguf").unwrap_or(filename).to_lowercase();
+    let mut out = String::new();
+    let mut last_us = false;
+    for c in stem.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            last_us = false;
+        } else if !last_us {
+            out.push('_');
+            last_us = true;
+        }
+    }
+    out.trim_matches('_').to_owned()
+}
+
+fn write_json_response(client: &mut TcpStream, status: &str, body: &str) {
+    let _ = write!(
+        client,
+        "HTTP/1.1 {status}
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{body}",
+        body.len()
+    );
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -215,6 +250,18 @@ fn run() -> Result<(), String> {
             let prompt = args.next().ok_or("missing prompt")?;
             let max_tokens: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or(64);
             run_reference(&model_path, &prompt, max_tokens)
+        }
+        Some("master-serve") => {
+            let model_path = args.next().ok_or("missing model path")?;
+            let workers: Vec<String> = args
+                .next()
+                .ok_or("missing worker list")?
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .collect();
+            let shares = parse_shares(&args.next().ok_or("missing shares")?)?;
+            let port: u16 = args.next().and_then(|v| v.parse().ok()).unwrap_or(8090);
+            run_master_serve(&model_path, &workers, &shares, port)
         }
         _ => Err("usage: cluster_tp_node worker|master-chat|reference ...".to_owned()),
     }
@@ -551,4 +598,561 @@ fn run_master(
     );
     println!("result: PASS");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// master-serve: a minimal single-session HTTP chat front end over the TP
+// cluster. GET / returns an embedded chat page; POST /chat {"prompt": "..."}
+// streams the reply as chunked plaintext while the cluster decodes. One
+// request at a time; each request is a fresh single-turn chat (positions
+// restart at 0, which is safe: every attended KV row is rewritten first).
+
+fn http_chunk<W: Write>(w: &mut W, data: &[u8]) -> Result<(), String> {
+    write!(w, "{:x}\r\n", data.len()).map_err(|e| e.to_string())?;
+    w.write_all(data).map_err(|e| e.to_string())?;
+    w.write_all(b"\r\n").map_err(|e| e.to_string())?;
+    w.flush().map_err(|e| e.to_string())
+}
+
+const CHAT_PAGE: &str = r#"<!doctype html><meta charset="utf-8">
+<title>NanoCamelid TP cluster</title>
+<style>body{font-family:system-ui;max-width:720px;margin:2rem auto;padding:0 1rem}
+textarea{width:100%;height:4rem;font-size:1rem}button{font-size:1rem;padding:.4rem 1.2rem;margin:.5rem 0}
+#out{white-space:pre-wrap;border:1px solid #ccc;border-radius:8px;padding:1rem;min-height:6rem;font-size:1.05rem}
+#meta{color:#666;font-size:.85rem}</style>
+<h2>Llama 3 70B — three Raspberry Pi 5s, tensor parallel</h2>
+<textarea id="p">Explain in one sentence why the sky appears blue during the day.</textarea><br>
+<button id="go">Generate</button> <span id="meta"></span>
+<div id="out"></div>
+<script>
+const go=document.getElementById('go'),out=document.getElementById('out'),meta=document.getElementById('meta');
+go.onclick=async()=>{go.disabled=true;out.textContent='';meta.textContent='prompt ingest (about 1.5s per prompt token)...';
+const t0=Date.now();let n=0;
+try{const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:document.getElementById('p').value,max_tokens:96})});
+const rd=r.body.getReader(),dec=new TextDecoder();
+while(true){const{done,value}=await rd.read();if(done)break;const s=dec.decode(value);out.textContent+=s;n+=1;
+meta.textContent=`streaming — ${((Date.now()-t0)/1000).toFixed(0)}s elapsed`;}
+meta.textContent=`done in ${((Date.now()-t0)/1000).toFixed(0)}s`;}catch(e){meta.textContent='error: '+e;}
+go.disabled=false;};
+</script>"#;
+
+#[allow(clippy::too_many_lines)]
+fn run_master_serve(
+    model_path: &str,
+    worker_addrs: &[String],
+    shares: &[usize],
+    port: u16,
+) -> Result<(), String> {
+    let base = load_base(model_path)?;
+    if shares.len() != worker_addrs.len() + 1 {
+        return Err("share count must be workers + 1".to_owned());
+    }
+    println!("Loading shard 0 of {shares:?} (direct)...");
+    let mut node = tp::load_tp_shard_direct(
+        Path::new(model_path),
+        &base.config,
+        &base.gguf,
+        shares,
+        0,
+        !parity_mode(),
+    )?;
+    let emb = base.config.embedding_length;
+    println!("Loading embedding table...");
+    let embeddings = tp::load_embeddings_f32(
+        Path::new(model_path),
+        &base.gguf,
+        base.config.vocab_size,
+        emb,
+    )?;
+
+    let mut streams = Vec::with_capacity(worker_addrs.len());
+    for (i, addr) in worker_addrs.iter().enumerate() {
+        let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
+        stream.set_nodelay(true).map_err(|e| e.to_string())?;
+        let (idx, blocks) = read_msg(&mut stream, HELLO_MAGIC, &mut [])?;
+        if idx as usize != i + 1 || blocks as usize != base.config.block_count {
+            return Err(format!("worker {addr} hello mismatch"));
+        }
+        println!("worker {addr} ok (shard {idx})");
+        streams.push(stream);
+    }
+
+    let mut rt = tp::TpRuntime::new(&base.config);
+    let mut ws = inference::LlamaWorkspace::new(&base.config);
+    let mut head_ws = inference::LlamaWorkspace::new(&base.config);
+    let mut remote = vec![0.0_f32; emb];
+
+    let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|e| e.to_string())?;
+    println!("master-serve listening on http://0.0.0.0:{port}/ (single session)");
+    println!("result: SERVE_READY");
+
+    for client in listener.incoming() {
+        let Ok(mut client) = client else { continue };
+        let _ = client.set_nodelay(true);
+        // Minimal HTTP request parse: header block, then Content-Length body.
+        let mut buf = Vec::new();
+        let mut tmp = [0_u8; 4096];
+        let header_end = loop {
+            let Ok(n) = client.read(&mut tmp) else { break None };
+            if n == 0 {
+                break None;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break Some(idx + 4);
+            }
+            if buf.len() > 65536 {
+                break None;
+            }
+        };
+        let Some(header_end) = header_end else { continue };
+        let header_text = String::from_utf8_lossy(&buf[..header_end]).to_string();
+        let first_line = header_text.lines().next().unwrap_or("").to_owned();
+
+        let mut parts = first_line.split_whitespace();
+        let method = parts.next().unwrap_or("");
+        let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+        let model_file = Path::new(model_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| model_path.to_owned());
+
+        if method == "OPTIONS" {
+            let _ = write!(client, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+            continue;
+        }
+        if method == "GET" {
+            match path {
+                "/v1/health" => {
+                    write_json_response(&mut client, "200 OK", &format!(
+                        "{{\"ok\":true,\"status\":\"ok\",\"engine\":\"nanocamelid\",\"active_model_id\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true,\"model_dir\":\"cluster\",\"model_ready\":true}}",
+                        id = json_escape(&model_file)));
+                    continue;
+                }
+                "/api/capabilities" => {
+                    write_json_response(&mut client, "200 OK", &format!(
+                        "{{\"engine\":\"nanocamelid\",\"model_compatibility\":[{{\"id\":\"{nid}\",\"family\":\"llama_bpe_decoder\",\"quantization\":\"q4_0\",\"status\":\"supported\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"Llama 3 70B across 3 Pi 5s\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
+                        nid = normalized_model_id(&model_file)));
+                    continue;
+                }
+                "/v1/models" => {
+                    write_json_response(&mut client, "200 OK", &format!(
+                        "{{\"object\":\"list\",\"data\":[{{\"id\":\"{id}\",\"object\":\"model\",\"created\":0,\"owned_by\":\"nanocamelid\"}}]}}",
+                        id = json_escape(&model_file)));
+                    continue;
+                }
+                "/api/models/current" => {
+                    write_json_response(&mut client, "200 OK", &format!(
+                        "{{\"id\":\"{id}\",\"name\":\"Llama 3 70B Instruct (3-Pi cluster)\",\"filename\":\"{id}\",\"model_path\":\"{p}\",\"path\":\"{p}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":2}}}},\"quant\":\"Q4_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
+                        id = json_escape(&model_file), p = json_escape(model_path)));
+                    continue;
+                }
+                "/api/models/local" => {
+                    write_json_response(&mut client, "200 OK", &format!(
+                        "{{\"models\":[{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":0,\"quant\":\"Q4_0\",\"family\":\"llama\",\"status\":\"ready\"}}]}}",
+                        id = json_escape(&model_file), p = json_escape(model_path)));
+                    continue;
+                }
+                p if p.starts_with("/api/") || p.starts_with("/metrics") => {
+                    write_json_response(&mut client, "200 OK", "[]");
+                    continue;
+                }
+                _ => {
+                    // Static webui assets with SPA index fallback.
+                    let rel = path.trim_start_matches('/');
+                    let hit = WEBUI_ASSETS
+                        .iter()
+                        .find(|&&(p, _, _)| p == rel)
+                        .or_else(|| WEBUI_ASSETS.iter().find(|&&(p, _, _)| p == "index.html"));
+                    if let Some(&(_, mime, data)) = hit {
+                        let _ = write!(
+                            client,
+                            "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            data.len()
+                        );
+                        let _ = client.write_all(data);
+                    } else {
+                        let body = CHAT_PAGE.as_bytes();
+                        let _ = write!(
+                            client,
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = client.write_all(body);
+                    }
+                    continue;
+                }
+            }
+        }
+        let is_completion = method == "POST"
+            && (path == "/v1/chat/completions" || path == "/v1/completions");
+        if !(is_completion || (method == "POST" && path == "/chat")) {
+            let _ = write!(
+                client,
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            continue;
+        }
+
+        let content_length = header_text
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.eq_ignore_ascii_case("content-length")
+                    .then(|| v.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0)
+            .min(65536);
+        let mut body = buf[header_end..].to_vec();
+        while body.len() < content_length {
+            let Ok(n) = client.read(&mut tmp) else { break };
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&tmp[..n]);
+        }
+        let body_text = String::from_utf8_lossy(&body).to_string();
+        // Tolerant JSON-ish field extraction (no JSON dep in this crate).
+        let prompt = if is_completion {
+            extract_last_content(&body_text)
+                .or_else(|| extract_json_string(&body_text, "prompt"))
+                .unwrap_or_else(|| "Say hello in one sentence.".to_owned())
+        } else {
+            extract_json_string(&body_text, "prompt")
+                .unwrap_or_else(|| "Say hello in one sentence.".to_owned())
+        };
+        // The cluster decodes ~0.7 tok/s; cap replies so the UI never waits
+        // more than a couple of minutes.
+        let max_tokens = extract_json_usize(&body_text, "max_tokens").unwrap_or(96).min(96);
+
+        if is_completion {
+            let mut collected = String::new();
+            let result = serve_completion_collect(
+                &base,
+                &mut node,
+                &embeddings,
+                &mut streams,
+                &mut rt,
+                &mut ws,
+                &mut head_ws,
+                &mut remote,
+                &prompt,
+                max_tokens,
+                &mut collected,
+            );
+            match result {
+                Ok((pt, ct)) => {
+                    let json = format!(
+                        "{{\"id\":\"chatcmpl-nano-tp\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"{model}\",\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":{pt},\"completion_tokens\":{ct},\"total_tokens\":{tt}}}}}",
+                        model = json_escape(&model_file),
+                        content = json_escape(&collected),
+                        tt = pt + ct
+                    );
+                    write_json_response(&mut client, "200 OK", &json);
+                }
+                Err(err) => {
+                    eprintln!("completion failed: {err}");
+                    write_json_response(
+                        &mut client,
+                        "500 Internal Server Error",
+                        &format!("{{\"error\":\"{}\"}}", json_escape(&err)),
+                    );
+                    return Err(err);
+                }
+            }
+            continue;
+        }
+
+        let _ = write!(
+            client,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+        );
+
+        match serve_one_request(
+            &base,
+            &mut node,
+            &embeddings,
+            &mut streams,
+            &mut rt,
+            &mut ws,
+            &mut head_ws,
+            &mut remote,
+            &mut client,
+            &prompt,
+            max_tokens,
+        ) {
+            Ok(tokens_per_sec) => {
+                let _ = http_chunk(
+                    &mut client,
+                    format!("\n\n[{tokens_per_sec:.2} tok/s across 3 Pis]").as_bytes(),
+                );
+            }
+            Err(err) => {
+                eprintln!("request failed: {err}");
+                let _ = http_chunk(&mut client, format!("\n[error: {err}]").as_bytes());
+                let _ = http_chunk(&mut client, b"");
+                return Err(err);
+            }
+        }
+        let _ = http_chunk(&mut client, b"");
+    }
+    Ok(())
+}
+
+fn extract_json_string(body: &str, key: &str) -> Option<String> {
+    let pat = format!("\"{key}\"");
+    let start = body.find(&pat)? + pat.len();
+    let rest = &body[start..];
+    let open = rest.find('"')? + 1;
+    let mut out = String::new();
+    let mut chars = rest[open..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+/// Last "content" string in the request body (the newest chat message).
+fn extract_last_content(body: &str) -> Option<String> {
+    let mut last = None;
+    let mut search = 0usize;
+    while let Some(rel) = body[search..].find("\"content\"") {
+        let abs = search + rel + "\"content\"".len();
+        if let Some(s) = extract_json_string(&body[abs - "\"content\"".len()..], "content") {
+            last = Some(s);
+        }
+        search = abs;
+    }
+    last
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_completion_collect(
+    base: &LoadedBase,
+    node: &mut tp::TpNodeShard,
+    embeddings: &[f32],
+    streams: &mut Vec<TcpStream>,
+    rt: &mut tp::TpRuntime,
+    ws: &mut inference::LlamaWorkspace,
+    head_ws: &mut inference::LlamaWorkspace,
+    remote: &mut Vec<f32>,
+    prompt: &str,
+    max_tokens: usize,
+    collected: &mut String,
+) -> Result<(usize, usize), String> {
+    let emb = base.config.embedding_length;
+    let prompt_tokens = encode_chat(base, prompt)?;
+    let budget = base.config.context_length.saturating_sub(prompt_tokens.len() + 2);
+    let max_tokens = max_tokens.min(budget);
+    let mut generated: Vec<u32> = Vec::new();
+    let mut pos = 0usize;
+    let mut token = *prompt_tokens.first().ok_or("empty prompt")?;
+    let total_prompt = prompt_tokens.len();
+    let mut step = 0usize;
+    loop {
+        let emb_start = token as usize * emb;
+        ws.hidden.copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        for stream in streams.iter_mut() {
+            write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
+        }
+        {
+            let streams_cell = RefCell::new(&mut *streams);
+            let remote_cell = RefCell::new(&mut *remote);
+            tp::tp_forward_token_reduced(
+                &mut ws.hidden,
+                std::slice::from_mut(&mut node.shard),
+                rt,
+                pos,
+                base.options,
+                |partial, layer_idx, phase| {
+                    let mut ss = streams_cell.borrow_mut();
+                    let mut r = remote_cell.borrow_mut();
+                    let tag = reduce_tag(layer_idx, phase);
+                    for stream in ss.iter_mut() {
+                        let (got, _) = read_msg(stream, PARTIAL_MAGIC, *r)?;
+                        if got != tag {
+                            return Err("reduce tag mismatch".to_owned());
+                        }
+                        for (local, &rem) in partial.iter_mut().zip(r.iter()) {
+                            *local += rem;
+                        }
+                    }
+                    for stream in ss.iter_mut() {
+                        write_msg(stream, SUM_MAGIC, tag, 0, partial)?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        let (mut best_idx, mut best_logit) = tp::head_shard_argmax(
+            &mut node.head,
+            &ws.hidden,
+            &node.output_norm,
+            rt,
+            head_ws,
+            base.config.rms_norm_epsilon,
+            base.options,
+        );
+        for stream in streams.iter_mut() {
+            let (idx, bits) = read_msg(stream, ARGMAX_MAGIC, &mut [])?;
+            let logit = f32::from_bits(bits);
+            if logit > best_logit {
+                best_logit = logit;
+                best_idx = idx;
+            }
+        }
+        pos += 1;
+        step += 1;
+        if step < total_prompt {
+            token = prompt_tokens[step];
+            continue;
+        }
+        if is_stop(base, best_idx) {
+            break;
+        }
+        generated.push(best_idx);
+        token = best_idx;
+        if generated.len() >= max_tokens || pos >= base.config.context_length {
+            break;
+        }
+    }
+    *collected = base.tokenizer.decode(&generated, true).unwrap_or_default();
+    println!("served completion: {} prompt, {} generated", total_prompt, generated.len());
+    Ok((total_prompt, generated.len()))
+}
+
+fn extract_json_usize(body: &str, key: &str) -> Option<usize> {
+    let pat = format!("\"{key}\"");
+    let start = body.find(&pat)? + pat.len();
+    let digits: String = body[start..]
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_one_request(
+    base: &LoadedBase,
+    node: &mut tp::TpNodeShard,
+    embeddings: &[f32],
+    streams: &mut Vec<TcpStream>,
+    rt: &mut tp::TpRuntime,
+    ws: &mut inference::LlamaWorkspace,
+    head_ws: &mut inference::LlamaWorkspace,
+    remote: &mut Vec<f32>,
+    client: &mut TcpStream,
+    prompt: &str,
+    max_tokens: usize,
+) -> Result<f64, String> {
+    let emb = base.config.embedding_length;
+    let prompt_tokens = encode_chat(base, prompt)?;
+    let budget = base.config.context_length.saturating_sub(prompt_tokens.len() + 2);
+    let max_tokens = max_tokens.min(budget);
+    let mut generated: Vec<u32> = Vec::new();
+    let mut printed = 0usize;
+    let mut pos = 0usize;
+    let mut token = *prompt_tokens.first().ok_or("empty prompt")?;
+    let total_prompt = prompt_tokens.len();
+    let mut step = 0usize;
+    let mut decode_started: Option<Instant> = None;
+
+    loop {
+        let emb_start = token as usize * emb;
+        ws.hidden
+            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        for stream in streams.iter_mut() {
+            write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
+        }
+        {
+            let streams_cell = RefCell::new(&mut *streams);
+            let remote_cell = RefCell::new(&mut *remote);
+            tp::tp_forward_token_reduced(
+                &mut ws.hidden,
+                std::slice::from_mut(&mut node.shard),
+                rt,
+                pos,
+                base.options,
+                |partial, layer_idx, phase| {
+                    let mut ss = streams_cell.borrow_mut();
+                    let mut r = remote_cell.borrow_mut();
+                    let tag = reduce_tag(layer_idx, phase);
+                    for stream in ss.iter_mut() {
+                        let (got, _) = read_msg(stream, PARTIAL_MAGIC, *r)?;
+                        if got != tag {
+                            return Err("reduce tag mismatch".to_owned());
+                        }
+                        for (local, &rem) in partial.iter_mut().zip(r.iter()) {
+                            *local += rem;
+                        }
+                    }
+                    for stream in ss.iter_mut() {
+                        write_msg(stream, SUM_MAGIC, tag, 0, partial)?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        let (mut best_idx, mut best_logit) = tp::head_shard_argmax(
+            &mut node.head,
+            &ws.hidden,
+            &node.output_norm,
+            rt,
+            head_ws,
+            base.config.rms_norm_epsilon,
+            base.options,
+        );
+        for stream in streams.iter_mut() {
+            let (idx, bits) = read_msg(stream, ARGMAX_MAGIC, &mut [])?;
+            let logit = f32::from_bits(bits);
+            if logit > best_logit {
+                best_logit = logit;
+                best_idx = idx;
+            }
+        }
+
+        pos += 1;
+        step += 1;
+        if step < total_prompt {
+            token = prompt_tokens[step];
+            continue;
+        }
+        if step == total_prompt {
+            decode_started = Some(Instant::now());
+        }
+        if is_stop(base, best_idx) {
+            break;
+        }
+        generated.push(best_idx);
+        // Stream newly stable decoded text to the browser.
+        if let Ok(text) = base.tokenizer.decode(&generated, true)
+            && text.len() > printed
+        {
+            let _ = http_chunk(client, text[printed..].as_bytes());
+            printed = text.len();
+        }
+        token = best_idx;
+        if generated.len() >= max_tokens || pos >= base.config.context_length {
+            break;
+        }
+    }
+    let secs = decode_started
+        .map(|s| s.elapsed().as_secs_f64())
+        .unwrap_or(1.0);
+    println!(
+        "served: {} prompt tokens, {} generated, {:.3} tok/s",
+        total_prompt,
+        generated.len(),
+        generated.len() as f64 / secs
+    );
+    Ok(generated.len() as f64 / secs)
 }
