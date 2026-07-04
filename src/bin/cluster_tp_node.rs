@@ -60,12 +60,207 @@ fn write_json_response(client: &mut TcpStream, status: &str, body: &str) {
         client,
         "HTTP/1.1 {status}
 Content-Type: application/json
+Access-Control-Allow-Origin: *
 Content-Length: {}
 Connection: close
 
 {body}",
         body.len()
     );
+}
+
+/// Host identity for the cluster topology page: (cpu_model, threads, platform).
+fn host_specs() -> (String, usize, String) {
+    let platform = std::fs::read_to_string("/proc/device-tree/model")
+        .map(|s| s.trim_end_matches('\0').trim().to_owned())
+        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH));
+    let cpu_model = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("model name") || l.starts_with("Model"))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|v| v.trim().to_owned())
+        })
+        .unwrap_or_else(|| std::env::consts::ARCH.to_owned());
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    (cpu_model, threads, platform)
+}
+
+fn health_json(model_file: &str) -> String {
+    format!(
+        "{{\"ok\":true,\"status\":\"ok\",\"engine\":\"nanocamelid\",\"active_model_id\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true,\"model_dir\":\"cluster\",\"model_ready\":true}}",
+        id = json_escape(model_file)
+    )
+}
+
+fn capabilities_json(model_file: &str, role_note: &str) -> String {
+    let (cpu_model, threads, platform) = host_specs();
+    format!(
+        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{{\"id\":\"{nid}\",\"family\":\"llama_bpe_decoder\",\"quantization\":\"q4_0\",\"status\":\"supported\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"{note}\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
+        cpu = json_escape(&cpu_model),
+        plat = json_escape(&platform),
+        nid = normalized_model_id(model_file),
+        note = json_escape(role_note),
+    )
+}
+
+/// Best-effort LAN address of this node (the interface that reaches `peer`).
+fn local_ip_toward(peer: &str) -> String {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .ok()
+        .and_then(|s| {
+            s.connect(peer).ok()?;
+            s.local_addr().ok()
+        })
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_owned())
+}
+
+struct TopoNode {
+    id: &'static str,
+    name: String,
+    host: String,
+    port: u16,
+    roles: &'static str,
+    command: String,
+    x: i32,
+    y: i32,
+}
+
+fn cluster_import_json(
+    model_path: &str,
+    model_file: &str,
+    worker_addrs: &[String],
+    shares: &[usize],
+    serve_port: u16,
+) -> String {
+    let master_ip = local_ip_toward(
+        worker_addrs.first().map(String::as_str).unwrap_or("8.8.8.8:80"),
+    );
+    let mut nodes = vec![TopoNode {
+        id: "camelid-tp-master",
+        name: format!("master · shard 0 (share {})", shares.first().copied().unwrap_or(0)),
+        host: master_ip.clone(),
+        port: serve_port,
+        roles: "\"coordinator\",\"gateway\",\"model_host\"",
+        command: format!(
+            "cluster_tp_node master-serve {model_path} {} {} {serve_port}",
+            worker_addrs.join(","),
+            shares.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+        ),
+        x: 120,
+        y: 200,
+    }];
+    for (i, addr) in worker_addrs.iter().enumerate() {
+        let host = addr.split(':').next().unwrap_or(addr).to_owned();
+        let ids: &'static str = match i {
+            0 => "camelid-tp-worker-1",
+            _ => "camelid-tp-worker-2",
+        };
+        nodes.push(TopoNode {
+            id: ids,
+            name: format!(
+                "worker · shard {} (share {})",
+                i + 1,
+                shares.get(i + 1).copied().unwrap_or(0)
+            ),
+            host,
+            port: 8181,
+            roles: "\"worker\",\"model_host\"",
+            command: format!(
+                "cluster_tp_node worker {model_path} 0.0.0.0:5921 {} {}",
+                i + 1,
+                shares.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+            ),
+            x: 460,
+            y: 80 + (i as i32) * 240,
+        });
+    }
+    let node_json: Vec<String> = nodes
+        .iter()
+        .map(|n| {
+            format!(
+                "{{\"id\":\"{id}\",\"display_name\":\"{name}\",\"node_type\":\"linux\",\"hostname\":\"{host}\",\"ip_address\":\"{host}\",\"port\":{port},\"connection_method\":\"manual\",\"roles\":[{roles}],\"os\":\"linux\",\"arch\":\"aarch64\",\"cpu_cores\":4,\"ram_gb\":16,\"model_paths\":[\"{mp}\"],\"worker_command\":\"{cmd}\",\"layout_x\":{x},\"layout_y\":{y},\"notes\":\"{model} tensor-parallel\"}}",
+                id = n.id,
+                name = json_escape(&n.name),
+                host = json_escape(&n.host),
+                port = n.port,
+                roles = n.roles,
+                mp = json_escape(model_path),
+                cmd = json_escape(&n.command),
+                x = n.x,
+                y = n.y,
+                model = json_escape(model_file),
+            )
+        })
+        .collect();
+    let mut connections = Vec::new();
+    for i in 0..worker_addrs.len() {
+        connections.push(format!(
+            "{{\"source_node_id\":\"camelid-tp-master\",\"target_node_id\":\"camelid-tp-worker-{}\",\"label\":\"TP all-reduce\"}}",
+            i + 1
+        ));
+    }
+    format!(
+        "[{{\"import_id\":\"tp-{nid}-{sh}\",\"nodes\":[{nodes}],\"connections\":[{conns}]}}]",
+        nid = normalized_model_id(model_file),
+        sh = shares.iter().map(usize::to_string).collect::<Vec<_>>().join("-"),
+        nodes = node_json.join(","),
+        conns = connections.join(","),
+    )
+}
+
+/// Tiny read-only status endpoint every cluster node exposes so the web
+/// UI's topology page can see it as online with real specs. Runs on its own
+/// thread; serves /v1/health and /api/capabilities with permissive CORS.
+fn spawn_status_listener(port: u16, model_file: String, role_note: String) {
+    std::thread::spawn(move || {
+        let Ok(listener) = TcpListener::bind(("0.0.0.0", port)) else {
+            eprintln!("status listener: port {port} unavailable");
+            return;
+        };
+        println!("status listener on :{port}");
+        for client in listener.incoming() {
+            let Ok(mut client) = client else { continue };
+            let mut buf = [0_u8; 2048];
+            let Ok(n) = client.read(&mut buf) else { continue };
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let first = req.lines().next().unwrap_or("");
+            let body = if first.starts_with("GET /v1/health") {
+                health_json(&model_file)
+            } else if first.starts_with("GET /api/capabilities") {
+                capabilities_json(&model_file, &role_note)
+            } else if first.starts_with("OPTIONS") {
+                let _ = write!(
+                    client,
+                    "HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Headers: *
+Connection: close
+
+"
+                );
+                continue;
+            } else {
+                String::from("[]")
+            };
+            let _ = write!(
+                client,
+                "HTTP/1.1 200 OK
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Content-Length: {}
+Connection: close
+
+{}",
+                body.len(),
+                body
+            );
+        }
+    });
 }
 
 fn main() -> ExitCode {
@@ -353,6 +548,16 @@ fn run_worker(
         !parity_mode(),
     )?;
     let emb = base.config.embedding_length;
+
+    let status_model = Path::new(model_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| model_path.to_owned());
+    spawn_status_listener(
+        8181,
+        status_model,
+        format!("TP worker shard {shard_idx} of {shares:?}"),
+    );
 
     let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
     println!("tp worker (shard {shard_idx}) listening on {bind}");
@@ -723,16 +928,39 @@ fn run_master_serve(
         }
         if method == "GET" {
             match path {
+                "/cluster-import.json" => {
+                    write_json_response(
+                        &mut client,
+                        "200 OK",
+                        &cluster_import_json(model_path, &model_file, worker_addrs, shares, port),
+                    );
+                    continue;
+                }
+                "/__camelid/cluster/discover" => {
+                    let import = cluster_import_json(model_path, &model_file, worker_addrs, shares, port);
+                    write_json_response(
+                        &mut client,
+                        "200 OK",
+                        &format!("{{\"available\":true,\"devices\":{}}}",
+                            // devices = the import's node list
+                            import
+                                .split("\"nodes\":")
+                                .nth(1)
+                                .and_then(|s| s.split(",\"connections\"").next())
+                                .unwrap_or("[]")),
+                    );
+                    continue;
+                }
                 "/v1/health" => {
-                    write_json_response(&mut client, "200 OK", &format!(
-                        "{{\"ok\":true,\"status\":\"ok\",\"engine\":\"nanocamelid\",\"active_model_id\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true,\"model_dir\":\"cluster\",\"model_ready\":true}}",
-                        id = json_escape(&model_file)));
+                    write_json_response(&mut client, "200 OK", &health_json(&model_file));
                     continue;
                 }
                 "/api/capabilities" => {
-                    write_json_response(&mut client, "200 OK", &format!(
-                        "{{\"engine\":\"nanocamelid\",\"model_compatibility\":[{{\"id\":\"{nid}\",\"family\":\"llama_bpe_decoder\",\"quantization\":\"q4_0\",\"status\":\"supported\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"Llama 3 70B across 3 Pi 5s\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
-                        nid = normalized_model_id(&model_file)));
+                    write_json_response(
+                        &mut client,
+                        "200 OK",
+                        &capabilities_json(&model_file, "TP master (coordinator + web UI)"),
+                    );
                     continue;
                 }
                 "/v1/models" => {
@@ -783,6 +1011,43 @@ fn run_master_serve(
                     continue;
                 }
             }
+        }
+        if method == "POST" && path == "/__camelid/cluster/probe" {
+            let content_length = header_text
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0)
+                .min(4096);
+            let mut body = buf[header_end..].to_vec();
+            while body.len() < content_length {
+                let Ok(n) = client.read(&mut tmp) else { break };
+                if n == 0 {
+                    break;
+                }
+                body.extend_from_slice(&tmp[..n]);
+            }
+            let text = String::from_utf8_lossy(&body).to_string();
+            let host = extract_json_string(&text, "host").unwrap_or_default();
+            let probe_port = extract_json_usize(&text, "port").unwrap_or(8181) as u16;
+            let started = Instant::now();
+            let reachable = std::net::TcpStream::connect_timeout(
+                &format!("{host}:{probe_port}")
+                    .parse()
+                    .unwrap_or_else(|_| "127.0.0.1:1".parse().unwrap()),
+                Duration::from_millis(1500),
+            )
+            .is_ok();
+            let latency = started.elapsed().as_secs_f64() * 1000.0;
+            write_json_response(
+                &mut client,
+                "200 OK",
+                &format!("{{\"reachable\":{reachable},\"latencyMs\":{latency:.1}}}"),
+            );
+            continue;
         }
         let is_completion = method == "POST"
             && (path == "/v1/chat/completions" || path == "/v1/completions");
