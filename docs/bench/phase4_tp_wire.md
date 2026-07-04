@@ -1,0 +1,120 @@
+# Phase 4 P4.2 — two-node tensor parallelism over TCP
+
+Date: 2026-07-03
+Branch: feat/tp-wire (base c37f5e5)
+Nodes: camelid2 (master, shard 0) + camelid3 (worker, shard 1) over GbE.
+`cluster_tp_node worker|master-chat|reference`; both nodes load the GGUF
+and keep their shard; embeddings replicated, head on the master; context
+capped 512, PROMPT_SHORT, greedy.
+
+Design: `tp_forward_token_reduced` calls a reducer at the two per-layer
+reduction points; the wire reducer exchanges partials with a fixed
+shard0+shard1 summation order, so both nodes hold bit-identical
+activations (no cross-node drift by construction — the only numeric
+difference vs a single process is the same reduction-order association
+P4.1 characterized).
+
+## Parity gate (hard) — PASS on the wire
+
+Token-identical to the like-for-like single-process reference (same
+row-major weights, scalar kernel pinned via `NANOCAMELID_TP_PARITY=1`):
+- Mac loopback 1B Q8: TOKEN_IDENTICAL
+- camelid2+camelid3 GbE, 1B Q4: TOKEN_IDENTICAL (32 tokens)
+- camelid2+camelid3 GbE, 3B Q4: TOKEN_IDENTICAL (32 tokens)
+
+## Speed (per-token breakdown from the master JSON)
+
+| row | kernels | ref tok/s | TP-2 tok/s | speedup | local layers ms | sync ms | head ms |
+|---|---|---|---|---|---|---|---|
+| 1B Q4 | scalar | 6.17 | 7.54 | 1.22x | 42.9 | 9.6 | 84.3 |
+| 1B Q4 | default | 6.88 | 7.71 | 1.12x | 32.8 | 14.6 | 84.3 |
+| 3B Q4 | scalar | 2.91 | 3.96 | **1.36x** | 113.3 | 21.7 | 126.2 |
+| 3B Q4 | default | 3.05 | 4.07 | **1.33x** | 102.8 | 21.7 | 126.2 |
+
+- **Sync cost is exactly what Phase 0 predicted**: 56 reduce round trips ×
+  ~12KB on the 3B row = 21.7ms/token measured (predicted 15–30ms). The
+  wire is NOT the TP blocker on GbE at 2 nodes.
+- The layer compute halves as designed (3B: ~205ms single → 103ms/node).
+- **The replicated head dominates**: 126ms/token on 3B (row-major tied
+  head, unsharded). Without it the 3B step would be ~125ms ≈ 1.6x.
+
+## Honest gaps (the P4.3 work list)
+
+1. **Kernel class**: TP shards slice row-major blocks, so the fast
+   swizzled 1x4 kernels are unavailable — production single-node (5.33
+   tok/s on 3B) still beats TP-2 (4.07). Shard-then-swizzle (build the
+   shard, then swizzle its matrices) closes this; nothing about sharding
+   forbids it.
+2. **Head sharding**: split the LM head row-parallel (vocab slices) and
+   merge argmax/top-k — turns 126ms into ~63ms + one 8-byte exchange.
+3. **Third node**: 8 KV heads / 3 is uneven (3-3-2); the shard builder
+   requires even splits today.
+4. Prompt ingest is token-by-token through TP (no batch TP path); fine
+   for decode receipts, slow for long prompts.
+
+## Verdict vs the conductor
+
+Two-node TP is **real and parity-clean on the wire**: 1.33–1.36x on the
+3B row against a like-for-like baseline, with the all-reduce tax measured
+at ~10% of the token budget. The ≥1.8x three-node promotion gate is not
+yet testable (item 3), and beating the *production* single-node number
+requires items 1–2. All three are mechanical, none require new protocol
+work, and the sync headroom says 3-node TP stays wire-feasible.
+
+## P4.3 fast lane (same session): shard-then-swizzle + sharded head
+
+Two additions, both in `tp.rs`:
+- `swizzle_shards`: converts shard matrices to the swizzled 1x4 layout
+  after slicing, so the production SDOT kernels apply to TP.
+- `build_tp_head_shards` / `head_shard_argmax`: row-parallel Q8-swizzled
+  LM head; each node computes its vocab slice and sends (argmax, logit) —
+  12 bytes — with ties resolved to the lower row range, reproducing the
+  full-scan first-max rule.
+
+Fast mode is the default; `NANOCAMELID_TP_PARITY=1` keeps the scalar
+row-major parity configuration.
+
+### Fast TP-2 vs the production single-node path (camelid2+camelid3, GbE)
+
+| row | single node (nanocamelid chat) | fast TP-2 | speedup | layers | sync | head |
+|---|---|---|---|---|---|---|
+| 1B Q4_0 | 13.42 tok/s | **20.44** | **1.52x** | 28.3ms | 10.2ms | 11.7ms |
+| 3B Q4_0 | 5.33 tok/s | **8.80** | **1.65x** | 77.0ms | 21.6ms | 17.3ms |
+
+The 3B decoded text matches the production single-node stream word for
+word over the full 48 tokens. Token-level near-tie flips remain possible
+in principle (the P4.1 reduction-order drift class); per-row
+token-identical receipts stay the promotion gate.
+
+The conductor's campaign success criteria — "3B: 2.22 → 5+ tok/s, 1B:
+4.18 → 8+ tok/s" — are both **exceeded at two nodes** (8.80 / 20.44),
+even against the re-based fast baselines the criteria never anticipated.
+
+### Still open for the 3-node run
+- Uneven KV-head splits (8/3 = 3-3-2) in `build_tp_shards`.
+- Stop-token handling in the TP decode loop (benches run fixed-length).
+- camelid1's PSU (a capped straggler gates every all-reduce).
+
+## Weighted TP-3 (shard-direct): the capacity-row payoff
+
+`load_tp_shard_direct` slices every tensor at the block-byte level from the
+GGUF (peak memory = the shard; Q4_0/Q8_0/Q6_K), the master ships the
+embedded hidden with each token (workers never load embeddings), and
+per-shard KV-head shares let a slow node hold a small slice. Master
+camelid1 (2-core cap) takes 2 of 8 KV heads; camelid2/camelid3 take 3
+each. camelid3's resident webui had to be stopped to fit its 13.8G shard
+(user-approved; its nanoserve-stage service kept running).
+
+| row | baseline | weighted TP-3 | speedup |
+|---|---|---|---|
+| 3B Q4_0 | 5.33 (production single node) | **10.21 tok/s** | **1.91x — the campaign's ≥1.8x three-node gate: MET** |
+| 70B Q4_0 | 0.160 (three-Pi pipeline, capped master) | **0.685 tok/s** | **4.3x** |
+
+70B master breakdown: local compute 1402.7ms (the capped 2/8 straggler —
+a healthy PSU directly buys ~2x here), sync 93.3ms (160 reduces × 32KB ×
+2 workers ≈ 6% of the token), head merge 30.1ms. Parity: loopback TP-3
+token-identical; 3B and 70B decoded text matches the production/reference
+streams over the full runs.
+
+Pipeline sums stage times; tensor parallelism takes the max. That is the
+entire 70B story: 6.46s/token became 1.53s/token on identical hardware.

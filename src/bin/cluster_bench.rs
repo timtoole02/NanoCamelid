@@ -8,6 +8,13 @@ const DEFAULT_PORT: &str = "5005";
 const DEFAULT_ITERATIONS: usize = 1000;
 const WARMUP_ITERATIONS: usize = 50;
 
+// NANOCAMELID_BENCH_NODELAY=0 leaves Nagle's algorithm enabled on both ends so
+// the TCP_NODELAY contribution can be A/B measured; any other value (or unset)
+// keeps the production TCP_NODELAY behavior.
+fn nodelay_enabled() -> bool {
+    env::var("NANOCAMELID_BENCH_NODELAY").map_or(true, |value| value != "0")
+}
+
 fn main() -> io::Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
@@ -63,7 +70,7 @@ fn run_server(port: &str, vector_elements: usize) -> io::Result<()> {
 
     for stream in listener.incoming() {
         let mut stream = stream?;
-        stream.set_nodelay(true)?;
+        stream.set_nodelay(nodelay_enabled())?;
         println!("client connected from {}", stream.peer_addr()?);
 
         let mut buffer = vec![0_u8; payload_bytes_len(vector_elements)];
@@ -99,8 +106,12 @@ fn run_client(
     let addr = format!("{server_ip}:{port}");
     println!("connecting to {addr}");
     let mut stream = TcpStream::connect(&addr)?;
-    stream.set_nodelay(true)?;
-    println!("connected with TCP_NODELAY");
+    let nodelay = nodelay_enabled();
+    stream.set_nodelay(nodelay)?;
+    println!(
+        "connected with TCP_NODELAY={}",
+        if nodelay { "on" } else { "off" }
+    );
 
     let bytes = payload_bytes(vector_elements);
     let mut rx_buffer = vec![0_u8; bytes.len()];
@@ -149,7 +160,8 @@ fn print_metrics(mut timings: Vec<Duration>, vector_elements: usize, warmup_iter
     println!("p95_ms: {p95_ms:.3}");
     println!("max_ms: {max_ms:.3}");
     println!(
-        "json: {{\"benchmark\":\"cluster-latency\",\"vector_elements\":{},\"payload_each_way_bytes\":{},\"warmup_iterations\":{},\"iterations\":{},\"min_ms\":{:.6},\"avg_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"max_ms\":{:.6}}}",
+        "json: {{\"benchmark\":\"cluster-latency\",\"tcp_nodelay\":{},\"vector_elements\":{},\"payload_each_way_bytes\":{},\"warmup_iterations\":{},\"iterations\":{},\"min_ms\":{:.6},\"avg_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"max_ms\":{:.6}}}",
+        nodelay_enabled(),
         vector_elements,
         payload_bytes_len(vector_elements),
         warmup_iterations,

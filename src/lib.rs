@@ -5,3 +5,4 @@ pub mod model;
 pub mod q8;
 pub mod speculative;
 pub mod tokenizer;
+pub mod tp;

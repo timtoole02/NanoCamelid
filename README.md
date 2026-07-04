@@ -147,6 +147,23 @@ arguments and environment controls. The stable v0.1 command contract is in
 compatibility and validation workflows, but they are not the primary product
 front door.
 
+## Cluster Decode
+
+Models that do not fit one Pi run across the cluster; models that do fit
+can run faster on it. Two lanes, both token-parity-gated:
+
+- **Pipeline** (`cluster_tcp_smoke master-chat`): contiguous layer ranges
+  per node. Capacity lane — Mixtral 8x7B Q4_0 decodes at ~0.79 tok/s on
+  three Pi 5s.
+- **Tensor parallel** (`cluster_tp_node`): every node computes every layer
+  on its weighted shard (per-node KV-head shares suit uneven hardware),
+  loading only its slice from the GGUF. Speed lane — Llama 3.2 3B Q4_0
+  reaches ~10.2 tok/s (1.9x one Pi); Llama 3 70B Q4_0 reaches ~0.69 tok/s
+  (4.3x the pipeline lane).
+
+The full scoreboard with per-run breakdowns lives in
+[docs/bench/CAPABILITY_TABLE.md](docs/bench/CAPABILITY_TABLE.md).
+
 ## Documentation
 
 - [docs/MODEL_CATALOG.md](docs/MODEL_CATALOG.md): supported model rows and next
