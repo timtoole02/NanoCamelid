@@ -654,6 +654,28 @@ pub fn rms_norm(out: &mut [f32], x: &[f32], weight: &[f32], epsilon: f32) {
     }
 }
 
+/// Qwen3/Gemma3 per-head QK-norm: RMSNorm each `head_dim`-wide slice of `vec`
+/// in place with `weight` (length == head_dim). `vec.len()` must be a whole
+/// number of heads laid out contiguously (Q: attention_head_count heads,
+/// K: attention_head_count_kv heads; across the whole batch during prefill).
+/// Applied to Q and K after the QKV projection and BEFORE RoPE, matching the
+/// reference Qwen3/Gemma3 forward pass. Callers skip it when the architecture
+/// carries no q_norm/k_norm tensors.
+pub fn apply_qk_norm(vec: &mut [f32], weight: &[f32], head_dim: usize, epsilon: f32) {
+    debug_assert_eq!(weight.len(), head_dim);
+    debug_assert_eq!(vec.len() % head_dim, 0);
+    for head in vec.chunks_exact_mut(head_dim) {
+        let mut sum = 0.0_f32;
+        for &v in head.iter() {
+            sum += v * v;
+        }
+        let scale = 1.0_f32 / (sum / head_dim as f32 + epsilon).sqrt();
+        for (h, &w) in head.iter_mut().zip(weight) {
+            *h = *h * scale * w;
+        }
+    }
+}
+
 pub fn apply_rope(
     data: &mut [f32],
     pos: usize,
@@ -3433,6 +3455,18 @@ pub fn run_layer_range_batch(
         );
         trace_record("batch.wv", stage_started.elapsed());
 
+        // Qwen3/Gemma3 per-head QK-norm across the batch (before RoPE). Each
+        // token's heads are contiguous, so a single per-head pass over the
+        // whole q/k buffer is correct. Skipped for archs without the tensors.
+        let stage_started = Instant::now();
+        if let Some(qn) = &layer.wq_norm {
+            apply_qk_norm(&mut ws.q[..q_len], qn, config.head_dim, config.rms_norm_epsilon);
+        }
+        if let Some(kn) = &layer.wk_norm {
+            apply_qk_norm(&mut ws.k[..kv_len], kn, config.head_dim, config.rms_norm_epsilon);
+        }
+        trace_record("batch.qk_norm", stage_started.elapsed());
+
         let stage_started = Instant::now();
         for token_idx in 0..batch_size {
             let pos = start_pos + token_idx;
@@ -4115,6 +4149,27 @@ pub fn run_layer_range(
             add_bias(&mut ws.v, bias);
         }
         trace_record("decode.wv", stage_started.elapsed());
+
+        // Qwen3/Gemma3 per-head QK-norm (before RoPE; skipped for archs
+        // without q_norm/k_norm tensors).
+        let stage_started = Instant::now();
+        if let Some(qn) = &layer.wq_norm {
+            apply_qk_norm(
+                &mut ws.q[..config.attention_output_width],
+                qn,
+                config.head_dim,
+                config.rms_norm_epsilon,
+            );
+        }
+        if let Some(kn) = &layer.wk_norm {
+            apply_qk_norm(
+                &mut ws.k[..config.kv_width],
+                kn,
+                config.head_dim,
+                config.rms_norm_epsilon,
+            );
+        }
+        trace_record("decode.qk_norm", stage_started.elapsed());
 
         // Apply RoPE
         let stage_started = Instant::now();
@@ -4925,6 +4980,8 @@ mod tests {
             wq_bias: None,
             wk_bias: None,
             wav_bias: None,
+            wq_norm: None,
+            wk_norm: None,
             wo: zero_q8_matrix(config.embedding_length, config.embedding_length),
             ffn_norm: vec![1.0; config.embedding_length],
             ffn: LlamaFfnWeights::Dense {

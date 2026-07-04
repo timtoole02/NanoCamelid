@@ -168,6 +168,10 @@ pub fn build_tp_shards(
                 wq_bias: slice_bias(&layer.wq_bias, q0, q1),
                 wk_bias: slice_bias(&layer.wk_bias, k0, k1),
                 wav_bias: slice_bias(&layer.wav_bias, k0, k1),
+                // QK-norm weights are per-head_dim and apply identically to
+                // every head, so each shard keeps the full weight.
+                wq_norm: layer.wq_norm.clone(),
+                wk_norm: layer.wk_norm.clone(),
                 wo: slice_cols(&layer.wo, emb, config.attention_output_width, q0, q1)?,
                 ffn_norm: layer.ffn_norm.clone(),
                 ffn: LlamaFfnWeights::Dense {
@@ -821,6 +825,14 @@ pub fn load_tp_shard_direct(
     if config.expert_count != 0 {
         return Err("tensor parallelism covers dense models only".to_owned());
     }
+    // Fail closed: the wire TP shard loader does not yet carry per-head
+    // QK-norm, so it must refuse Qwen3/Gemma3 rather than silently drop it.
+    if gguf.tensors.iter().any(|t| t.name.ends_with(".attn_q_norm.weight")) {
+        return Err(
+            "wire tensor parallelism does not yet support QK-norm architectures (qwen3/gemma3)"
+                .to_owned(),
+        );
+    }
     let geo = shard_geometry(config, shares, shard_idx)?;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
@@ -844,6 +856,9 @@ pub fn load_tp_shard_direct(
             wq_bias: None,
             wk_bias: None,
             wav_bias: None,
+            // QK-norm archs are rejected above; wire TP is llama-family only.
+            wq_norm: None,
+            wk_norm: None,
             wo: load_cols_direct(
                 &mmap,
                 gguf,

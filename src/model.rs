@@ -236,6 +236,11 @@ pub struct LlamaLayerWeights {
     pub wq_bias: Option<Vec<f32>>,
     pub wk_bias: Option<Vec<f32>>,
     pub wav_bias: Option<Vec<f32>>,
+    /// Qwen3/Gemma3 per-head QK-norm weights (length = head_dim). None for
+    /// architectures (llama, qwen2, mistral, smollm, ...) that do not carry
+    /// them, in which case QK-norm is skipped.
+    pub wq_norm: Option<Vec<f32>>,
+    pub wk_norm: Option<Vec<f32>>,
     pub wo: QuantizedMatrix,
     pub ffn_norm: Vec<f32>,
     pub ffn: LlamaFfnWeights,
@@ -659,6 +664,9 @@ fn load_layer_weights(
     let wq_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_q.bias"))?;
     let wk_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_k.bias"))?;
     let wav_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_v.bias"))?;
+    // Qwen3/Gemma3 carry per-head QK-norm weights; other archs do not.
+    let wq_norm = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_q_norm.weight"))?;
+    let wk_norm = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_k_norm.weight"))?;
     let wo = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_output.weight"))?;
 
     let ffn_norm = load_f32_or_f16(mmap, gguf, &format!("blk.{i}.ffn_norm.weight"))?;
@@ -727,6 +735,8 @@ fn load_layer_weights(
         wq_bias,
         wk_bias,
         wav_bias,
+        wq_norm,
+        wk_norm,
         wo,
         ffn_norm,
         ffn,
