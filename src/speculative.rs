@@ -518,6 +518,8 @@ mod tests {
             wq_bias: None,
             wk_bias: None,
             wav_bias: None,
+            wq_norm: None,
+            wk_norm: None,
             wo: zero_q8_matrix(config.embedding_length, config.embedding_length),
             ffn_norm: vec![1.0; config.embedding_length],
             ffn: crate::model::LlamaFfnWeights::Dense {
