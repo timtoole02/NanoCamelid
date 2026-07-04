@@ -194,9 +194,15 @@ pub fn build_tp_shards(
     Ok(shards)
 }
 
-/// One tensor-parallel decode step over `hidden` (updated in place). Every
-/// shard computes every layer on its slice; the two per-layer reductions are
-/// in-process sums here.
+/// Which of the two per-layer reductions a reducer callback is serving.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReducePhase {
+    Attention,
+    Ffn,
+}
+
+/// One tensor-parallel decode step over `hidden` (updated in place) with
+/// in-process reductions: the local shards ARE all the shards.
 pub fn tp_forward_token(
     hidden: &mut [f32],
     shards: &mut [TpShard],
@@ -204,6 +210,26 @@ pub fn tp_forward_token(
     pos: usize,
     options: LlamaRuntimeOptions,
 ) -> Result<(), String> {
+    tp_forward_token_reduced(hidden, shards, rt, pos, options, |_, _, _| Ok(()))
+}
+
+/// One tensor-parallel decode step where the local shards hold only part of
+/// the model: after the local partial sums are accumulated into the buffer,
+/// `reduce` is called with (partial, layer_idx, phase) and must leave the
+/// GLOBAL sum in the buffer (e.g. by exchanging partials over TCP). The
+/// summation order across shards must be fixed cluster-wide so every node
+/// computes bit-identical activations.
+pub fn tp_forward_token_reduced<R>(
+    hidden: &mut [f32],
+    shards: &mut [TpShard],
+    rt: &mut TpRuntime,
+    pos: usize,
+    options: LlamaRuntimeOptions,
+    mut reduce: R,
+) -> Result<(), String>
+where
+    R: FnMut(&mut [f32], usize, ReducePhase) -> Result<(), String>,
+{
     let block_count = shards[0].config.block_count;
     let emb = shards[0].config.embedding_length;
     let epsilon = shards[0].config.rms_norm_epsilon;
@@ -323,6 +349,7 @@ pub fn tp_forward_token(
                 *accum += partial;
             }
         }
+        reduce(hidden, layer_idx, ReducePhase::Attention)?;
         for (value, &residual) in hidden.iter_mut().zip(rt.residual.iter()) {
             *value += residual;
         }
@@ -382,6 +409,7 @@ pub fn tp_forward_token(
                 *accum += partial;
             }
         }
+        reduce(hidden, layer_idx, ReducePhase::Ffn)?;
         for (value, &residual) in hidden.iter_mut().zip(rt.residual.iter()) {
             *value += residual;
         }
