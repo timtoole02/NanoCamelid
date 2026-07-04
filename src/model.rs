@@ -531,7 +531,7 @@ impl LlamaWeights {
 
         let mut layers = Vec::with_capacity(config.block_count);
         for i in 0..config.block_count {
-            layers.push(load_layer_weights(&mmap, gguf, i)?);
+            layers.push(load_layer_weights(&mmap, gguf, config, i)?);
         }
 
         Ok(Self {
@@ -637,7 +637,7 @@ impl LlamaWeights {
 
         let mut layers = Vec::with_capacity(end_layer - start_layer);
         for i in start_layer..end_layer {
-            layers.push(load_layer_weights(&mmap, gguf, i)?);
+            layers.push(load_layer_weights(&mmap, gguf, config, i)?);
         }
 
         Ok(DistributedLlamaWeights {
@@ -651,16 +651,68 @@ impl LlamaWeights {
     }
 }
 
+fn gguf_has_tensor(gguf: &GgufFile, name: &str) -> bool {
+    gguf.tensors.iter().any(|tensor| tensor.name == name)
+}
+
+/// Take output rows [r0, r1) of a row-major quantized matrix. Splits fused
+/// tensors (Phi-3 `attn_qkv` -> Q/K/V, fused `ffn_up` -> gate/up) on whole-row
+/// (= whole-block) boundaries, so no sub-block arithmetic is involved.
+fn slice_matrix_rows(
+    matrix: &QuantizedMatrix,
+    cols: usize,
+    r0: usize,
+    r1: usize,
+) -> Result<QuantizedMatrix, String> {
+    let k = cols / QK_K_BLOCK_SIZE; // K-quant super-block = 256 values
+    let s = cols / 32; // legacy block = 32 values
+    fn take<T: Clone>(v: &[T], bpr: usize, r0: usize, r1: usize) -> Vec<T> {
+        v[r0 * bpr..r1 * bpr].to_vec()
+    }
+    Ok(match matrix {
+        QuantizedMatrix::Q4K(b) => QuantizedMatrix::Q4K(take(b, k, r0, r1)),
+        QuantizedMatrix::Q5K(b) => QuantizedMatrix::Q5K(take(b, k, r0, r1)),
+        QuantizedMatrix::Q6K(b) => QuantizedMatrix::Q6K(take(b, k, r0, r1)),
+        QuantizedMatrix::Q2K(b) => QuantizedMatrix::Q2K(take(b, k, r0, r1)),
+        QuantizedMatrix::Q3K(b) => QuantizedMatrix::Q3K(take(b, k, r0, r1)),
+        QuantizedMatrix::Q8K(b) => QuantizedMatrix::Q8K(take(b, k, r0, r1)),
+        QuantizedMatrix::Q8_0(b) => QuantizedMatrix::Q8_0(take(b, s, r0, r1)),
+        QuantizedMatrix::Q4_0(b) => QuantizedMatrix::Q4_0(take(b, s, r0, r1)),
+        QuantizedMatrix::Q4_1(b) => QuantizedMatrix::Q4_1(take(b, s, r0, r1)),
+        QuantizedMatrix::Q5_0(b) => QuantizedMatrix::Q5_0(take(b, s, r0, r1)),
+        QuantizedMatrix::Q5_1(b) => QuantizedMatrix::Q5_1(take(b, s, r0, r1)),
+        QuantizedMatrix::IQ4NL(b) => QuantizedMatrix::IQ4NL(take(b, s, r0, r1)),
+        _ => return Err("fused-tensor split unsupported for swizzled/f32 matrices".to_owned()),
+    })
+}
+
 fn load_layer_weights(
     mmap: &Mmap,
     gguf: &GgufFile,
+    config: &LlamaModelConfig,
     layer_idx: usize,
 ) -> Result<LlamaLayerWeights, String> {
     let i = layer_idx;
     let attention_norm = load_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_norm.weight"))?;
-    let wq = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_q.weight"))?;
-    let wk = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_k.weight"))?;
-    let wav = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_v.weight"))?;
+    // Phi-3 ships a fused blk.{i}.attn_qkv.weight (output rows = Q | K | V)
+    // instead of separate attn_q/attn_k/attn_v; split its output rows.
+    let (wq, wk, wav) = if gguf_has_tensor(gguf, &format!("blk.{i}.attn_qkv.weight")) {
+        let qkv = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_qkv.weight"))?;
+        let q = config.attention_output_width;
+        let kv = config.kv_width;
+        let emb = config.embedding_length;
+        (
+            slice_matrix_rows(&qkv, emb, 0, q)?,
+            slice_matrix_rows(&qkv, emb, q, q + kv)?,
+            slice_matrix_rows(&qkv, emb, q + kv, q + 2 * kv)?,
+        )
+    } else {
+        (
+            load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_q.weight"))?,
+            load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_k.weight"))?,
+            load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_v.weight"))?,
+        )
+    };
     let wq_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_q.bias"))?;
     let wk_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_k.bias"))?;
     let wav_bias = load_optional_f32_or_f16(mmap, gguf, &format!("blk.{i}.attn_v.bias"))?;
@@ -718,6 +770,16 @@ fn load_layer_weights(
             router,
             expert_used_count,
             experts,
+        }
+    } else if !gguf_has_tensor(gguf, &format!("blk.{i}.ffn_gate.weight")) {
+        // Phi-3 fuses gate+up into ffn_up (output rows = gate | up).
+        let fused = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?;
+        let ff = config.feed_forward_length;
+        let emb = config.embedding_length;
+        LlamaFfnWeights::Dense {
+            w1: slice_matrix_rows(&fused, emb, 0, ff)?,
+            w3: slice_matrix_rows(&fused, emb, ff, 2 * ff)?,
+            w2: load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_down.weight"))?,
         }
     } else {
         LlamaFfnWeights::Dense {
@@ -817,44 +879,54 @@ pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Res
             &[config.embedding_length],
             &format!("layer {layer_idx} attention norm"),
         )?;
-        require_descriptor_matrix_shape(
-            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.weight"))?,
-            config.embedding_length,
-            config.attention_output_width,
-            &format!("layer {layer_idx} attention q"),
-        )?;
-        if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.bias")) {
-            require_descriptor_shape(
-                bias,
-                &[config.attention_output_width],
-                &format!("layer {layer_idx} attention q bias"),
+        if gguf_has_tensor(gguf, &format!("blk.{layer_idx}.attn_qkv.weight")) {
+            // Phi-3 fused QKV: one tensor of Q|K|V output rows.
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_qkv.weight"))?,
+                config.embedding_length,
+                config.attention_output_width + 2 * config.kv_width,
+                &format!("layer {layer_idx} fused attention qkv"),
             )?;
-        }
-        require_descriptor_matrix_shape(
-            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_k.weight"))?,
-            config.embedding_length,
-            config.kv_width,
-            &format!("layer {layer_idx} attention k"),
-        )?;
-        if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_k.bias")) {
-            require_descriptor_shape(
-                bias,
-                &[config.kv_width],
-                &format!("layer {layer_idx} attention k bias"),
+        } else {
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.weight"))?,
+                config.embedding_length,
+                config.attention_output_width,
+                &format!("layer {layer_idx} attention q"),
             )?;
-        }
-        require_descriptor_matrix_shape(
-            load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_v.weight"))?,
-            config.embedding_length,
-            config.kv_width,
-            &format!("layer {layer_idx} attention v"),
-        )?;
-        if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_v.bias")) {
-            require_descriptor_shape(
-                bias,
-                &[config.kv_width],
-                &format!("layer {layer_idx} attention v bias"),
+            if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_q.bias")) {
+                require_descriptor_shape(
+                    bias,
+                    &[config.attention_output_width],
+                    &format!("layer {layer_idx} attention q bias"),
+                )?;
+            }
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_k.weight"))?,
+                config.embedding_length,
+                config.kv_width,
+                &format!("layer {layer_idx} attention k"),
             )?;
+            if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_k.bias")) {
+                require_descriptor_shape(
+                    bias,
+                    &[config.kv_width],
+                    &format!("layer {layer_idx} attention k bias"),
+                )?;
+            }
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_v.weight"))?,
+                config.embedding_length,
+                config.kv_width,
+                &format!("layer {layer_idx} attention v"),
+            )?;
+            if let Ok(bias) = load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_v.bias")) {
+                require_descriptor_shape(
+                    bias,
+                    &[config.kv_width],
+                    &format!("layer {layer_idx} attention v bias"),
+                )?;
+            }
         }
         require_descriptor_matrix_shape(
             load_tensor_desc(gguf, &format!("blk.{layer_idx}.attn_output.weight"))?,
@@ -916,6 +988,20 @@ pub fn validate_model_tensors(gguf: &GgufFile, config: &LlamaModelConfig) -> Res
                     &format!("layer {layer_idx} expert {expert_idx} ffn down"),
                 )?;
             }
+        } else if !gguf_has_tensor(gguf, &format!("blk.{layer_idx}.ffn_gate.weight")) {
+            // Phi-3 fused gate/up: ffn_up holds both, 2x the feed-forward rows.
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_up.weight"))?,
+                config.embedding_length,
+                2 * config.feed_forward_length,
+                &format!("layer {layer_idx} fused ffn gate/up"),
+            )?;
+            require_descriptor_matrix_shape(
+                load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_down.weight"))?,
+                config.feed_forward_length,
+                config.embedding_length,
+                &format!("layer {layer_idx} ffn down"),
+            )?;
         } else {
             require_descriptor_matrix_shape(
                 load_tensor_desc(gguf, &format!("blk.{layer_idx}.ffn_gate.weight"))?,

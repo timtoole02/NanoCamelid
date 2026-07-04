@@ -35,7 +35,8 @@ an `aliases` field for rows that currently resolve from those aliases.
 | `Q4_0` | Supported; scalar plus default Pi fast paths | Multiple Pi-smoked rows exist |
 | `Q4_1` | Supported; scalar reference path | Pi-smoked through Gemma 3 1B IT tensor mix |
 | `Q5_0`, `Q5_1` | Supported; scalar reference path | Q5_1 is covered by the Qwen2.5-Coder 0.5B Q5_K_M row |
-| `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K` | Supported; scalar reference path | Q5_K has row-specific Pi smoke coverage; Q2_K/Q3_K/Q4_K still need row claims |
+| `Q4_K`, `Q5_K` | Supported; scalar plus default Pi SDOT path | Q4_K exercised by the Llama 3.2 3B, Llama 3 8B, and Phi-3-mini rows; Q5_K by the Qwen2.5-Coder 0.5B row (NEON is bit-exact vs scalar) |
+| `Q2_K`, `Q3_K` | Supported; scalar reference path | Q2_K/Q3_K still need row-specific claims |
 | `Q6_K` | Supported; scalar plus Pi SDOT path | Strand 14B capped-context smoke exists |
 | `Q8_K` | Supported; scalar/NEON/SDOT Q8 dot path | Needs row-specific Pi smoke before promotion |
 | `IQ4_NL` | Supported; scalar reference path | Needs row-specific Pi smoke before promotion |
@@ -68,6 +69,7 @@ These rows have been loaded and generated on Raspberry Pi-class ARM64 hardware.
 | Qwen2.5-Coder 32B Instruct | `qwen2.5-coder-32b-instruct-q4_0.gguf` | `qwen2` | Supported cluster/large-model smoke | Three-Pi smoke produced matching code-text tokens at about `0.56 tok/sec` |
 | Llama 3 8B Instruct | `bartowski/Meta-Llama-3-8B-Instruct-GGUF`, `Meta-Llama-3-8B-Instruct-Q4_K_M.gguf` | `llama` | Supported single-Pi | `inspect` reports `ready`; untied output head; `llama3_instruct` renderer. Single Pi 5: raw generation of `"Paris, ..."` and chat reply `"Red, Yellow, Blue"` (stops at EOS); about `2.5 tok/sec` decode, peak RSS about `9.1 GiB` (fits 16 GB; exercises the Q4_K NEON kernel). Same `llama` path as the 3B and 70B rows. |
 | Llama 3 70B Instruct | `Meta-Llama-3-70B-Instruct.Q4_0.gguf` | `llama` | Supported three-Pi cluster chat | `inspect` reports `ready`; missing GGUF `tokenizer.ggml.pre` is accepted for Llama BPE metadata. Three-Pi weighted tensor parallelism (`cluster_tp_node`, shares 2-3-3, shard-direct loading) decodes at about `0.685 tok/sec` (32 tokens); the pipeline path (`master-chat`, rebalanced `0..22`, `22..52`, `52..80` split) measures `0.160 tok/sec` at current head. Receipts in `docs/bench/phase4_tp_wire.md`. Single-Pi support is not claimed. |
+| Phi-3-mini-4k Instruct | `microsoft/Phi-3-mini-4k-instruct-gguf`, `Phi-3-mini-4k-instruct-q4.gguf` | `phi3` | Supported single-node | `inspect` reports `ready`; the fused `blk.*.attn_qkv.weight` and `blk.*.ffn_up.weight` tensors are split into `wq`/`wk`/`wv` and gate/up on quant-block boundaries at load; `phi3` renderer/template; `<\|user\|>`/`<\|end\|>`/`<\|assistant\|>` markers (USER_DEFINED) tokenize to special ids `32010`/`32007`/`32001`; `<\|end\|>`=`32007` is in the EOG set so chat stops. Validated on M4 (aarch64 NEON, the same SDOT path the Pi runs): raw generation of `"Paris."` and chat reply listing the three primary colors, stopping cleanly at `<\|end\|>` (47 tokens, `generation_status: ok`), about `15.6 tok/sec` decode; exercises the Q4_K NEON kernel. Pi smoke pending (nodes offline this session). Receipt in `docs/bench/phi3_fused_qkv.md`. |
 
 ## Likely Compatible, Test Next
 
@@ -95,7 +97,7 @@ Do not present these as supported until the listed runtime gaps are closed.
 | --- | --- | --- |
 | Mixtral / MoE Mistral broader support | One exact Mixtral Q4_0 row has supported three-Pi cluster chat coverage. Broader Mixtral-family and single-node support are not promoted yet. | Add parity checks against a reference runtime, optimize or lazy-load expert weights for single-node memory pressure, and broaden prompt coverage beyond the current short cluster smoke |
 | Broader Gemma family | Gemma 3 1B IT Q4_0 is supported; broader Gemma rows are not claimed yet | Add row-specific smokes for each exact GGUF, especially larger Gemma rows with soft-capping or alternate tensor mixes |
-| Phi family | Phi-3.5 Mini Instruct Q4_0 inspects, but generation is not supported yet because the tested GGUF uses fused `blk.*.attn_qkv.weight` tensors | Add fused-QKV load/runtime splitting and parity tests before promoting |
+| Broader Phi family | Phi-3-mini-4k Instruct Q4 is supported single-node (see the supported table); Phi-3.5, Phi-3-medium, and longer-context variants are not row-claimed yet | Run `inspect` plus a stop-clean chat smoke on each exact GGUF; the fused-QKV/gate-up split and USER_DEFINED special-token handling are already in place |
 | LFM2 family | LFM2 700M/1.2B/2.6B inspect enough metadata and tokenizer state to identify the rows, but generation is not supported yet because the architecture includes shortconv/hybrid blocks and lacks the dense Llama-style `output_norm.weight` contract | Add LFM2 shortconv/hybrid runtime support, then rerun the full support matrix |
 
 ## Promotion Checklist
