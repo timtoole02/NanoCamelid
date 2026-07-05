@@ -3517,8 +3517,21 @@ pub fn prefill_pass_batch(
     if batch_size == 0 {
         return;
     }
-    debug_assert!(batch_size <= ws.max_batch);
-    debug_assert!(start_pos + batch_size <= config.context_length);
+    // Release-checked: these guard out-of-bounds writes/reads into the batch
+    // workspace and KV cache. A violation is a caller bug (callers must clamp
+    // the batch to ws.max_batch and the remaining context); fail loudly rather
+    // than corrupt memory / emit silently-wrong logits.
+    assert!(
+        batch_size <= ws.max_batch,
+        "prefill batch {batch_size} exceeds workspace max_batch {}",
+        ws.max_batch
+    );
+    assert!(
+        start_pos + batch_size <= config.context_length,
+        "prefill end {} exceeds context_length {}",
+        start_pos + batch_size,
+        config.context_length
+    );
 
     for (token_idx, &token_id) in token_ids.iter().enumerate() {
         let emb_start = token_id as usize * config.embedding_length;
@@ -3554,9 +3567,26 @@ pub fn run_layer_range_batch(
     if batch_size == 0 {
         return;
     }
-    debug_assert!(batch_size <= ws.max_batch);
-    debug_assert!(start_pos + batch_size <= config.context_length);
-    debug_assert!(layer_start + layers.len() <= config.block_count);
+    // Release-checked: batch_size can come from a cluster peer over the wire,
+    // so a bad value must fail loudly, not corrupt the batch workspace.
+    assert!(
+        batch_size <= ws.max_batch,
+        "batch {batch_size} exceeds workspace max_batch {}",
+        ws.max_batch
+    );
+    assert!(
+        start_pos + batch_size <= config.context_length,
+        "batch end {} exceeds context_length {}",
+        start_pos + batch_size,
+        config.context_length
+    );
+    assert!(
+        layer_start + layers.len() <= config.block_count,
+        "layer range {}..{} exceeds block_count {}",
+        layer_start,
+        layer_start + layers.len(),
+        config.block_count
+    );
 
     for (local_layer_idx, layer) in layers.iter().enumerate() {
         let layer_started = Instant::now();

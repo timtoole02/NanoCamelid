@@ -307,11 +307,24 @@ pub fn speculative_decoding_step(
     debug_assert_eq!(*target.pos, *draft_pos);
     let start_pos = *target.pos;
 
-    let mut drafted_tokens = Vec::with_capacity(draft_k);
+    // Bound the draft budget by the verify batch workspace (prefill writes
+    // `num_drafted` rows into batch_ws.hidden, and the loops below read them
+    // back) and by the remaining context on both models, leaving one slot for
+    // the trailing verified token. Without this, draft_k > batch_ws.max_batch
+    // overruns the batch workspace out of bounds — silently in release builds,
+    // where prefill_pass_batch's bounds check is compiled out — producing
+    // corrupted logits, and the "all accepted" trailing pass could write a KV
+    // slot at context_length. Mirrors the n-gram path's `max_drafts` clamp.
+    let max_drafts = draft_k
+        .min(target.batch_ws.max_batch)
+        .min(target.config.context_length.saturating_sub(start_pos + 1))
+        .min(draft.config.context_length.saturating_sub(start_pos + 1));
+
+    let mut drafted_tokens = Vec::with_capacity(max_drafts);
     let mut current_draft_pos = start_pos;
 
     // 1. Drafting Phase
-    while drafted_tokens.len() < draft_k {
+    while drafted_tokens.len() < max_drafts {
         if current_draft_pos >= draft.config.context_length
             || current_draft_pos >= target.config.context_length
         {
@@ -752,5 +765,79 @@ mod tests {
         assert_eq!(target_pos, draft_pos);
         assert_eq!(target_context_tokens[1], 1);
         assert_eq!(tokens[0], 1);
+    }
+
+    // Regression: a draft_k far exceeding the verify batch workspace must clamp
+    // to max_batch, not overrun batch_ws.hidden. Before the clamp this wrote and
+    // read out of bounds (silently in release, where prefill_pass_batch's bounds
+    // check was a disabled debug_assert), corrupting the verified logits.
+    #[test]
+    fn speculative_step_clamps_draft_k_to_batch_workspace() {
+        let config = test_config();
+        let target_weights = test_weights(&config);
+        let draft_weights = test_weights(&config);
+
+        let mut target_cache =
+            LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+        let mut target_ws = LlamaWorkspace::new(&config);
+        const MAX_BATCH: usize = 2;
+        let mut target_batch_ws = LlamaBatchWorkspace::new(&config, MAX_BATCH);
+
+        let draft_cache =
+            LlamaKvCache::new(config.block_count, config.context_length, config.kv_width);
+        let draft_ws = LlamaWorkspace::new(&config);
+        let draft_batch_ws = LlamaBatchWorkspace::new(&config, MAX_BATCH);
+
+        let sel = Q8DotKernelSelector {
+            requested: None,
+            selected: Q8DotKernel::Scalar,
+            fallback_reason: None,
+        };
+        let runtime_options = LlamaRuntimeOptions {
+            q8_selector: sel,
+            rope_scaling: crate::inference::RopeScaling::default(),
+            compute_logits: true,
+        };
+
+        let mut draft_ctx = SpeculativeContext {
+            config: config.clone(),
+            weights: draft_weights,
+            cache: draft_cache,
+            ws: draft_ws,
+            batch_ws: draft_batch_ws,
+            runtime_options,
+        };
+        target_ws.logits[1] = 10.0;
+        draft_ctx.ws.logits[1] = 10.0;
+
+        let mut target_pos = 0;
+        let mut draft_pos = 0;
+        let mut target_context_tokens = vec![0];
+
+        // draft_k is 8x the workspace; the step must clamp it, not panic or OOB.
+        let (_tokens, stats) = speculative_decoding_step(
+            &mut SpeculativeTarget {
+                config: &config,
+                weights: &target_weights,
+                cache: &mut target_cache,
+                ws: &mut target_ws,
+                batch_ws: &mut target_batch_ws,
+                pos: &mut target_pos,
+                context_tokens: &mut target_context_tokens,
+                runtime_options,
+            },
+            &mut draft_ctx,
+            &mut draft_pos,
+            0.0,
+            16,
+            |t| t == 3,
+        )
+        .expect("clamped step must not error");
+
+        assert!(
+            stats.drafted <= MAX_BATCH,
+            "drafted {} exceeded max_batch {MAX_BATCH} — clamp failed",
+            stats.drafted
+        );
     }
 }
