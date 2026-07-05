@@ -8,11 +8,11 @@ Build: `cargo build --release` on each Pi, `/mnt/nanocamelid/target-cluster-spee
 
 | node | role | host | ip | hw | governor |
 |---|---|---|---|---|---|
-| camelid1 | master | camelid1 | 192.168.86.30 | Pi 5 16GB, NVMe | ondemand |
-| camelid2 | middle | camelid2 | 192.168.86.48 | Pi 5 16GB, NVMe | ondemand |
-| camelid3 | final | camelid3 | 192.168.86.44 | Pi 5 16GB, NVMe | ondemand |
+| camelid1 | master | camelid1 | `<lan-ip>` | Pi 5 16GB, NVMe | ondemand |
+| camelid2 | middle | camelid2 | `<lan-ip>` | Pi 5 16GB, NVMe | ondemand |
+| camelid3 | final | camelid3 | `<lan-ip>` | Pi 5 16GB, NVMe | ondemand |
 
-GbE via home-LAN switch (192.168.86.0/24, eth0 on all nodes). NOT a dedicated
+GbE via home-LAN switch (a private /24, eth0 on all nodes). NOT a dedicated
 switch; runs were done with the LAN otherwise quiet.
 
 DEVIATION from the campaign matrix: governor is `ondemand` on all nodes —
