@@ -893,10 +893,23 @@ fn run_master_serve(
         emb,
     )?;
 
+    // A read timeout on the worker sockets is what keeps a mid-run worker drop
+    // from hanging the head forever on read_exact. Generous by default (a live
+    // worker answers each reduce message in milliseconds; this only fires when a
+    // worker is truly gone), overridable for slow links / huge shards.
+    let worker_timeout = std::env::var("NANOCAMELID_TP_WORKER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(30);
+
     let mut streams = Vec::with_capacity(worker_addrs.len());
     for (i, addr) in worker_addrs.iter().enumerate() {
         let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
         stream.set_nodelay(true).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(worker_timeout)))
+            .map_err(|e| e.to_string())?;
         let (idx, blocks) = read_msg(&mut stream, HELLO_MAGIC, &mut [])?;
         if idx as usize != i + 1 || blocks as usize != base.config.block_count {
             return Err(format!("worker {addr} hello mismatch"));
@@ -913,6 +926,11 @@ fn run_master_serve(
     let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|e| e.to_string())?;
     println!("master-serve listening on http://0.0.0.0:{port}/ (single session)");
     println!("result: SERVE_READY");
+
+    // Set once a worker drops mid-run: the cluster can no longer all-reduce, so
+    // we fail requests fast with 503 and stay alive (so /v1/health reports
+    // degraded and `down` can reach us) instead of hanging or exiting.
+    let mut degraded = false;
 
     for client in listener.incoming() {
         let Ok(mut client) = client else { continue };
@@ -985,7 +1003,18 @@ fn run_master_serve(
                     continue;
                 }
                 "/v1/health" => {
-                    write_json_response(&mut client, "200 OK", &health_json(&model_file));
+                    if degraded {
+                        write_json_response(
+                            &mut client,
+                            "200 OK",
+                            &format!(
+                                "{{\"ok\":false,\"status\":\"degraded\",\"engine\":\"nanocamelid\",\"active_model_id\":\"{}\",\"loaded_now\":true,\"generation_ready\":false,\"model_ready\":false}}",
+                                json_escape(&model_file)
+                            ),
+                        );
+                    } else {
+                        write_json_response(&mut client, "200 OK", &health_json(&model_file));
+                    }
                     continue;
                 }
                 "/api/capabilities" => {
@@ -1109,6 +1138,21 @@ fn run_master_serve(
             continue;
         }
 
+        if degraded {
+            // A worker dropped; the reduce can't complete. Fail fast, stay alive.
+            let msg = "{\"error\":\"cluster degraded — a worker dropped mid-run; run `nanocamelid down` then `up` to recover\"}";
+            if is_completion {
+                write_json_response(&mut client, "503 Service Unavailable", msg);
+            } else {
+                let _ = write!(
+                    client,
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}",
+                    msg.len()
+                );
+            }
+            continue;
+        }
+
         let content_length = header_text
             .lines()
             .find_map(|l| {
@@ -1168,13 +1212,13 @@ fn run_master_serve(
                     write_json_response(&mut client, "200 OK", &json);
                 }
                 Err(err) => {
-                    eprintln!("completion failed: {err}");
+                    eprintln!("completion failed (marking cluster degraded): {err}");
                     write_json_response(
                         &mut client,
-                        "500 Internal Server Error",
+                        "503 Service Unavailable",
                         &format!("{{\"error\":\"{}\"}}", json_escape(&err)),
                     );
-                    return Err(err);
+                    degraded = true;
                 }
             }
             continue;
@@ -1205,10 +1249,9 @@ fn run_master_serve(
                 );
             }
             Err(err) => {
-                eprintln!("request failed: {err}");
+                eprintln!("request failed (marking cluster degraded): {err}");
                 let _ = http_chunk(&mut client, format!("\n[error: {err}]").as_bytes());
-                let _ = http_chunk(&mut client, b"");
-                return Err(err);
+                degraded = true;
             }
         }
         let _ = http_chunk(&mut client, b"");
