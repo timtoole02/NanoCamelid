@@ -315,11 +315,15 @@ pub fn worker_cmd(
 }
 
 /// The exact remote command to launch the head (master-serve = the endpoint).
-pub fn master_cmd(manifest: &Manifest, shares: &[usize]) -> String {
-    let cluster = &manifest.cluster;
-    let head = manifest.head();
-    let worker_addrs = manifest
-        .workers()
+/// master-serve command connecting to an explicit worker list (in shard order).
+fn master_cmd_active(
+    head: &NodeCfg,
+    cluster: &ClusterCfg,
+    workers: &[&NodeCfg],
+    shares: &[usize],
+) -> String {
+    let worker_addrs = workers
+        .iter()
         .map(|w| {
             format!(
                 "{}:{}",
@@ -338,6 +342,11 @@ pub fn master_cmd(manifest: &Manifest, shares: &[usize]) -> String {
         shares_arg(shares),
         cluster.serve_port,
     )
+}
+
+pub fn master_cmd(manifest: &Manifest, shares: &[usize]) -> String {
+    let workers: Vec<&NodeCfg> = manifest.workers().collect();
+    master_cmd_active(manifest.head(), &manifest.cluster, &workers, shares)
 }
 
 /// Read the model shape from a local GGUF (used by `--dry-run` and by the head
@@ -361,8 +370,7 @@ fn planner_weights(manifest: &Manifest) -> Vec<f64> {
         .collect()
 }
 
-fn print_plan(manifest: &Manifest, shares: &[usize]) {
-    let cluster = &manifest.cluster;
+fn print_plan_for(head: &NodeCfg, cluster: &ClusterCfg, workers: &[&NodeCfg], shares: &[usize]) {
     println!("cluster launch plan (workers first, head last):");
     println!("  model:      {}", cluster.model);
     println!("  serve_port: {}", cluster.serve_port);
@@ -372,8 +380,7 @@ fn print_plan(manifest: &Manifest, shares: &[usize]) {
         shares.iter().sum::<usize>()
     );
     println!();
-    // Workers are shard 1..N in manifest order.
-    for (worker_idx, w) in manifest.workers().enumerate() {
+    for (worker_idx, w) in workers.iter().enumerate() {
         let shard_idx = worker_idx + 1;
         println!(
             "  [worker {shard_idx}] {} ({})  ssh> {}",
@@ -382,18 +389,22 @@ fn print_plan(manifest: &Manifest, shares: &[usize]) {
             worker_cmd(w, cluster, shard_idx, shares)
         );
     }
-    let head = manifest.head();
     println!(
         "  [head    0] {} ({})  ssh> {}",
         head.name,
         head.host,
-        master_cmd(manifest, shares)
+        master_cmd_active(head, cluster, workers, shares)
     );
     println!();
     println!(
         "endpoint (after bring-up): http://{}:{}/v1/chat/completions",
         head.host, cluster.serve_port
     );
+}
+
+fn print_plan(manifest: &Manifest, shares: &[usize]) {
+    let workers: Vec<&NodeCfg> = manifest.workers().collect();
+    print_plan_for(manifest.head(), &manifest.cluster, &workers, shares);
 }
 
 // ---- live control plane: SSH, probe, launch, gate, state ----
@@ -475,28 +486,31 @@ fn probe_node(node: &NodeCfg, cluster: &ClusterCfg) -> Result<NodeProbe, String>
 
 /// Planner weights from probed RAM (minus the OS/staging reserve), honoring any
 /// manual per-node `weight` override.
+/// One node's planner weight from its probe.
+fn node_weight(node: &NodeCfg, probe: &NodeProbe, reserve_kb: u64) -> f64 {
+    // A manual weight is the operator's explicit call — honor it verbatim.
+    if let Some(w) = node.weight {
+        return w;
+    }
+    let ram = (probe.mem_total_kb.saturating_sub(reserve_kb)).max(1) as f64;
+    // Brown-out awareness: a core-capped node (max_cores < its cores) has
+    // proportionally less compute per token, so scale its weight down by the core
+    // ratio. Otherwise a high-RAM but capped node would be handed a large shard
+    // and become the straggler that gates every token. A smaller shard always
+    // still fits its (ample) RAM.
+    match node.max_cores {
+        Some(c) if probe.cores > 0 && c < probe.cores => ram * (c as f64 / probe.cores as f64),
+        _ => ram,
+    }
+}
+
 fn live_weights(manifest: &Manifest, probes: &[NodeProbe]) -> Vec<f64> {
     let reserve_kb = manifest.cluster.reserve_ram_mb * 1024;
     manifest
         .nodes
         .iter()
         .zip(probes)
-        .map(|(n, p)| {
-            // A manual weight is the operator's explicit call — honor it verbatim.
-            if let Some(w) = n.weight {
-                return w;
-            }
-            let ram = (p.mem_total_kb.saturating_sub(reserve_kb)).max(1) as f64;
-            // Brown-out awareness: a core-capped node (max_cores < its cores) has
-            // proportionally less compute per token, so scale its weight down by
-            // the core ratio. Otherwise a high-RAM but capped node would be handed
-            // a large shard and become the straggler that gates every token. A
-            // smaller shard always still fits its (ample) RAM.
-            match n.max_cores {
-                Some(c) if p.cores > 0 && c < p.cores => ram * (c as f64 / p.cores as f64),
-                _ => ram,
-            }
-        })
+        .map(|(n, p)| node_weight(n, p, reserve_kb))
         .collect()
 }
 
@@ -1044,10 +1058,14 @@ fn kill_worker_procs(cluster: &ClusterCfg, workers: &[(&NodeCfg, usize)], procs:
 
 fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) -> ExitCode {
     let cluster = &manifest.cluster;
+    let reserve_kb = cluster.reserve_ram_mb * 1024;
 
-    // 1. Probe RAM + cores over SSH.
+    // 1. Probe every node. With --degrade an unreachable WORKER is ejected
+    //    (warn) instead of aborting; an unreachable head is always fatal.
     eprintln!("probing {} node(s) over SSH ...", manifest.nodes.len());
-    let mut probes = Vec::with_capacity(manifest.nodes.len());
+    let mut head_node: Option<&NodeCfg> = None;
+    let mut head_probe: Option<NodeProbe> = None;
+    let mut probed_workers: Vec<(&NodeCfg, NodeProbe)> = Vec::new();
     for node in &manifest.nodes {
         match probe_node(node, cluster) {
             Ok(p) => {
@@ -1057,17 +1075,66 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
                     p.cores,
                     p.mem_total_kb / 1024
                 );
-                probes.push(p);
+                if node.role == NodeRole::Head {
+                    head_node = Some(node);
+                    head_probe = Some(p);
+                } else {
+                    probed_workers.push((node, p));
+                }
             }
             Err(e) => {
-                eprintln!("probe failed: {e}");
-                return ExitCode::from(4);
+                if node.role == NodeRole::Worker && opts.degrade {
+                    eprintln!("  {:<14} unreachable — ejected (--degrade)", node.name);
+                    let _ = e;
+                } else {
+                    eprintln!("probe failed for {}: {e}", node.name);
+                    return ExitCode::from(4);
+                }
             }
         }
     }
+    let (Some(head), Some(head_probe)) = (head_node, head_probe) else {
+        eprintln!("head node is unreachable — cannot bring up the cluster");
+        return ExitCode::from(4);
+    };
 
-    // 2. Plan from real RAM weights, validated by the library.
-    let weights = live_weights(manifest, &probes);
+    // 2. Preflight binary + model. Head failure is fatal; with --degrade a
+    //    worker missing either is ejected.
+    if let Err(e) = ensure_binary(head, cluster).and_then(|()| ensure_model(head, cluster)) {
+        eprintln!("head preflight failed: {e}");
+        return ExitCode::from(4);
+    }
+    let mut survivors: Vec<(&NodeCfg, NodeProbe)> = Vec::new();
+    for (node, probe) in probed_workers {
+        match ensure_binary(node, cluster).and_then(|()| ensure_model(node, cluster)) {
+            Ok(()) => survivors.push((node, probe)),
+            Err(e) => {
+                if opts.degrade {
+                    eprintln!("  {} ejected (--degrade): {e}", node.name);
+                } else {
+                    eprintln!("preflight failed for {}: {e}", node.name);
+                    return ExitCode::from(4);
+                }
+            }
+        }
+    }
+    if survivors.is_empty() {
+        eprintln!(
+            "no usable worker nodes remain{}",
+            if opts.degrade {
+                " after --degrade ejections"
+            } else {
+                ""
+            }
+        );
+        return ExitCode::from(4);
+    }
+
+    // 3. Plan over head (shard 0) + surviving workers (shard 1..), validated by
+    //    the library.
+    let active_workers: Vec<&NodeCfg> = survivors.iter().map(|(n, _)| *n).collect();
+    let mut weights = vec![node_weight(head, &head_probe, reserve_kb)];
+    weights.extend(survivors.iter().map(|(n, p)| node_weight(n, p, reserve_kb)));
     let shares = match plan_and_validate(&weights, config) {
         Ok(s) => s,
         Err(e) => {
@@ -1075,25 +1142,13 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
             return ExitCode::from(3);
         }
     };
-    print_plan(manifest, &shares);
-
-    // 3. Preflight: binary + model present on every node (never ship large files).
-    for node in &manifest.nodes {
-        if let Err(e) = ensure_binary(node, cluster) {
-            eprintln!("{e}");
-            return ExitCode::from(4);
-        }
-        if let Err(e) = ensure_model(node, cluster) {
-            eprintln!("{e}");
-            return ExitCode::from(4);
-        }
-    }
+    print_plan_for(head, cluster, &active_workers, &shares);
 
     // 4. Launch workers first (they block on accept); roll back on any failure.
-    let workers: Vec<(&NodeCfg, usize)> = manifest
-        .workers()
+    let workers: Vec<(&NodeCfg, usize)> = active_workers
+        .iter()
         .enumerate()
-        .map(|(i, w)| (w, i + 1))
+        .map(|(i, &w)| (w, i + 1))
         .collect();
     let mut worker_procs: Vec<ProcRef> = Vec::new();
     for (node, shard_idx) in &workers {
@@ -1129,9 +1184,8 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
     }
 
     // 6. Launch the head (master-serve = the OpenAI endpoint).
-    let head = manifest.head();
     eprintln!("launching head {} (master-serve) ...", head.name);
-    let head_cmd = master_cmd(manifest, &shares);
+    let head_cmd = master_cmd_active(head, cluster, &active_workers, &shares);
     let head_pid = match ssh_launch_detached(head, cluster, &head_cmd, &head.name) {
         Ok(p) => p,
         Err(e) => {
@@ -1244,6 +1298,7 @@ struct UpOpts {
     name: String,
     dry_run: bool,
     check: bool,
+    degrade: bool,
 }
 
 fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
@@ -1252,6 +1307,7 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
     let mut name = "default".to_owned();
     let mut dry_run = false;
     let mut check = false;
+    let mut degrade = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1275,6 +1331,10 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
                 check = true;
                 i += 1;
             }
+            "--degrade" => {
+                degrade = true;
+                i += 1;
+            }
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -1284,6 +1344,7 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
         name,
         dry_run,
         check,
+        degrade,
     })
 }
 
@@ -1685,6 +1746,17 @@ weight = 1.5
         // camelid1 is capped to 2 of 4 cores -> brown-out down-weight to half.
         assert_eq!(w[1], w[0] * 0.5);
         assert_eq!(w[2], 1.5); // manual override wins over probed RAM and the cap
+    }
+
+    #[test]
+    fn master_cmd_active_uses_only_the_given_workers() {
+        // Simulates a --degrade eject: only camelid2 survives as the worker.
+        let m = sample_manifest();
+        let c2 = m.nodes.iter().find(|n| n.name == "camelid2").unwrap();
+        let cmd = master_cmd_active(m.head(), &m.cluster, &[c2], &[4, 4]);
+        assert!(cmd.contains("master-serve"));
+        assert!(cmd.contains("camelid2.local:5921 4,4 8090"));
+        assert!(!cmd.contains("camelid1.local")); // the ejected worker is gone
     }
 
     #[test]
