@@ -507,6 +507,12 @@ fn ensure_binary(node: &NodeCfg, cluster: &ClusterCfg) -> Result<(), String> {
 }
 
 /// Launch a detached remote process that survives the SSH session; return its pid.
+///
+/// The backgrounded worker's stdio goes to its log, and the OUTER command group's
+/// stdio is fully redirected to /dev/null so the SSH channel closes immediately —
+/// otherwise `Command::output()` blocks forever on channel EOF that the detached
+/// process keeps open. The pid is written to a file and read back in a second,
+/// short-lived SSH call rather than over the (now-detached) launch channel.
 fn ssh_launch_detached(
     node: &NodeCfg,
     cluster: &ClusterCfg,
@@ -514,12 +520,19 @@ fn ssh_launch_detached(
     log_name: &str,
 ) -> Result<u32, String> {
     let escaped = full_cmd.replace('\'', "'\\''");
-    let remote = format!(
-        "mkdir -p ~/.nanocamelid/logs && setsid nohup sh -c '{escaped}' \
-         > ~/.nanocamelid/logs/{log_name}.log 2>&1 < /dev/null & echo $!"
+    let launch = format!(
+        "mkdir -p ~/.nanocamelid/logs ~/.nanocamelid/pids; \
+         {{ setsid sh -c '{escaped}' > ~/.nanocamelid/logs/{log_name}.log 2>&1 < /dev/null & \
+         echo $! > ~/.nanocamelid/pids/{log_name}.pid; }} > /dev/null 2>&1 < /dev/null"
     );
-    let out = ssh_run(node, cluster, &remote)?;
-    out.lines()
+    ssh_run(node, cluster, &launch)?;
+    let pid_out = ssh_run(
+        node,
+        cluster,
+        &format!("cat ~/.nanocamelid/pids/{log_name}.pid 2>/dev/null"),
+    )?;
+    pid_out
+        .lines()
         .last()
         .and_then(|s| s.trim().parse().ok())
         .ok_or_else(|| format!("{}: could not capture launch pid", node.name))
