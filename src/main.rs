@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocamelid::{gguf, inference, model, q8, speculative, tokenizer};
+use nanocamelid::{cluster_up, gguf, inference, model, q8, speculative, tokenizer};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
@@ -183,6 +183,8 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("up") => cluster_up::run_up(&args[1..]),
+        Some("down") => cluster_up::run_down(&args[1..]),
         Some("inspect") => {
             if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
                 print_help(HelpTopic::Inspect);
@@ -5519,11 +5521,20 @@ fn print_probe() {
     let worker_cores = worker_core_indices_from_env()
         .or_else(|| isolated_cpus.as_deref().and_then(parse_cpu_list));
 
+    let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let mem_total_kb = meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|v| v.trim().strip_suffix(" kB"))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+
     println!("NanoCamelid host probe");
     println!("arch: {}", env::consts::ARCH);
     println!("os: {}", env::consts::OS);
     println!("cpu_model: {model}");
     println!("logical_cores: {core_count}");
+    println!("mem_total_kb: {mem_total_kb}");
     println!("cpu_features: {}", features.unwrap_or("unknown"));
     println!(
         "cpuinfo_max_freq_khz: {}",
