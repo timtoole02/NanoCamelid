@@ -247,20 +247,27 @@ pub fn plan_and_validate(weights: &[f64], config: &LlamaModelConfig) -> Result<V
 /// swizzle off (TP requirement), per-node core cap (brown-out mitigation), and
 /// optional parity pin.
 pub fn env_prefix(node: &NodeCfg, cluster: &ClusterCfg) -> String {
-    let mut parts = vec![
-        "NANOCAMELID_SPIN_POOL=0".to_owned(),
-        "NANOCAMELID_Q4_SWIZZLE_1X4=0".to_owned(),
-        "NANOCAMELID_Q8_SWIZZLE_1X4=0".to_owned(),
-    ];
-    if cluster.parity {
-        parts.push("NANOCAMELID_TP_PARITY=1".to_owned());
-    }
-    let mut prefix = parts.join(" ");
+    let mut vars: Vec<String> = Vec::new();
     if let Some(n) = node.max_cores {
-        // taskset pins cores; RAYON_NUM_THREADS bounds the pool. Belt-and-braces
-        // against the camelid1-style PSU brown-out under full-core load.
+        // RAYON_NUM_THREADS bounds the pool (taskset below pins the cores) —
+        // belt-and-braces against the camelid1-style PSU brown-out at full load.
+        vars.push(format!("RAYON_NUM_THREADS={n}"));
+    }
+    vars.push("NANOCAMELID_SPIN_POOL=0".to_owned());
+    vars.push("NANOCAMELID_Q4_SWIZZLE_1X4=0".to_owned());
+    vars.push("NANOCAMELID_Q8_SWIZZLE_1X4=0".to_owned());
+    if cluster.parity {
+        vars.push("NANOCAMELID_TP_PARITY=1".to_owned());
+    }
+    // Route the vars through `env` (not bare shell assignments) so the launch is
+    // one clean exec chain — `exec [taskset] env VAR=… binary` — letting `sh`
+    // exec straight through to cluster_tp_node. Then the captured `$!` is the
+    // binary's own pid, so `down` kills it directly instead of leaning on the
+    // pkill-by-pattern fallback.
+    let mut prefix = format!("env {}", vars.join(" "));
+    if let Some(n) = node.max_cores {
         let last = n.saturating_sub(1);
-        prefix = format!("taskset -c 0-{last} env RAYON_NUM_THREADS={n} {prefix}");
+        prefix = format!("taskset -c 0-{last} {prefix}");
     }
     prefix
 }
@@ -527,7 +534,7 @@ fn ssh_launch_detached(
     // process survives; the outer group redirect closes the channel.
     let launch = format!(
         "mkdir -p ~/.nanocamelid/logs ~/.nanocamelid/pids; \
-         {{ nohup sh -c '{escaped}' > ~/.nanocamelid/logs/{log_name}.log 2>&1 < /dev/null & \
+         {{ nohup sh -c 'exec {escaped}' > ~/.nanocamelid/logs/{log_name}.log 2>&1 < /dev/null & \
          echo $! > ~/.nanocamelid/pids/{log_name}.pid; }} > /dev/null 2>&1 < /dev/null"
     );
     ssh_run(node, cluster, &launch)?;
