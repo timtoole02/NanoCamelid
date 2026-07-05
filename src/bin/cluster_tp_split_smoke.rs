@@ -120,7 +120,9 @@ fn run() -> Result<(), String> {
         // TP forward: replicated embedding lookup, sharded layers,
         // replicated head.
         let emb_start = token as usize * emb;
-        tp_ws.hidden.copy_from_slice(&weights.token_embeddings[emb_start..emb_start + emb]);
+        tp_ws
+            .hidden
+            .copy_from_slice(&weights.token_embeddings[emb_start..emb_start + emb]);
         tp::tp_forward_token(&mut tp_ws.hidden, &mut shards, &mut rt, pos, options)?;
         inference::compute_logits_from_hidden(
             &config,
@@ -152,7 +154,11 @@ fn run() -> Result<(), String> {
             }
             println!(
                 "MISMATCH step {step} pos {pos} ({}): ref {ref_next} tp {tp_next} (logit delta {delta:.6})",
-                if step + 1 < prompt_tokens.len() { "prompt phase" } else { "DECODE" }
+                if step + 1 < prompt_tokens.len() {
+                    "prompt phase"
+                } else {
+                    "DECODE"
+                }
             );
         }
 

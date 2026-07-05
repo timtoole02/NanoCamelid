@@ -36,11 +36,16 @@ const SHUTDOWN_POS: u32 = u32::MAX;
 include!(concat!(env!("OUT_DIR"), "/webui_assets.rs"));
 
 fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 fn normalized_model_id(filename: &str) -> String {
-    let stem = filename.strip_suffix(".gguf").unwrap_or(filename).to_lowercase();
+    let stem = filename
+        .strip_suffix(".gguf")
+        .unwrap_or(filename)
+        .to_lowercase();
     let mut out = String::new();
     let mut last_us = false;
     for c in stem.chars() {
@@ -138,18 +143,28 @@ fn cluster_import_json(
     serve_port: u16,
 ) -> String {
     let master_ip = local_ip_toward(
-        worker_addrs.first().map(String::as_str).unwrap_or("8.8.8.8:80"),
+        worker_addrs
+            .first()
+            .map(String::as_str)
+            .unwrap_or("8.8.8.8:80"),
     );
     let mut nodes = vec![TopoNode {
         id: "camelid-tp-master",
-        name: format!("master · shard 0 (share {})", shares.first().copied().unwrap_or(0)),
+        name: format!(
+            "master · shard 0 (share {})",
+            shares.first().copied().unwrap_or(0)
+        ),
         host: master_ip.clone(),
         port: serve_port,
         roles: "\"coordinator\",\"gateway\",\"model_host\"",
         command: format!(
             "cluster_tp_node master-serve {model_path} {} {} {serve_port}",
             worker_addrs.join(","),
-            shares.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+            shares
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
         ),
         x: 120,
         y: 200,
@@ -173,7 +188,11 @@ fn cluster_import_json(
             command: format!(
                 "cluster_tp_node worker {model_path} 0.0.0.0:5921 {} {}",
                 i + 1,
-                shares.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+                shares
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
             ),
             x: 460,
             y: 80 + (i as i32) * 240,
@@ -207,7 +226,11 @@ fn cluster_import_json(
     format!(
         "[{{\"import_id\":\"tp-{nid}-{sh}\",\"nodes\":[{nodes}],\"connections\":[{conns}]}}]",
         nid = normalized_model_id(model_file),
-        sh = shares.iter().map(usize::to_string).collect::<Vec<_>>().join("-"),
+        sh = shares
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join("-"),
         nodes = node_json.join(","),
         conns = connections.join(","),
     )
@@ -226,7 +249,9 @@ fn spawn_status_listener(port: u16, model_file: String, role_note: String) {
         for client in listener.incoming() {
             let Ok(mut client) = client else { continue };
             let mut buf = [0_u8; 2048];
-            let Ok(n) = client.read(&mut buf) else { continue };
+            let Ok(n) = client.read(&mut buf) else {
+                continue;
+            };
             let req = String::from_utf8_lossy(&buf[..n]).to_string();
             let first = req.lines().next().unwrap_or("");
             let body = if first.starts_with("GET /v1/health") {
@@ -397,12 +422,10 @@ fn load_base(model_path: &str) -> Result<LoadedBase, String> {
 }
 
 fn encode_chat(base: &LoadedBase, prompt: &str) -> Result<Vec<u32>, String> {
-    let rendered = base
-        .tokenizer
-        .render_chat_prompt(&[tokenizer::ChatMessage {
-            role: "user",
-            content: prompt,
-        }]);
+    let rendered = base.tokenizer.render_chat_prompt(&[tokenizer::ChatMessage {
+        role: "user",
+        content: prompt,
+    }]);
     base.tokenizer
         .encode(&rendered.text, rendered.add_special, rendered.parse_special)
         .map_err(|e| e.to_string())
@@ -898,7 +921,9 @@ fn run_master_serve(
         let mut buf = Vec::new();
         let mut tmp = [0_u8; 4096];
         let header_end = loop {
-            let Ok(n) = client.read(&mut tmp) else { break None };
+            let Ok(n) = client.read(&mut tmp) else {
+                break None;
+            };
             if n == 0 {
                 break None;
             }
@@ -910,7 +935,9 @@ fn run_master_serve(
                 break None;
             }
         };
-        let Some(header_end) = header_end else { continue };
+        let Some(header_end) = header_end else {
+            continue;
+        };
         let header_text = String::from_utf8_lossy(&buf[..header_end]).to_string();
         let first_line = header_text.lines().next().unwrap_or("").to_owned();
 
@@ -923,7 +950,10 @@ fn run_master_serve(
             .unwrap_or_else(|| model_path.to_owned());
 
         if method == "OPTIONS" {
-            let _ = write!(client, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+            let _ = write!(
+                client,
+                "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+            );
             continue;
         }
         if method == "GET" {
@@ -937,17 +967,20 @@ fn run_master_serve(
                     continue;
                 }
                 "/__camelid/cluster/discover" => {
-                    let import = cluster_import_json(model_path, &model_file, worker_addrs, shares, port);
+                    let import =
+                        cluster_import_json(model_path, &model_file, worker_addrs, shares, port);
                     write_json_response(
                         &mut client,
                         "200 OK",
-                        &format!("{{\"available\":true,\"devices\":{}}}",
+                        &format!(
+                            "{{\"available\":true,\"devices\":{}}}",
                             // devices = the import's node list
                             import
                                 .split("\"nodes\":")
                                 .nth(1)
                                 .and_then(|s| s.split(",\"connections\"").next())
-                                .unwrap_or("[]")),
+                                .unwrap_or("[]")
+                        ),
                     );
                     continue;
                 }
@@ -964,21 +997,38 @@ fn run_master_serve(
                     continue;
                 }
                 "/v1/models" => {
-                    write_json_response(&mut client, "200 OK", &format!(
-                        "{{\"object\":\"list\",\"data\":[{{\"id\":\"{id}\",\"object\":\"model\",\"created\":0,\"owned_by\":\"nanocamelid\"}}]}}",
-                        id = json_escape(&model_file)));
+                    write_json_response(
+                        &mut client,
+                        "200 OK",
+                        &format!(
+                            "{{\"object\":\"list\",\"data\":[{{\"id\":\"{id}\",\"object\":\"model\",\"created\":0,\"owned_by\":\"nanocamelid\"}}]}}",
+                            id = json_escape(&model_file)
+                        ),
+                    );
                     continue;
                 }
                 "/api/models/current" => {
-                    write_json_response(&mut client, "200 OK", &format!(
-                        "{{\"id\":\"{id}\",\"name\":\"Llama 3 70B Instruct (3-Pi cluster)\",\"filename\":\"{id}\",\"model_path\":\"{p}\",\"path\":\"{p}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":2}}}},\"quant\":\"Q4_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
-                        id = json_escape(&model_file), p = json_escape(model_path)));
+                    write_json_response(
+                        &mut client,
+                        "200 OK",
+                        &format!(
+                            "{{\"id\":\"{id}\",\"name\":\"Llama 3 70B Instruct (3-Pi cluster)\",\"filename\":\"{id}\",\"model_path\":\"{p}\",\"path\":\"{p}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":2}}}},\"quant\":\"Q4_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
+                            id = json_escape(&model_file),
+                            p = json_escape(model_path)
+                        ),
+                    );
                     continue;
                 }
                 "/api/models/local" => {
-                    write_json_response(&mut client, "200 OK", &format!(
-                        "{{\"models\":[{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":0,\"quant\":\"Q4_0\",\"family\":\"llama\",\"status\":\"ready\"}}]}}",
-                        id = json_escape(&model_file), p = json_escape(model_path)));
+                    write_json_response(
+                        &mut client,
+                        "200 OK",
+                        &format!(
+                            "{{\"models\":[{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":0,\"quant\":\"Q4_0\",\"family\":\"llama\",\"status\":\"ready\"}}]}}",
+                            id = json_escape(&model_file),
+                            p = json_escape(model_path)
+                        ),
+                    );
                     continue;
                 }
                 p if p.starts_with("/api/") || p.starts_with("/metrics") => {
@@ -1049,8 +1099,8 @@ fn run_master_serve(
             );
             continue;
         }
-        let is_completion = method == "POST"
-            && (path == "/v1/chat/completions" || path == "/v1/completions");
+        let is_completion =
+            method == "POST" && (path == "/v1/chat/completions" || path == "/v1/completions");
         if !(is_completion || (method == "POST" && path == "/chat")) {
             let _ = write!(
                 client,
@@ -1088,7 +1138,9 @@ fn run_master_serve(
         };
         // The cluster decodes ~0.7 tok/s; cap replies so the UI never waits
         // more than a couple of minutes.
-        let max_tokens = extract_json_usize(&body_text, "max_tokens").unwrap_or(96).min(96);
+        let max_tokens = extract_json_usize(&body_text, "max_tokens")
+            .unwrap_or(96)
+            .min(96);
 
         if is_completion {
             let mut collected = String::new();
@@ -1215,7 +1267,10 @@ fn serve_completion_collect(
 ) -> Result<(usize, usize), String> {
     let emb = base.config.embedding_length;
     let prompt_tokens = encode_chat(base, prompt)?;
-    let budget = base.config.context_length.saturating_sub(prompt_tokens.len() + 2);
+    let budget = base
+        .config
+        .context_length
+        .saturating_sub(prompt_tokens.len() + 2);
     let max_tokens = max_tokens.min(budget);
     let mut generated: Vec<u32> = Vec::new();
     let mut pos = 0usize;
@@ -1224,7 +1279,8 @@ fn serve_completion_collect(
     let mut step = 0usize;
     loop {
         let emb_start = token as usize * emb;
-        ws.hidden.copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        ws.hidden
+            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
         for stream in streams.iter_mut() {
             write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
         }
@@ -1290,7 +1346,11 @@ fn serve_completion_collect(
         }
     }
     *collected = base.tokenizer.decode(&generated, true).unwrap_or_default();
-    println!("served completion: {} prompt, {} generated", total_prompt, generated.len());
+    println!(
+        "served completion: {} prompt, {} generated",
+        total_prompt,
+        generated.len()
+    );
     Ok((total_prompt, generated.len()))
 }
 
@@ -1321,7 +1381,10 @@ fn serve_one_request(
 ) -> Result<f64, String> {
     let emb = base.config.embedding_length;
     let prompt_tokens = encode_chat(base, prompt)?;
-    let budget = base.config.context_length.saturating_sub(prompt_tokens.len() + 2);
+    let budget = base
+        .config
+        .context_length
+        .saturating_sub(prompt_tokens.len() + 2);
     let max_tokens = max_tokens.min(budget);
     let mut generated: Vec<u32> = Vec::new();
     let mut printed = 0usize;
@@ -1402,7 +1465,7 @@ fn serve_one_request(
         if let Ok(text) = base.tokenizer.decode(&generated, true)
             && text.len() > printed
         {
-            let _ = http_chunk(client, text[printed..].as_bytes());
+            let _ = http_chunk(client, &text.as_bytes()[printed..]);
             printed = text.len();
         }
         token = best_idx;

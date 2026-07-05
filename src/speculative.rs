@@ -223,7 +223,13 @@ pub fn ngram_speculative_step(
             // consumed history (its logits produced this prediction).
             target.context_tokens.extend_from_slice(&emitted);
             *target.pos = start_pos + i + 1;
-            return Ok((NGramStepOutcome { emitted, hit_stop: true }, stats));
+            return Ok((
+                NGramStepOutcome {
+                    emitted,
+                    hit_stop: true,
+                },
+                stats,
+            ));
         }
 
         if draft_token == t_target {

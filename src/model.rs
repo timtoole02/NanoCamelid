@@ -592,8 +592,7 @@ impl LlamaWeights {
                             // Mirrors the single-node `load` path.
                             let row_major =
                                 quantize_f32_matrix_to_q4_0_blocks(embeddings, rows, cols);
-                            let swizzled_1x4 =
-                                swizzle_q4_0_1x4(&row_major, rows, blocks_per_row);
+                            let swizzled_1x4 = swizzle_q4_0_1x4(&row_major, rows, blocks_per_row);
                             let page_aligned_1x4 = q4_page_align_1x4_enabled().then(|| {
                                 PageAlignedQ4_0Swizzled1x4::from_swizzled(
                                     &swizzled_1x4,

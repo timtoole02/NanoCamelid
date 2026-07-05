@@ -1,6 +1,6 @@
 use crate::model::{
-    LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, MoeExpertWeights, RopeStyle,
-    PageAlignedQ4_0Swizzled1x4, PageAlignedQ8_0Swizzled1x4, QuantizedMatrix,
+    LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, LlamaWeights, MoeExpertWeights,
+    PageAlignedQ4_0Swizzled1x4, PageAlignedQ8_0Swizzled1x4, QuantizedMatrix, RopeStyle,
 };
 use crate::q8::{
     IQ4NLBlock, Q2KBlock, Q3KBlock, Q4_0Block, Q4_1Block, Q5KBlock, Q6KBlock, Q8_0Block,
@@ -698,6 +698,7 @@ pub fn apply_qk_norm(vec: &mut [f32], weight: &[f32], head_dim: usize, epsilon: 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_rope(
     data: &mut [f32],
     pos: usize,
@@ -872,6 +873,7 @@ fn cached_rope_angles(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_rope_cached(
     data: &mut [f32],
     pos: usize,
@@ -2008,8 +2010,8 @@ pub fn matmul_q4_k_batch(
                             crate::q8::q4k_dot_preloaded_neon(
                                 &unpacked,
                                 &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                                &x_token_scales
-                                    [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
                             )
                         };
                     }
@@ -2033,8 +2035,8 @@ pub fn matmul_q4_k_batch(
                             crate::q8::q4k_dot_preloaded_neon(
                                 &unpacked,
                                 &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                                &x_token_scales
-                                    [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
                             )
                         };
                     }
@@ -2395,8 +2397,8 @@ pub fn matmul_q5_k_batch(
                             crate::q8::q5k_dot_preloaded_neon(
                                 &unpacked,
                                 &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                                &x_token_scales
-                                    [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
                             )
                         };
                     }
@@ -2420,8 +2422,8 @@ pub fn matmul_q5_k_batch(
                             crate::q8::q5k_dot_preloaded_neon(
                                 &unpacked,
                                 &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
-                                &x_token_scales
-                                    [x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
                             )
                         };
                     }
@@ -3646,10 +3648,20 @@ pub fn run_layer_range_batch(
         // whole q/k buffer is correct. Skipped for archs without the tensors.
         let stage_started = Instant::now();
         if let Some(qn) = &layer.wq_norm {
-            apply_qk_norm(&mut ws.q[..q_len], qn, config.head_dim, config.rms_norm_epsilon);
+            apply_qk_norm(
+                &mut ws.q[..q_len],
+                qn,
+                config.head_dim,
+                config.rms_norm_epsilon,
+            );
         }
         if let Some(kn) = &layer.wk_norm {
-            apply_qk_norm(&mut ws.k[..kv_len], kn, config.head_dim, config.rms_norm_epsilon);
+            apply_qk_norm(
+                &mut ws.k[..kv_len],
+                kn,
+                config.head_dim,
+                config.rms_norm_epsilon,
+            );
         }
         trace_record("batch.qk_norm", stage_started.elapsed());
 
@@ -4098,13 +4110,13 @@ fn apply_attention_head_q8_0(
 
     // Quantize q_head once (mirrors the store quantization) into stack/heap blocks.
     const MAX_STACK_HEAD_BLOCKS: usize = 256 / Q8_BLOCK_SIZE;
-    let mut q_blocks_stack = [Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); MAX_STACK_HEAD_BLOCKS];
+    let mut q_blocks_stack =
+        [Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); MAX_STACK_HEAD_BLOCKS];
     let mut q_blocks_heap;
     let q_blocks: &mut [Q8_0Block] = if blocks_per_head <= MAX_STACK_HEAD_BLOCKS {
         &mut q_blocks_stack[..blocks_per_head]
     } else {
-        q_blocks_heap =
-            vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); blocks_per_head];
+        q_blocks_heap = vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); blocks_per_head];
         &mut q_blocks_heap[..]
     };
     quantize_row_to_q8_0_blocks(q_head, q_blocks);
@@ -4367,7 +4379,7 @@ pub fn run_layer_range(
             config.rope_dimension_count,
             config.rope_freq_base,
             options.rope_scaling,
-                config.rope_style,
+            config.rope_style,
         );
 
         apply_rope(
@@ -4378,7 +4390,7 @@ pub fn run_layer_range(
             config.rope_dimension_count,
             config.rope_freq_base,
             options.rope_scaling,
-                config.rope_style,
+            config.rope_style,
         );
         trace_record("decode.rope", stage_started.elapsed());
 
@@ -5652,10 +5664,8 @@ mod tests {
 
         // Quantize the f32 K/V patterns into q8_0 blocks (same store quantization).
         let block_count = k_cache_f32.len() / Q8_BLOCK_SIZE;
-        let mut k_cache_q8 =
-            vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); block_count];
-        let mut v_cache_q8 =
-            vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); block_count];
+        let mut k_cache_q8 = vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); block_count];
+        let mut v_cache_q8 = vec![Q8_0Block::from_parts(0, [0i8; Q8_BLOCK_SIZE]); block_count];
         quantize_row_to_q8_0_blocks(&k_cache_f32, &mut k_cache_q8);
         quantize_row_to_q8_0_blocks(&v_cache_f32, &mut v_cache_q8);
 
@@ -6934,7 +6944,16 @@ mod tests {
     #[test]
     fn apply_rope_respects_partial_rope_dimension_count() {
         let mut data = vec![1.0, 0.0, 10.0, 20.0];
-        apply_rope(&mut data, 1, 1, 4, 2, 10000.0, RopeScaling::default(), crate::model::RopeStyle::Norm);
+        apply_rope(
+            &mut data,
+            1,
+            1,
+            4,
+            2,
+            10000.0,
+            RopeScaling::default(),
+            crate::model::RopeStyle::Norm,
+        );
 
         assert!((data[0] - 1.0_f32.cos()).abs() < 1e-6);
         assert!((data[1] - 1.0_f32.sin()).abs() < 1e-6);
