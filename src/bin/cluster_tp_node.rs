@@ -1216,7 +1216,7 @@ fn run_master_serve(
                     write_json_response(
                         &mut client,
                         "503 Service Unavailable",
-                        &format!("{{\"error\":\"{}\"}}", json_escape(&err)),
+                        "{\"error\":\"cluster degraded — a worker dropped mid-run; run `nanocamelid down` then `up` to recover\"}",
                     );
                     degraded = true;
                 }
@@ -1250,7 +1250,11 @@ fn run_master_serve(
             }
             Err(err) => {
                 eprintln!("request failed (marking cluster degraded): {err}");
-                let _ = http_chunk(&mut client, format!("\n[error: {err}]").as_bytes());
+                let _ = http_chunk(
+                    &mut client,
+                    "\n[cluster degraded - a worker dropped mid-run; run `down` then `up` to recover]"
+                        .as_bytes(),
+                );
                 degraded = true;
             }
         }
