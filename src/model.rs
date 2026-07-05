@@ -696,7 +696,10 @@ fn load_layer_weights(
     // Phi-3 ships a fused blk.{i}.attn_qkv.weight (output rows = Q | K | V)
     // instead of separate attn_q/attn_k/attn_v; split its output rows.
     let (wq, wk, wav) = if gguf_has_tensor(gguf, &format!("blk.{i}.attn_qkv.weight")) {
-        let qkv = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.attn_qkv.weight"))?;
+        // Load unswizzled: slice_matrix_rows splits on plain block rows, and the
+        // 1x4 SDOT swizzle (default-on for Q4_0/Q8_0) is not row-sliceable.
+        let qkv =
+            load_quantized_matrix_unswizzled(mmap, gguf, &format!("blk.{i}.attn_qkv.weight"))?;
         let q = config.attention_output_width;
         let kv = config.kv_width;
         let emb = config.embedding_length;
@@ -772,7 +775,9 @@ fn load_layer_weights(
         }
     } else if !gguf_has_tensor(gguf, &format!("blk.{i}.ffn_gate.weight")) {
         // Phi-3 fuses gate+up into ffn_up (output rows = gate | up).
-        let fused = load_quantized_matrix(mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?;
+        // Load unswizzled so slice_matrix_rows can split it (see attn_qkv above).
+        let fused =
+            load_quantized_matrix_unswizzled(mmap, gguf, &format!("blk.{i}.ffn_up.weight"))?;
         let ff = config.feed_forward_length;
         let emb = config.embedding_length;
         LlamaFfnWeights::Dense {
@@ -1279,6 +1284,27 @@ fn load_quantized_matrix(
         other => Err(format!(
             "expected Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K, or IQ4_NL tensor type for {name}, got {other:?}"
         )),
+    }
+}
+
+/// Load a tensor without the 1x4 SDOT swizzle so a fused tensor (Phi-3
+/// `attn_qkv` / `ffn_up`) can be split on whole-block rows by
+/// `slice_matrix_rows`. Only Q4_0/Q8_0 are swizzled at load time; every other
+/// type is already plain, so defer to `load_quantized_matrix` for those.
+fn load_quantized_matrix_unswizzled(
+    mmap: &Mmap,
+    gguf: &GgufFile,
+    name: &str,
+) -> Result<QuantizedMatrix, String> {
+    let desc = load_tensor_desc(gguf, name)?;
+    match desc.tensor_type {
+        GgufTensorType::Q8_0 => decode_q8_0_blocks(tensor_bytes(mmap, desc)?)
+            .map(QuantizedMatrix::Q8_0)
+            .map_err(|e| e.to_string()),
+        GgufTensorType::Q4_0 => decode_q4_0_blocks(tensor_bytes(mmap, desc)?)
+            .map(QuantizedMatrix::Q4_0)
+            .map_err(|e| e.to_string()),
+        _ => load_quantized_matrix(mmap, gguf, name),
     }
 }
 
