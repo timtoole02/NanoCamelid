@@ -1059,6 +1059,16 @@ fn kill_worker_procs(cluster: &ClusterCfg, workers: &[(&NodeCfg, usize)], procs:
 fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) -> ExitCode {
     let cluster = &manifest.cluster;
     let reserve_kb = cluster.reserve_ram_mb * 1024;
+    // How long to wait for a worker to load its shard + listen, and for the head
+    // endpoint to answer. Generous by default (a big shard can take minutes to
+    // load); overridable, e.g. to fail fast in tests.
+    let gate = Duration::from_secs(
+        std::env::var("NANOCAMELID_UP_GATE_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(300),
+    );
 
     // 1. Probe every node. With --degrade an unreachable WORKER is ejected
     //    (warn) instead of aborting; an unreachable head is always fatal.
@@ -1130,58 +1140,92 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
         return ExitCode::from(4);
     }
 
-    // 3. Plan over head (shard 0) + surviving workers (shard 1..), validated by
-    //    the library.
-    let active_workers: Vec<&NodeCfg> = survivors.iter().map(|(n, _)| *n).collect();
-    let mut weights = vec![node_weight(head, &head_probe, reserve_kb)];
-    weights.extend(survivors.iter().map(|(n, p)| node_weight(n, p, reserve_kb)));
-    let shares = match plan_and_validate(&weights, config) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("planning failed: {e}");
-            return ExitCode::from(3);
+    // 3-5. Plan over the survivors, launch the workers, and gate them. With
+    //      --degrade, a worker that fails to come up — a launch error OR a shard
+    //      it can't load + start listening in time — is ejected and the cluster
+    //      is re-planned and relaunched over the remaining survivors, as long as
+    //      one worker remains and the smaller split still fits the model.
+    //      (`active_workers` copies the &NodeCfg refs, which borrow `manifest`,
+    //      not `survivors` — so we can shrink `survivors` between attempts.)
+    let (shares, worker_procs, active_workers) = loop {
+        let active_workers: Vec<&NodeCfg> = survivors.iter().map(|(n, _)| *n).collect();
+        let mut weights = vec![node_weight(head, &head_probe, reserve_kb)];
+        weights.extend(survivors.iter().map(|(n, p)| node_weight(n, p, reserve_kb)));
+        let shares = match plan_and_validate(&weights, config) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("planning failed: {e}");
+                return ExitCode::from(3);
+            }
+        };
+        print_plan_for(head, cluster, &active_workers, &shares);
+
+        // `workers` is parallel to `survivors` (position pos ↔ survivors[pos]).
+        let workers: Vec<(&NodeCfg, usize)> = active_workers
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (w, i + 1))
+            .collect();
+        let mut worker_procs: Vec<ProcRef> = Vec::new();
+        let mut failed_at: Option<usize> = None;
+
+        // 4. Launch workers first (they block on accept).
+        for (pos, (node, shard_idx)) in workers.iter().enumerate() {
+            eprintln!("launching worker {} (shard {shard_idx}) ...", node.name);
+            let cmd = worker_cmd(node, cluster, *shard_idx, &shares);
+            match ssh_launch_detached(node, cluster, &cmd, &node.name) {
+                Ok(pid) => worker_procs.push(ProcRef {
+                    name: node.name.clone(),
+                    host: node.host.clone(),
+                    shard_idx: *shard_idx,
+                    pid,
+                    model_path: node_model_path(node, cluster),
+                }),
+                Err(e) => {
+                    eprintln!("launch failed for {}: {e}", node.name);
+                    failed_at = Some(pos);
+                    break;
+                }
+            }
+        }
+
+        // 5. Gate each worker: it must load its shard and start listening.
+        if failed_at.is_none() {
+            for (pos, (node, _)) in workers.iter().enumerate() {
+                eprintln!(
+                    "waiting for worker {} to load its shard + listen ...",
+                    node.name
+                );
+                if let Err(e) = poll_worker_ready(node, cluster, gate) {
+                    eprintln!("{e}");
+                    failed_at = Some(pos);
+                    break;
+                }
+            }
+        }
+
+        match failed_at {
+            None => break (shares, worker_procs, active_workers),
+            Some(pos) => {
+                kill_worker_procs(cluster, &workers, &worker_procs);
+                if opts.degrade && survivors.len() > 1 {
+                    let (ejected, _) = survivors.remove(pos);
+                    eprintln!(
+                        "--degrade: worker {} did not come up — ejected; re-sharding over {} survivor(s)",
+                        ejected.name,
+                        survivors.len()
+                    );
+                    continue;
+                }
+                return ExitCode::from(5);
+            }
         }
     };
-    print_plan_for(head, cluster, &active_workers, &shares);
-
-    // 4. Launch workers first (they block on accept); roll back on any failure.
     let workers: Vec<(&NodeCfg, usize)> = active_workers
         .iter()
         .enumerate()
         .map(|(i, &w)| (w, i + 1))
         .collect();
-    let mut worker_procs: Vec<ProcRef> = Vec::new();
-    for (node, shard_idx) in &workers {
-        eprintln!("launching worker {} (shard {shard_idx}) ...", node.name);
-        let cmd = worker_cmd(node, cluster, *shard_idx, &shares);
-        match ssh_launch_detached(node, cluster, &cmd, &node.name) {
-            Ok(pid) => worker_procs.push(ProcRef {
-                name: node.name.clone(),
-                host: node.host.clone(),
-                shard_idx: *shard_idx,
-                pid,
-                model_path: node_model_path(node, cluster),
-            }),
-            Err(e) => {
-                eprintln!("launch failed: {e}");
-                kill_worker_procs(cluster, &workers, &worker_procs);
-                return ExitCode::from(5);
-            }
-        }
-    }
-
-    // 5. Gate each worker: it must load its shard and start listening.
-    for (node, _) in &workers {
-        eprintln!(
-            "waiting for worker {} to load its shard + listen ...",
-            node.name
-        );
-        if let Err(e) = poll_worker_ready(node, cluster, Duration::from_secs(300)) {
-            eprintln!("{e}");
-            kill_worker_procs(cluster, &workers, &worker_procs);
-            return ExitCode::from(5);
-        }
-    }
 
     // 6. Launch the head (master-serve = the OpenAI endpoint).
     eprintln!("launching head {} (master-serve) ...", head.name);
@@ -1200,7 +1244,7 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
         "waiting for the endpoint http://{}:{}/v1/health ...",
         head.host, cluster.serve_port
     );
-    if let Err(e) = poll_head_ready(&head.host, cluster.serve_port, Duration::from_secs(300)) {
+    if let Err(e) = poll_head_ready(&head.host, cluster.serve_port, gate) {
         eprintln!("{e}");
         let pat = format!(
             "cluster_tp_node master-serve {}",
