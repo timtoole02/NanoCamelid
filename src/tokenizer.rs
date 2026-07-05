@@ -1227,9 +1227,14 @@ fn detect_chat_template_format(template: &str) -> &'static str {
 }
 
 fn is_tinyllama_marker_template(template: &str) -> bool {
+    // Phi-3 templates also carry <|user|>/<|assistant|>/<|system|> but terminate
+    // turns with <|end|>; TinyLlama/Zephyr terminate with </s>. Exclude <|end|>
+    // so a Phi-3(.5) template is never captured here (it belongs to
+    // is_phi3_template), regardless of dispatch order.
     template.contains("<|user|>")
         && template.contains("<|assistant|>")
         && template.contains("<|system|>")
+        && !template.contains("<|end|>")
 }
 
 fn is_llama3_instruct_template(template: &str) -> bool {
@@ -2077,6 +2082,27 @@ mod tests {
             Some(end_id),
             "marker must remain a single special id after text, got {with_text:?}",
         );
+    }
+
+    // Phi-3(.5) chat templates carry <|system|>/<|user|>/<|assistant|> like the
+    // TinyLlama marker template but terminate turns with <|end|>. They must
+    // match the phi3 renderer, not tinyllama — otherwise the markers tokenize as
+    // literal text and chat never stops.
+    #[test]
+    fn phi3_template_is_not_matched_as_tinyllama_marker() {
+        let phi35 = "{% for message in messages %}{% if message['role'] == 'system' %}\
+            {{'<|system|>\n' + message['content'] + '<|end|>\n'}}{% elif message['role'] == \
+            'user' %}{{'<|user|>\n' + message['content'] + '<|end|>\n'}}{% elif \
+            message['role'] == 'assistant' %}{{'<|assistant|>\n' + message['content'] + \
+            '<|end|>\n'}}{% endif %}{% endfor %}";
+        assert!(super::is_phi3_template(phi35));
+        assert!(!super::is_tinyllama_marker_template(phi35));
+
+        // A genuine TinyLlama/Zephyr marker template terminates with </s> (no
+        // <|end|>) and still routes to tinyllama.
+        let tinyllama = "<|system|>\n{system}</s>\n<|user|>\n{user}</s>\n<|assistant|>\n";
+        assert!(super::is_tinyllama_marker_template(tinyllama));
+        assert!(!super::is_phi3_template(tinyllama));
     }
 
     fn tokenizer_fixture<const N: usize>(overrides: [(&str, GgufMetadataValue); N]) -> GgufFile {

@@ -1604,6 +1604,7 @@ impl Q5KBlock {
 /// `vdotq_s32` intrinsic.
 #[cfg(target_arch = "aarch64")]
 #[inline]
+#[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
 unsafe fn qk_pair_sdot(
     low0: std::arch::aarch64::int8x16_t,
     low1: std::arch::aarch64::int8x16_t,
@@ -1650,7 +1651,12 @@ unsafe fn qk_pair_sdot(
             options(nostack, preserves_flags),
         );
     }
-    (vaddvq_s32(awl), vaddvq_s32(awh), vaddvq_s32(aal), vaddvq_s32(aah))
+    (
+        vaddvq_s32(awl),
+        vaddvq_s32(awh),
+        vaddvq_s32(aal),
+        vaddvq_s32(aah),
+    )
 }
 
 /// AArch64 dotprod dot product for a Q4_K super-block, bit-exact with
@@ -1659,12 +1665,14 @@ unsafe fn qk_pair_sdot(
 /// to the scalar path, so single- and batch-token results stay bit-exact.
 /// Row-dot per sub-block j is `x_scales[j] * (scale[j]·Σq·x − min[j]·Σx)` with
 /// quants unsigned (offset carried by the min term).
+///
+/// # Safety
+/// Requires an AArch64 CPU with the `dotprod` feature. `x_i8` must hold
+/// `QK_K_BLOCK_SIZE` elements and `x_scales` one f32 per 32-lane sub-block;
+/// `unpacked` must be a fully populated `Q4KUnpacked`.
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn q4k_dot_preloaded_neon(
-    unpacked: &Q4KUnpacked,
-    x_i8: &[i8],
-    x_scales: &[f32],
-) -> f32 {
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn q4k_dot_preloaded_neon(unpacked: &Q4KUnpacked, x_i8: &[i8], x_scales: &[f32]) -> f32 {
     use std::arch::aarch64::{
         int8x16_t, vandq_u8, vdupq_n_s8, vdupq_n_u8, vld1q_s8, vld1q_u8, vreinterpretq_s8_u8,
         vshrq_n_u8,
@@ -1711,12 +1719,14 @@ pub unsafe fn q4k_dot_preloaded_neon(
 /// `Q5KBlock::dot_q8_scaled_preloaded`. Same as the Q4_K kernel with the 5th
 /// (high) bit merged into each quant before the sdot: the low nibble uses the
 /// `u1` qh mask, the high nibble `u2`, both shifting left by 2 each pair.
+///
+/// # Safety
+/// Requires an AArch64 CPU with the `dotprod` feature. `x_i8` must hold
+/// `QK_K_BLOCK_SIZE` elements and `x_scales` one f32 per 32-lane sub-block;
+/// `unpacked` must be a fully populated `Q5KUnpacked`.
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn q5k_dot_preloaded_neon(
-    unpacked: &Q5KUnpacked,
-    x_i8: &[i8],
-    x_scales: &[f32],
-) -> f32 {
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn q5k_dot_preloaded_neon(unpacked: &Q5KUnpacked, x_i8: &[i8], x_scales: &[f32]) -> f32 {
     use std::arch::aarch64::{
         int8x16_t, vaddq_u8, vandq_u8, vdupq_n_s8, vdupq_n_u8, vld1q_s8, vld1q_u8,
         vreinterpretq_s8_u8, vshrq_n_u8, vtstq_u8,
@@ -2211,20 +2221,36 @@ pub fn quantize_f32_matrix_to_q8_0_blocks(
     blocks
 }
 
-pub fn quantize_f32_matrix_to_q4_0_blocks(values: &[f32], rows: usize, cols: usize) -> Vec<Q4_0Block> {
-    assert!(cols.is_multiple_of(Q8_BLOCK_SIZE), "cols ({cols}) must be a multiple of {Q8_BLOCK_SIZE}");
-    assert_eq!(values.len(), rows * cols, "values.len() ({}) != rows*cols ({})", values.len(), rows * cols);
+pub fn quantize_f32_matrix_to_q4_0_blocks(
+    values: &[f32],
+    rows: usize,
+    cols: usize,
+) -> Vec<Q4_0Block> {
+    assert!(
+        cols.is_multiple_of(Q8_BLOCK_SIZE),
+        "cols ({cols}) must be a multiple of {Q8_BLOCK_SIZE}"
+    );
+    assert_eq!(
+        values.len(),
+        rows * cols,
+        "values.len() ({}) != rows*cols ({})",
+        values.len(),
+        rows * cols
+    );
     let blocks_per_row = cols / Q8_BLOCK_SIZE;
     let mut blocks = Vec::with_capacity(rows * blocks_per_row);
     for row in 0..rows {
         let row_start = row * cols;
         for b in 0..blocks_per_row {
-            let chunk = &values[row_start + b * Q8_BLOCK_SIZE .. row_start + (b + 1) * Q8_BLOCK_SIZE];
+            let chunk = &values[row_start + b * Q8_BLOCK_SIZE..row_start + (b + 1) * Q8_BLOCK_SIZE];
             let mut amax = 0.0_f32;
             let mut max = 0.0_f32;
             for &v in chunk {
                 let a = v.abs();
-                if a > amax { amax = a; max = v; }
+                if a > amax {
+                    amax = a;
+                    max = v;
+                }
             }
             let d = max / -8.0;
             let id = if d != 0.0 { 1.0 / d } else { 0.0 };
@@ -3978,7 +4004,8 @@ mod tests {
                 let blk = &blocks[row * blocks_per_row + b];
                 let d = blk.scale_f32();
                 let recon = blk.unpack_values();
-                let chunk = &values[row_start + b * Q8_BLOCK_SIZE..row_start + (b + 1) * Q8_BLOCK_SIZE];
+                let chunk =
+                    &values[row_start + b * Q8_BLOCK_SIZE..row_start + (b + 1) * Q8_BLOCK_SIZE];
                 for k in 0..Q8_BLOCK_SIZE {
                     let err = (recon[k] as f32 * d - chunk[k]).abs();
                     assert!(
@@ -4503,6 +4530,10 @@ mod tests {
         assert_eq!(preloaded, scalar);
     }
 
+    // Pure NEON-vs-scalar parity test: its whole body is only exercised inside
+    // the aarch64 dotprod block, so on x86_64 (the CI runner) every local is
+    // unused. Gate the entire test to aarch64.
+    #[cfg(target_arch = "aarch64")]
     #[test]
     fn q6_k_block_sdot_matches_scalar() {
         let mut ql = [0_u8; 128];

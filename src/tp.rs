@@ -12,9 +12,7 @@
 //! granularity, so the harness must load weights with the 1x4 swizzle
 //! disabled (`NANOCAMELID_Q4_SWIZZLE_1X4=0`, `NANOCAMELID_Q8_SWIZZLE_1X4=0`).
 
-use crate::inference::{
-    self, AttentionInput, LlamaKvCache, LlamaRuntimeOptions, LlamaWorkspace,
-};
+use crate::inference::{self, AttentionInput, LlamaKvCache, LlamaRuntimeOptions, LlamaWorkspace};
 use crate::model::{LlamaFfnWeights, LlamaLayerWeights, LlamaModelConfig, QuantizedMatrix};
 
 pub struct TpShard {
@@ -74,7 +72,7 @@ fn slice_cols(
     c0: usize,
     c1: usize,
 ) -> Result<QuantizedMatrix, String> {
-    if c0 % 32 != 0 || c1 % 32 != 0 {
+    if !c0.is_multiple_of(32) || !c1.is_multiple_of(32) {
         return Err(format!("column slice {c0}..{c1} not block-aligned"));
     }
     let bpr = blocks_per_row(cols);
@@ -115,15 +113,15 @@ pub fn build_tp_shards(
     if shard_count < 2 {
         return Err("tensor parallelism needs at least 2 shards".to_owned());
     }
-    if config.attention_head_count % shard_count != 0
-        || config.attention_head_count_kv % shard_count != 0
+    if !config.attention_head_count.is_multiple_of(shard_count)
+        || !config.attention_head_count_kv.is_multiple_of(shard_count)
     {
         return Err(format!(
             "head counts {}q/{}kv not divisible by {shard_count} shards",
             config.attention_head_count, config.attention_head_count_kv
         ));
     }
-    if config.feed_forward_length % (shard_count * 32) != 0 {
+    if !config.feed_forward_length.is_multiple_of(shard_count * 32) {
         return Err(format!(
             "feed_forward_length {} not block-divisible by {shard_count} shards",
             config.feed_forward_length
@@ -311,7 +309,9 @@ where
                 cfg.rope_style,
             );
 
-            shard.cache.store_kv(layer_idx, pos, &shard.ws.k, &shard.ws.v);
+            shard
+                .cache
+                .store_kv(layer_idx, pos, &shard.ws.k, &shard.ws.v);
             let scale = 1.0 / (cfg.head_dim as f32).sqrt();
             shard.ws.attn_output.fill(0.0);
             inference::apply_attention_heads(
@@ -393,7 +393,11 @@ where
                 emb,
                 options.q8_selector,
             );
-            inference::fused_silu_mul(&mut shard.ws.ffn_gate_up, &shard.ws.ffn_gate, &shard.ws.ffn_up);
+            inference::fused_silu_mul(
+                &mut shard.ws.ffn_gate_up,
+                &shard.ws.ffn_gate,
+                &shard.ws.ffn_up,
+            );
             inference::quantize_f32_to_q8_0(
                 &shard.ws.ffn_gate_up,
                 &mut shard.ws.x_i8,
@@ -509,7 +513,11 @@ pub fn build_tp_head_shards(
     let mut shards = Vec::with_capacity(shard_count);
     let mut start = 0usize;
     for s in 0..shard_count {
-        let rows = if s + 1 == shard_count { vocab - start } else { base };
+        let rows = if s + 1 == shard_count {
+            vocab - start
+        } else {
+            base
+        };
         let slice = &embeddings[start * emb..(start + rows) * emb];
         let row_major = crate::q8::quantize_f32_matrix_to_q8_0_blocks(slice, rows, emb);
         let matrix = if rows.is_multiple_of(4) {
@@ -608,16 +616,14 @@ pub fn shard_geometry(
         return Err("bad shard index".to_owned());
     }
     if shares.iter().sum::<usize>() != kv_total {
-        return Err(format!(
-            "shares {shares:?} must sum to {kv_total} kv heads"
-        ));
+        return Err(format!("shares {shares:?} must sum to {kv_total} kv heads"));
     }
-    if shares.iter().any(|&s| s == 0) {
+    if shares.contains(&0) {
         return Err("every shard needs at least one kv head".to_owned());
     }
     let q_per_kv = config.attention_head_count / kv_total;
     for &s in shares {
-        if (config.feed_forward_length * s) % (kv_total * 32) != 0 {
+        if !(config.feed_forward_length * s).is_multiple_of(kv_total * 32) {
             return Err(format!(
                 "ffn {} not 32-block divisible for share {s}/{kv_total}",
                 config.feed_forward_length
@@ -705,8 +711,10 @@ fn load_rows_direct(
         .layout()
         .ok_or_else(|| format!("{name}: no layout"))?;
     let block_vals = block_vals as usize;
-    if cols % block_vals != 0 {
-        return Err(format!("{name}: cols {cols} not divisible by block {block_vals}"));
+    if !cols.is_multiple_of(block_vals) {
+        return Err(format!(
+            "{name}: cols {cols} not divisible by block {block_vals}"
+        ));
     }
     let bpr = cols / block_vals;
     let bytes = tensor_all_bytes(mmap, desc)?;
@@ -734,7 +742,7 @@ fn load_cols_direct(
         .tensor_type
         .layout()
         .ok_or_else(|| format!("{name}: no layout"))?;
-    if block_vals != 32 || c0 % 32 != 0 || c1 % 32 != 0 {
+    if block_vals != 32 || !c0.is_multiple_of(32) || !c1.is_multiple_of(32) {
         return Err(format!("{name}: column slice not block-aligned"));
     }
     let bpr = cols / 32;
@@ -789,7 +797,7 @@ fn half_to_f32(bits: u16) -> f32 {
                 m <<= 1;
                 e -= 1;
             }
-            (sign << 31) | ((e as u32) << 23) | ((m as u32 & 0x3ff) << 13)
+            (sign << 31) | ((e as u32) << 23) | ((m & 0x3ff) << 13)
         }
         (0x1f, 0) => (sign << 31) | 0x7f80_0000,
         (0x1f, _) => (sign << 31) | 0x7fc0_0000,
@@ -827,7 +835,11 @@ pub fn load_tp_shard_direct(
     }
     // Fail closed: the wire TP shard loader does not yet carry per-head
     // QK-norm, so it must refuse Qwen3/Gemma3 rather than silently drop it.
-    if gguf.tensors.iter().any(|t| t.name.ends_with(".attn_q_norm.weight")) {
+    if gguf
+        .tensors
+        .iter()
+        .any(|t| t.name.ends_with(".attn_q_norm.weight"))
+    {
         return Err(
             "wire tensor parallelism does not yet support QK-norm architectures (qwen3/gemma3)"
                 .to_owned(),
@@ -870,7 +882,14 @@ pub fn load_tp_shard_direct(
             )?,
             ffn_norm: load_norm(&mmap, gguf, &format!("blk.{i}.ffn_norm.weight"), emb)?,
             ffn: LlamaFfnWeights::Dense {
-                w1: load_rows_direct(&mmap, gguf, &format!("blk.{i}.ffn_gate.weight"), emb, f0, f1)?,
+                w1: load_rows_direct(
+                    &mmap,
+                    gguf,
+                    &format!("blk.{i}.ffn_gate.weight"),
+                    emb,
+                    f0,
+                    f1,
+                )?,
                 w3: load_rows_direct(&mmap, gguf, &format!("blk.{i}.ffn_up.weight"), emb, f0, f1)?,
                 w2: load_cols_direct(
                     &mmap,
@@ -947,7 +966,11 @@ pub fn load_tp_shard_direct(
             if geo.head_rows.is_multiple_of(4) {
                 TpHeadMatrix::Quantized(QuantizedMatrix::Q8_0Swizzled1x4(
                     crate::model::Q8_0Swizzled1x4Matrix {
-                        swizzled_1x4: crate::q8::swizzle_q8_0_1x4(&row_major, geo.head_rows, emb / 32),
+                        swizzled_1x4: crate::q8::swizzle_q8_0_1x4(
+                            &row_major,
+                            geo.head_rows,
+                            emb / 32,
+                        ),
                         page_aligned_1x4: None,
                         rows: geo.head_rows,
                         cols: emb,

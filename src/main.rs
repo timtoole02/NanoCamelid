@@ -10337,6 +10337,7 @@ fn runtime_dotprod() -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use std::{
         collections::BTreeMap,
@@ -15108,19 +15109,13 @@ fn run_webui_command(args: &[String]) -> ExitCode {
     let active = match serve_active_entry(&entries) {
         Some(e) => e,
         None => {
-            eprintln!(
-                "no .gguf models found in {}",
-                cfg.model_dir.display()
-            );
+            eprintln!("no .gguf models found in {}", cfg.model_dir.display());
             return ExitCode::FAILURE;
         }
     };
     let active_path = active.path.clone();
     let active_id = active.filename.clone();
-    println!(
-        "nanocamelid serve: loading {} ...",
-        active_path.display()
-    );
+    println!("nanocamelid serve: loading {} ...", active_path.display());
 
     let selector = q8::Q8DotKernelSelector::from_env();
     let loaded = match load_tui_model(&active_path, selector) {
@@ -15160,9 +15155,14 @@ fn run_webui_command(args: &[String]) -> ExitCode {
                 // single-threaded accept loop (Slowloris). Best-effort; generous for LAN.
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                 let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(20)));
-                if let Err(err) =
-                    handle_webui_connection(&mut stream, &cfg, &model, &entries, &active_id, &mut session)
-                {
+                if let Err(err) = handle_webui_connection(
+                    &mut stream,
+                    &cfg,
+                    &model,
+                    &entries,
+                    &active_id,
+                    &mut session,
+                ) {
                     eprintln!("serve: connection error: {err}");
                 }
             }
@@ -15178,7 +15178,9 @@ struct WebuiHttpRequest {
     body: Vec<u8>,
 }
 
-fn read_http_request(stream: &mut std::net::TcpStream) -> std::io::Result<Option<WebuiHttpRequest>> {
+fn read_http_request(
+    stream: &mut std::net::TcpStream,
+) -> std::io::Result<Option<WebuiHttpRequest>> {
     use std::io::Read;
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
@@ -15206,7 +15208,10 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> std::io::Result<Option
     let path = parts.next().unwrap_or_default().to_owned();
     let mut content_length = 0usize;
     for line in lines {
-        if let Some(v) = line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")) {
+        if let Some(v) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("content-length:"))
+        {
             content_length = v.trim().parse().unwrap_or(0);
         }
     }
@@ -15256,7 +15261,13 @@ fn write_bytes_response(
 }
 
 fn write_json(stream: &mut std::net::TcpStream, status: u16, body: &str) -> std::io::Result<()> {
-    write_bytes_response(stream, status, body.as_bytes(), "application/json", "no-cache")
+    write_bytes_response(
+        stream,
+        status,
+        body.as_bytes(),
+        "application/json",
+        "no-cache",
+    )
 }
 
 fn extract_json_string_field(body: &str, field: &str) -> Option<String> {
@@ -15294,10 +15305,10 @@ fn parse_json_string_at(after: &str) -> String {
             pending_u.push(c);
             in_u -= 1;
             if in_u == 0 {
-                if let Ok(cp) = u32::from_str_radix(&pending_u, 16) {
-                    if let Some(ch) = char::from_u32(cp) {
-                        out.push(ch);
-                    }
+                if let Ok(cp) = u32::from_str_radix(&pending_u, 16)
+                    && let Some(ch) = char::from_u32(cp)
+                {
+                    out.push(ch);
                 }
                 pending_u.clear();
             }
@@ -15330,6 +15341,9 @@ fn parse_json_string_at(after: &str) -> String {
     out
 }
 
+// The early `return true` intentionally keeps LAN mode wide open; the route
+// allow-list below is retained as reference logic for a future non-LAN bind.
+#[allow(unreachable_code, unused_variables)]
 fn serve_is_public(method: &str, path: &str) -> bool {
     return true; // LAN: all routes public; --api-key only guards the 0.0.0.0 bind
 
@@ -15408,13 +15422,23 @@ fn serve_static(stream: &mut std::net::TcpStream, path: &str) -> std::io::Result
         return write_bytes_response(stream, 200, data, mime, cache);
     }
     // SPA fallback: non-file GET → index.html
-    let is_file = rel.rsplit('/').next().map(|s| s.contains('.')).unwrap_or(false);
-    if !is_file {
-        if let Some(&(_, mime, data)) = WEBUI_ASSETS.iter().find(|&&(p, _, _)| p == "index.html") {
-            return write_bytes_response(stream, 200, data, mime, "no-cache");
-        }
+    let is_file = rel
+        .rsplit('/')
+        .next()
+        .map(|s| s.contains('.'))
+        .unwrap_or(false);
+    if !is_file
+        && let Some(&(_, mime, data)) = WEBUI_ASSETS.iter().find(|&&(p, _, _)| p == "index.html")
+    {
+        return write_bytes_response(stream, 200, data, mime, "no-cache");
     }
-    write_bytes_response(stream, 404, b"not found", "text/plain; charset=utf-8", "no-cache")
+    write_bytes_response(
+        stream,
+        404,
+        b"not found",
+        "text/plain; charset=utf-8",
+        "no-cache",
+    )
 }
 
 fn handle_webui_connection(
@@ -15449,9 +15473,7 @@ fn handle_webui_connection(
         }
         ("GET", "/api/capabilities") => write_json(stream, 200, &serve_capabilities_json()),
         ("GET", "/v1/models") => write_json(stream, 200, &serve_models_v1_json(active_id)),
-        ("GET", "/api/models/local") => {
-            write_json(stream, 200, &serve_models_local_json(entries))
-        }
+        ("GET", "/api/models/local") => write_json(stream, 200, &serve_models_local_json(entries)),
         ("GET", "/api/models/current") => {
             let active = serve_active_entry(entries);
             match active {
@@ -15484,11 +15506,7 @@ fn handle_chat_completion(
     let user_content = match extract_json_string_field(&body_str, "content") {
         Some(c) if !c.is_empty() => c,
         _ => {
-            return write_json(
-                stream,
-                400,
-                "{\"error\":\"missing messages[].content\"}",
-            );
+            return write_json(stream, 400, "{\"error\":\"missing messages[].content\"}");
         }
     };
 

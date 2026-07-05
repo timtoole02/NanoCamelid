@@ -108,3 +108,49 @@ aarch64 NEON path (the identical kernel path the Pi uses). Pi smoke is pending.
   `parse_special = true` and stay a single token mid-text. Fails on the
   CONTROL-only matcher, passes after the fix.
 - Full suite green: 123 lib + 191 bin tests pass (`cargo test --release`).
+
+## Follow-up (2026-07-05): bugs found by the Pi hardware smoke
+
+The first pass was validated on an M4 with a K-quant `Phi-3-mini-4k` GGUF. A
+real Pi 5 smoke with the canonical `Phi-3.5-mini-instruct-q4_0.gguf` exposed two
+variant-specific bugs the Mac path had dodged, plus one non-phi3 resource issue.
+
+1. **Swizzled fused-tensor split.** Q4_0 tensors load through the 1x4 SDOT
+   swizzle by default (`NANOCAMELID_Q4_SWIZZLE_1X4`, default on), so the fused
+   `attn_qkv`/`ffn_up` arrived as `Q4_0Swizzled1x4`, which `slice_matrix_rows`
+   cannot slice (it errors on swizzled/f32). The Mac model was K-quant, which is
+   never swizzled, so it never hit this. Fix: `load_quantized_matrix_unswizzled`
+   loads the fused tensors as plain `Q4_0`/`Q8_0` (K-quants defer to the normal
+   loader), so the whole-row split works; non-fused tensors keep the default
+   swizzle. (The split pieces are plain, i.e. not on the 1x4 fast path — a
+   correctness-first choice; re-swizzling the pieces is a possible perf
+   follow-up.)
+
+2. **Renderer misroute (phi3 stolen by the TinyLlama matcher).** `render_chat_
+   prompt` checked `is_tinyllama_marker_template` before `is_phi3_template`, and
+   the TinyLlama matcher only required `<|system|>` + `<|user|>` + `<|assistant|>`
+   — all present in the Phi-3.5 template. So Phi-3.5 rendered as `tinyllama_
+   marker`, which sets `parse_special = self.chat_prompt_parse_special()` (false
+   for SPM) → the markers tokenized as literal characters again and chat never
+   stopped. (Phi-3-mini-4k's template lacked the `<|system|>` branch, so it
+   still routed to phi3 on the Mac.) Fix: `is_tinyllama_marker_template` now also
+   requires the template NOT contain `<|end|>` (phi3's turn terminator;
+   TinyLlama/Zephyr use `</s>`), making the two matchers mutually exclusive at
+   both dispatch sites. New test `phi3_template_is_not_matched_as_tinyllama_
+   marker`.
+
+3. **51 GB allocation (not a phi3 bug).** Phi-3.5-mini has a `131072` context;
+   the KV cache is sized to the full context, which OOMs a 16 GB Pi. Bounded
+   with `NANOCAMELID_CONTEXT_LIMIT` (e.g. `4096`).
+
+### Pi verification (camelid2, Pi 5, default swizzle-on config)
+
+`NANOCAMELID_CONTEXT_LIMIT=4096 nanocamelid chat phi-3.5-mini-instruct-q4_0.gguf
+"Name three primary colors." 0.0 200`:
+
+- weights load (no swizzle-split error), renderer `phi3`;
+- prompt markers tokenize to `32010`/`32007`/`32001` (no literal-char runs);
+- chat **stops cleanly** at 85 tokens (`generation_status: ok`) with a coherent
+  answer, ~4.0 tok/s; raw generate → `"Paris."`.
+
+Local: Phi-3-mini-4k still stops at 47 tok (no regression); 124 lib tests pass.

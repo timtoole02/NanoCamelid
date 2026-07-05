@@ -843,8 +843,7 @@ fn run_master_generate(
         let emb_len = loaded.config.embedding_length;
 
         while generated_tokens.len() < max_tokens {
-            if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length
-            {
+            if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length {
                 break;
             }
 
@@ -981,8 +980,7 @@ fn run_master_generate(
         }
     } else {
         while generated_tokens.len() < max_tokens {
-            if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length
-            {
+            if is_stop_token(&tokenizer, next_token as u32) || pos >= loaded.config.context_length {
                 break;
             }
 

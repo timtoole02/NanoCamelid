@@ -40,7 +40,8 @@ fn main() -> Result<(), String> {
     }
 
     let load_started = Instant::now();
-    let shard = model::LlamaWeights::load_distributed(Path::new(&path), &config, &gguf, start, end)?;
+    let shard =
+        model::LlamaWeights::load_distributed(Path::new(&path), &config, &gguf, start, end)?;
     let load_secs = load_started.elapsed().as_secs_f64();
 
     let options = inference::LlamaRuntimeOptions {
@@ -60,11 +61,22 @@ fn main() -> Result<(), String> {
     }
 
     // Warmup token
-    inference::run_layer_range(start, &shard.layers, 0, &config, &mut cache, &mut ws, options);
+    inference::run_layer_range(
+        start,
+        &shard.layers,
+        0,
+        &config,
+        &mut cache,
+        &mut ws,
+        options,
+    );
 
     // Mirror the final worker's steady state when asked: layers, then the
     // untied-head logits pass, per token.
-    let output_norm = shard.output_norm.clone().unwrap_or_else(|| vec![1.0; config.embedding_length]);
+    let output_norm = shard
+        .output_norm
+        .clone()
+        .unwrap_or_else(|| vec![1.0; config.embedding_length]);
     let empty_embeddings: Vec<f32> = Vec::new();
 
     let faults_before = majflt();
@@ -73,7 +85,15 @@ fn main() -> Result<(), String> {
     let mut logits_ms = 0.0_f64;
     for pos in 1..=tokens {
         let t0 = Instant::now();
-        inference::run_layer_range(start, &shard.layers, pos, &config, &mut cache, &mut ws, options);
+        inference::run_layer_range(
+            start,
+            &shard.layers,
+            pos,
+            &config,
+            &mut cache,
+            &mut ws,
+            options,
+        );
         layers_ms += t0.elapsed().as_secs_f64() * 1000.0;
         if with_logits {
             let t1 = Instant::now();

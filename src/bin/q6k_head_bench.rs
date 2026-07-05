@@ -17,7 +17,12 @@ fn main() {
     let w: Vec<Q6KBlock> = (0..rows * blocks_per_row)
         .map(|i| {
             let b = (i % 251) as u8;
-            Q6KBlock::from_parts([b; 128], [b; 64], [(i % 17) as i8; 16], 1000 + (i % 7) as u16)
+            Q6KBlock::from_parts(
+                [b; 128],
+                [b; 64],
+                [(i % 17) as i8; 16],
+                1000 + (i % 7) as u16,
+            )
         })
         .collect();
 

@@ -242,9 +242,8 @@ pub fn recv_activation_packet_limited<R: Read>(
 /// Per-position predictions for a verify batch: the target's greedy argmax
 /// after each of the batch's positions, in order.
 pub fn send_batch_feedback<W: Write>(writer: &mut W, tokens: &[u32]) -> io::Result<()> {
-    let count = u32::try_from(tokens.len()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "batch feedback too large")
-    })?;
+    let count = u32::try_from(tokens.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "batch feedback too large"))?;
     let mut message = Vec::with_capacity(8 + tokens.len() * 4);
     message.extend_from_slice(&BATCH_FEEDBACK_MAGIC.to_le_bytes());
     message.extend_from_slice(&count.to_le_bytes());
