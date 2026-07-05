@@ -15,8 +15,12 @@
 //! the real `shard_geometry` accepts, and print the exact per-node launch plan.
 //! Live SSH launch / gate / `down` build on these same pieces.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use crate::model::LlamaModelConfig;
 use crate::{gguf, tp};
@@ -383,6 +387,383 @@ fn print_plan(manifest: &Manifest, shares: &[usize]) {
     );
 }
 
+// ---- live control plane: SSH, probe, launch, gate, state ----
+
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return format!("{home}/{rest}");
+    }
+    path.to_owned()
+}
+
+fn ssh_target(node: &NodeCfg, cluster: &ClusterCfg) -> String {
+    match cluster.ssh_user.as_deref() {
+        Some(u) => format!("{u}@{}", node.host),
+        None => node.host.clone(),
+    }
+}
+
+fn ssh_command(node: &NodeCfg, cluster: &ClusterCfg, remote: &str) -> Command {
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=10")
+        .arg("-o")
+        .arg("ServerAliveInterval=5")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new");
+    if let Some(key) = cluster.ssh_key.as_deref() {
+        cmd.arg("-i").arg(expand_tilde(key));
+    }
+    cmd.arg(ssh_target(node, cluster)).arg(remote);
+    cmd
+}
+
+fn ssh_run(node: &NodeCfg, cluster: &ClusterCfg, remote: &str) -> Result<String, String> {
+    let out = ssh_command(node, cluster, remote)
+        .output()
+        .map_err(|e| format!("ssh {} spawn failed: {e}", node.host))?;
+    if !out.status.success() {
+        return Err(format!(
+            "ssh {} `{remote}` failed: {}",
+            node.host,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+struct NodeProbe {
+    cores: usize,
+    mem_total_kb: u64,
+}
+
+/// Read cores + RAM from /proc directly — robust, no dependency on the remote
+/// binary version.
+fn probe_node(node: &NodeCfg, cluster: &ClusterCfg) -> Result<NodeProbe, String> {
+    let out = ssh_run(
+        node,
+        cluster,
+        "nproc; awk '/^MemTotal:/{print $2}' /proc/meminfo",
+    )?;
+    let mut lines = out.lines();
+    let cores = lines
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| format!("{}: could not read nproc", node.name))?;
+    let mem_total_kb = lines
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| format!("{}: could not read MemTotal", node.name))?;
+    Ok(NodeProbe {
+        cores,
+        mem_total_kb,
+    })
+}
+
+/// Planner weights from probed RAM (minus the OS/staging reserve), honoring any
+/// manual per-node `weight` override.
+fn live_weights(manifest: &Manifest, probes: &[NodeProbe]) -> Vec<f64> {
+    let reserve_kb = manifest.cluster.reserve_ram_mb * 1024;
+    manifest
+        .nodes
+        .iter()
+        .zip(probes)
+        .map(|(n, p)| {
+            n.weight
+                .unwrap_or_else(|| (p.mem_total_kb.saturating_sub(reserve_kb)).max(1) as f64)
+        })
+        .collect()
+}
+
+/// Refuse to ship large models: verify the GGUF is already staged on the node.
+fn ensure_model(node: &NodeCfg, cluster: &ClusterCfg) -> Result<(), String> {
+    let path = node_model_path(node, cluster);
+    ssh_run(node, cluster, &format!("test -f '{path}'")).map(|_| ()).map_err(|_| {
+        format!(
+            "model not found on {} at {path}. Stage the GGUF there first — `up` does not ship large models.",
+            node.name
+        )
+    })
+}
+
+/// Verify the cluster_tp_node binary is reachable on the node (bin_path or PATH).
+fn ensure_binary(node: &NodeCfg, cluster: &ClusterCfg) -> Result<(), String> {
+    let b = bin(cluster);
+    let check = if b.contains('/') {
+        format!("test -x '{b}'")
+    } else {
+        format!("command -v {b} >/dev/null")
+    };
+    ssh_run(node, cluster, &check).map(|_| ()).map_err(|_| {
+        format!(
+            "cluster_tp_node not found on {} ({b}). Set [cluster].bin_path or install it on PATH.",
+            node.name
+        )
+    })
+}
+
+/// Launch a detached remote process that survives the SSH session; return its pid.
+fn ssh_launch_detached(
+    node: &NodeCfg,
+    cluster: &ClusterCfg,
+    full_cmd: &str,
+    log_name: &str,
+) -> Result<u32, String> {
+    let escaped = full_cmd.replace('\'', "'\\''");
+    let remote = format!(
+        "mkdir -p ~/.nanocamelid/logs && setsid nohup sh -c '{escaped}' \
+         > ~/.nanocamelid/logs/{log_name}.log 2>&1 < /dev/null & echo $!"
+    );
+    let out = ssh_run(node, cluster, &remote)?;
+    out.lines()
+        .last()
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| format!("{}: could not capture launch pid", node.name))
+}
+
+fn poll_worker_ready(
+    node: &NodeCfg,
+    cluster: &ClusterCfg,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let cmd = format!(
+            "grep -c 'listening on' ~/.nanocamelid/logs/{}.log 2>/dev/null || true",
+            node.name
+        );
+        if let Ok(s) = ssh_run(node, cluster, &cmd)
+            && s.lines()
+                .last()
+                .is_some_and(|l| l.trim().parse::<u32>().unwrap_or(0) > 0)
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "worker {} did not report listening within {}s (see ~/.nanocamelid/logs/{}.log)",
+                node.name,
+                timeout.as_secs(),
+                node.name
+            ));
+        }
+        sleep(Duration::from_secs(2));
+    }
+}
+
+/// One `GET /v1/health` against the head endpoint; true on a 2xx.
+fn http_health_ok(host: &str, port: u16) -> bool {
+    let addr = format!("{host}:{port}");
+    let Ok(mut stream) = TcpStream::connect(&addr) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let req = format!("GET /v1/health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 256];
+    match stream.read(&mut buf) {
+        Ok(n) => {
+            let head = String::from_utf8_lossy(&buf[..n]);
+            head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200")
+        }
+        Err(_) => false,
+    }
+}
+
+fn poll_head_ready(host: &str, port: u16, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if http_health_ok(host, port) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "head endpoint http://{host}:{port}/v1/health did not come up within {}s",
+                timeout.as_secs()
+            ));
+        }
+        sleep(Duration::from_secs(2));
+    }
+}
+
+/// TERM a recorded pid, then KILL after a grace window; pattern-scoped fallback.
+fn kill_proc(node: &NodeCfg, cluster: &ClusterCfg, pid: u32, pattern: &str, force: bool) {
+    let seq = if force {
+        format!("kill -9 {pid} 2>/dev/null; pkill -9 -f {pattern:?} 2>/dev/null; true")
+    } else {
+        format!(
+            "kill {pid} 2>/dev/null; sleep 2; kill -9 {pid} 2>/dev/null; pkill -f {pattern:?} 2>/dev/null; true"
+        )
+    };
+    let _ = ssh_run(node, cluster, &seq);
+}
+
+// ---- state lockfile: ~/.nanocamelid/clusters/<name>.state.json ----
+
+#[derive(Debug, Clone, PartialEq)]
+struct ProcRef {
+    name: String,
+    host: String,
+    shard_idx: usize,
+    pid: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ClusterState {
+    name: String,
+    model: String,
+    serve_port: u16,
+    shares: Vec<usize>,
+    ssh_user: Option<String>,
+    ssh_key: Option<String>,
+    head: ProcRef,
+    workers: Vec<ProcRef>,
+}
+
+impl ClusterState {
+    /// A ClusterCfg carrying just what `down` needs to reach the nodes.
+    fn teardown_cluster(&self) -> ClusterCfg {
+        ClusterCfg {
+            model: self.model.clone(),
+            serve_port: self.serve_port,
+            ssh_user: self.ssh_user.clone(),
+            ssh_key: self.ssh_key.clone(),
+            ..ClusterCfg::default()
+        }
+    }
+}
+
+fn proc_node(p: &ProcRef, role: NodeRole) -> NodeCfg {
+    NodeCfg {
+        name: p.name.clone(),
+        host: p.host.clone(),
+        role,
+        worker_port: None,
+        max_cores: None,
+        weight: None,
+        remote_model_path: None,
+    }
+}
+
+fn proc_json(p: &ProcRef) -> serde_json::Value {
+    serde_json::json!({ "name": p.name, "host": p.host, "shard_idx": p.shard_idx, "pid": p.pid })
+}
+
+fn proc_from_json(v: &serde_json::Value) -> Result<ProcRef, String> {
+    Ok(ProcRef {
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .ok_or("proc.name")?
+            .to_owned(),
+        host: v
+            .get("host")
+            .and_then(|x| x.as_str())
+            .ok_or("proc.host")?
+            .to_owned(),
+        shard_idx: v
+            .get("shard_idx")
+            .and_then(|x| x.as_u64())
+            .ok_or("proc.shard_idx")? as usize,
+        pid: v.get("pid").and_then(|x| x.as_u64()).ok_or("proc.pid")? as u32,
+    })
+}
+
+impl ClusterState {
+    fn to_json(&self) -> String {
+        let v = serde_json::json!({
+            "name": self.name,
+            "model": self.model,
+            "serve_port": self.serve_port,
+            "shares": self.shares,
+            "ssh_user": self.ssh_user,
+            "ssh_key": self.ssh_key,
+            "head": proc_json(&self.head),
+            "workers": self.workers.iter().map(proc_json).collect::<Vec<_>>(),
+        });
+        serde_json::to_string_pretty(&v).unwrap_or_default()
+    }
+
+    fn from_json(text: &str) -> Result<ClusterState, String> {
+        let v: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| format!("bad state file: {e}"))?;
+        let workers = v
+            .get("workers")
+            .and_then(|x| x.as_array())
+            .ok_or("state.workers")?
+            .iter()
+            .map(proc_from_json)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ClusterState {
+            name: v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .ok_or("state.name")?
+                .to_owned(),
+            model: v
+                .get("model")
+                .and_then(|x| x.as_str())
+                .ok_or("state.model")?
+                .to_owned(),
+            serve_port: v
+                .get("serve_port")
+                .and_then(|x| x.as_u64())
+                .ok_or("state.serve_port")? as u16,
+            shares: v
+                .get("shares")
+                .and_then(|x| x.as_array())
+                .ok_or("state.shares")?
+                .iter()
+                .map(|s| {
+                    s.as_u64()
+                        .map(|n| n as usize)
+                        .ok_or_else(|| "state.shares[]".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            ssh_user: v
+                .get("ssh_user")
+                .and_then(|x| x.as_str())
+                .map(str::to_owned),
+            ssh_key: v.get("ssh_key").and_then(|x| x.as_str()).map(str::to_owned),
+            head: proc_from_json(v.get("head").ok_or("state.head")?)?,
+            workers,
+        })
+    }
+
+    fn dir() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+        PathBuf::from(home).join(".nanocamelid").join("clusters")
+    }
+
+    fn path(name: &str) -> PathBuf {
+        ClusterState::dir().join(format!("{name}.state.json"))
+    }
+
+    fn save(&self) -> Result<(), String> {
+        std::fs::create_dir_all(ClusterState::dir()).map_err(|e| format!("state dir: {e}"))?;
+        std::fs::write(ClusterState::path(&self.name), self.to_json())
+            .map_err(|e| format!("write state: {e}"))
+    }
+
+    fn load(name: &str) -> Result<ClusterState, String> {
+        let path = ClusterState::path(name);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|_| format!("no running cluster '{name}' (missing {})", path.display()))?;
+        ClusterState::from_json(&text)
+    }
+
+    fn remove(name: &str) {
+        let _ = std::fs::remove_file(ClusterState::path(name));
+    }
+}
+
 /// `nanocamelid up --cluster <path> [--model X] [--dry-run]`.
 pub fn run_up(args: &[String]) -> ExitCode {
     let opts = match parse_up_args(args) {
@@ -406,8 +787,8 @@ pub fn run_up(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if let Some(model) = opts.model {
-        manifest.cluster.model = model;
+    if let Some(model) = &opts.model {
+        manifest.cluster.model = model.clone();
     }
     if let Err(e) = manifest.validate() {
         eprintln!("manifest error: {e}");
@@ -428,19 +809,19 @@ pub fn run_up(args: &[String]) -> ExitCode {
         }
     };
 
-    let weights = planner_weights(&manifest);
-    let shares = match plan_and_validate(&weights, &config) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("planning failed: {e}");
-            return ExitCode::from(3);
-        }
-    };
     let _ = shape;
 
-    print_plan(&manifest, &shares);
-
     if opts.dry_run {
+        // No SSH: plan from manual/equal weights and print.
+        let weights = planner_weights(&manifest);
+        let shares = match plan_and_validate(&weights, &config) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("planning failed: {e}");
+                return ExitCode::from(3);
+            }
+        };
+        print_plan(&manifest, &shares);
         println!();
         println!(
             "dry-run: no processes launched. Re-run without --dry-run to bring the cluster up."
@@ -448,30 +829,223 @@ pub fn run_up(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Live SSH launch + health-gate + state lockfile land in Phase 1b; the
-    // planner and plan output above are what `up` commits to now.
-    eprintln!(
-        "live launch is not yet wired in this build; use --dry-run to review the plan. \
-         (The auto-computed split above is validated against the real shard geometry.)"
-    );
-    ExitCode::from(1)
+    run_up_live(&manifest, &config, &opts)
 }
 
-/// `nanocamelid down` (Phase 1b: reads the state lockfile and reverses launch).
-pub fn run_down(_args: &[String]) -> ExitCode {
-    eprintln!("`nanocamelid down` lands with live launch (Phase 1b).");
-    ExitCode::from(1)
+fn kill_worker_procs(cluster: &ClusterCfg, workers: &[(&NodeCfg, usize)], procs: &[ProcRef]) {
+    for p in procs {
+        if let Some((node, _)) = workers.iter().find(|(n, _)| n.name == p.name) {
+            let pat = format!("cluster_tp_node worker {}", node_model_path(node, cluster));
+            kill_proc(node, cluster, p.pid, &pat, true);
+        }
+    }
+}
+
+fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) -> ExitCode {
+    let cluster = &manifest.cluster;
+
+    // 1. Probe RAM + cores over SSH.
+    eprintln!("probing {} node(s) over SSH ...", manifest.nodes.len());
+    let mut probes = Vec::with_capacity(manifest.nodes.len());
+    for node in &manifest.nodes {
+        match probe_node(node, cluster) {
+            Ok(p) => {
+                eprintln!(
+                    "  {:<14} {} cores, {} MiB RAM",
+                    node.name,
+                    p.cores,
+                    p.mem_total_kb / 1024
+                );
+                probes.push(p);
+            }
+            Err(e) => {
+                eprintln!("probe failed: {e}");
+                return ExitCode::from(4);
+            }
+        }
+    }
+
+    // 2. Plan from real RAM weights, validated by the library.
+    let weights = live_weights(manifest, &probes);
+    let shares = match plan_and_validate(&weights, config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("planning failed: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    print_plan(manifest, &shares);
+
+    // 3. Preflight: binary + model present on every node (never ship large files).
+    for node in &manifest.nodes {
+        if let Err(e) = ensure_binary(node, cluster) {
+            eprintln!("{e}");
+            return ExitCode::from(4);
+        }
+        if let Err(e) = ensure_model(node, cluster) {
+            eprintln!("{e}");
+            return ExitCode::from(4);
+        }
+    }
+
+    // 4. Launch workers first (they block on accept); roll back on any failure.
+    let workers: Vec<(&NodeCfg, usize)> = manifest
+        .workers()
+        .enumerate()
+        .map(|(i, w)| (w, i + 1))
+        .collect();
+    let mut worker_procs: Vec<ProcRef> = Vec::new();
+    for (node, shard_idx) in &workers {
+        eprintln!("launching worker {} (shard {shard_idx}) ...", node.name);
+        let cmd = worker_cmd(node, cluster, *shard_idx, &shares);
+        match ssh_launch_detached(node, cluster, &cmd, &node.name) {
+            Ok(pid) => worker_procs.push(ProcRef {
+                name: node.name.clone(),
+                host: node.host.clone(),
+                shard_idx: *shard_idx,
+                pid,
+            }),
+            Err(e) => {
+                eprintln!("launch failed: {e}");
+                kill_worker_procs(cluster, &workers, &worker_procs);
+                return ExitCode::from(5);
+            }
+        }
+    }
+
+    // 5. Gate each worker: it must load its shard and start listening.
+    for (node, _) in &workers {
+        eprintln!(
+            "waiting for worker {} to load its shard + listen ...",
+            node.name
+        );
+        if let Err(e) = poll_worker_ready(node, cluster, Duration::from_secs(300)) {
+            eprintln!("{e}");
+            kill_worker_procs(cluster, &workers, &worker_procs);
+            return ExitCode::from(5);
+        }
+    }
+
+    // 6. Launch the head (master-serve = the OpenAI endpoint).
+    let head = manifest.head();
+    eprintln!("launching head {} (master-serve) ...", head.name);
+    let head_cmd = master_cmd(manifest, &shares);
+    let head_pid = match ssh_launch_detached(head, cluster, &head_cmd, &head.name) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("launch failed: {e}");
+            kill_worker_procs(cluster, &workers, &worker_procs);
+            return ExitCode::from(5);
+        }
+    };
+
+    // 7. Gate the endpoint (this also proves every worker's HELLO validated).
+    eprintln!(
+        "waiting for the endpoint http://{}:{}/v1/health ...",
+        head.host, cluster.serve_port
+    );
+    if let Err(e) = poll_head_ready(&head.host, cluster.serve_port, Duration::from_secs(300)) {
+        eprintln!("{e}");
+        let pat = format!(
+            "cluster_tp_node master-serve {}",
+            node_model_path(head, cluster)
+        );
+        kill_proc(head, cluster, head_pid, &pat, true);
+        kill_worker_procs(cluster, &workers, &worker_procs);
+        return ExitCode::from(5);
+    }
+
+    // 8. Persist the lockfile so `down` can reverse this exact bring-up.
+    let state = ClusterState {
+        name: opts.name.clone(),
+        model: cluster.model.clone(),
+        serve_port: cluster.serve_port,
+        shares,
+        ssh_user: cluster.ssh_user.clone(),
+        ssh_key: cluster.ssh_key.clone(),
+        head: ProcRef {
+            name: head.name.clone(),
+            host: head.host.clone(),
+            shard_idx: 0,
+            pid: head_pid,
+        },
+        workers: worker_procs,
+    };
+    if let Err(e) = state.save() {
+        eprintln!("warning: cluster is up but the state lockfile did not save: {e}");
+    }
+
+    println!();
+    println!("cluster '{}' is UP.", opts.name);
+    println!(
+        "  endpoint: http://{}:{}/v1/chat/completions",
+        head.host, cluster.serve_port
+    );
+    println!(
+        "  smoke:    curl -s http://{}:{}/v1/chat/completions -d '{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":16}}'",
+        head.host, cluster.serve_port
+    );
+    println!("  down:     nanocamelid down --name {}", opts.name);
+    ExitCode::SUCCESS
+}
+
+/// `nanocamelid down [--name <id>] [--force]`. Reverses the recorded bring-up
+/// from the state lockfile — head first (stop accepting requests), then workers.
+pub fn run_down(args: &[String]) -> ExitCode {
+    let opts = match parse_down_args(args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let state = match ClusterState::load(&opts.name) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let cluster = state.teardown_cluster();
+
+    let head_node = proc_node(&state.head, NodeRole::Head);
+    eprintln!(
+        "stopping head {} (pid {}) ...",
+        state.head.name, state.head.pid
+    );
+    kill_proc(
+        &head_node,
+        &cluster,
+        state.head.pid,
+        &format!("cluster_tp_node master-serve {}", state.model),
+        opts.force,
+    );
+    for w in &state.workers {
+        eprintln!("stopping worker {} (pid {}) ...", w.name, w.pid);
+        kill_proc(
+            &proc_node(w, NodeRole::Worker),
+            &cluster,
+            w.pid,
+            &format!("cluster_tp_node worker {}", state.model),
+            opts.force,
+        );
+    }
+    ClusterState::remove(&opts.name);
+    println!("cluster '{}' is down.", opts.name);
+    ExitCode::SUCCESS
 }
 
 struct UpOpts {
     manifest: String,
     model: Option<String>,
+    name: String,
     dry_run: bool,
 }
 
 fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
     let mut manifest = None;
     let mut model = None;
+    let mut name = "default".to_owned();
     let mut dry_run = false;
     let mut i = 0;
     while i < args.len() {
@@ -484,6 +1058,10 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
                 model = Some(args.get(i + 1).ok_or("--model needs a path")?.clone());
                 i += 2;
             }
+            "--name" => {
+                name = args.get(i + 1).ok_or("--name needs an id")?.clone();
+                i += 2;
+            }
             "--dry-run" => {
                 dry_run = true;
                 i += 1;
@@ -494,8 +1072,38 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
     Ok(UpOpts {
         manifest: manifest.ok_or("up requires --cluster <manifest.toml>")?,
         model,
+        name,
         dry_run,
     })
+}
+
+struct DownOpts {
+    name: String,
+    force: bool,
+}
+
+fn parse_down_args(args: &[String]) -> Result<DownOpts, String> {
+    let mut name = "default".to_owned();
+    let mut force = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--name" => {
+                name = args.get(i + 1).ok_or("--name needs an id")?.clone();
+                i += 2;
+            }
+            // Accepted for symmetry with `up`; teardown keys off the state name.
+            "--cluster" => {
+                i += 2;
+            }
+            "--force" => {
+                force = true;
+                i += 1;
+            }
+            other => return Err(format!("unknown flag {other}")),
+        }
+    }
+    Ok(DownOpts { name, force })
 }
 
 // -------------------------------------------------------------------------
@@ -797,5 +1405,70 @@ weight = 1.5
         assert!(master.contains("cluster_tp_node master-serve"));
         // worker addresses in shard-index (manifest) order, then shares, then port
         assert!(master.contains("camelid1.local:5921,camelid2.local:5921 2,3,3 8090"));
+    }
+
+    // --- live control-plane pure logic ---
+
+    #[test]
+    fn cluster_state_round_trips_json() {
+        let s = ClusterState {
+            name: "default".into(),
+            model: "/m.gguf".into(),
+            serve_port: 8090,
+            shares: vec![2, 3, 3],
+            ssh_user: Some("tooleman".into()),
+            ssh_key: None,
+            head: ProcRef {
+                name: "h".into(),
+                host: "h.local".into(),
+                shard_idx: 0,
+                pid: 111,
+            },
+            workers: vec![
+                ProcRef {
+                    name: "w1".into(),
+                    host: "w1.local".into(),
+                    shard_idx: 1,
+                    pid: 222,
+                },
+                ProcRef {
+                    name: "w2".into(),
+                    host: "w2.local".into(),
+                    shard_idx: 2,
+                    pid: 333,
+                },
+            ],
+        };
+        let back = ClusterState::from_json(&s.to_json()).expect("round-trips");
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn expand_tilde_passthrough_without_tilde() {
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        assert_eq!(expand_tilde("relative"), "relative");
+    }
+
+    #[test]
+    fn live_weights_uses_ram_minus_reserve_and_manual_override() {
+        let m = sample_manifest(); // camelid2 has weight=1.5 override
+        let probes = vec![
+            NodeProbe {
+                cores: 4,
+                mem_total_kb: 16_000_000,
+            }, // head
+            NodeProbe {
+                cores: 4,
+                mem_total_kb: 16_000_000,
+            }, // camelid1
+            NodeProbe {
+                cores: 4,
+                mem_total_kb: 16_000_000,
+            }, // camelid2 (override)
+        ];
+        let w = live_weights(&m, &probes);
+        let reserve_kb = m.cluster.reserve_ram_mb * 1024;
+        assert_eq!(w[0], (16_000_000u64 - reserve_kb) as f64);
+        assert_eq!(w[2], 1.5); // manual override wins over probed RAM
     }
 }
