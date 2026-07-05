@@ -10,10 +10,12 @@
 //! workers-first / head-last star in the order the protocol requires, and
 //! health-gate the endpoint.
 //!
-//! Phase 1 (this file) ships the orchestration brain and a fully-offline
-//! `--dry-run`: parse the manifest, auto-compute a weighted KV-head split that
-//! the real `shard_geometry` accepts, and print the exact per-node launch plan.
-//! Live SSH launch / gate / `down` build on these same pieces.
+//! `--dry-run` previews the plan offline; live `up` probes each node's RAM+cores
+//! over SSH, auto-sizes the weighted KV-head split (validated by the real
+//! `shard_geometry`), launches workers-first/head-last, gates the endpoint, and
+//! writes a state lockfile that `down` reverses. `up --check` is a no-launch
+//! preflight doctor. A core-capped node is down-weighted by its core ratio so it
+//! gets a smaller shard and never becomes the straggler that gates every token.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -480,8 +482,20 @@ fn live_weights(manifest: &Manifest, probes: &[NodeProbe]) -> Vec<f64> {
         .iter()
         .zip(probes)
         .map(|(n, p)| {
-            n.weight
-                .unwrap_or_else(|| (p.mem_total_kb.saturating_sub(reserve_kb)).max(1) as f64)
+            // A manual weight is the operator's explicit call — honor it verbatim.
+            if let Some(w) = n.weight {
+                return w;
+            }
+            let ram = (p.mem_total_kb.saturating_sub(reserve_kb)).max(1) as f64;
+            // Brown-out awareness: a core-capped node (max_cores < its cores) has
+            // proportionally less compute per token, so scale its weight down by
+            // the core ratio. Otherwise a high-RAM but capped node would be handed
+            // a large shard and become the straggler that gates every token. A
+            // smaller shard always still fits its (ample) RAM.
+            match n.max_cores {
+                Some(c) if p.cores > 0 && c < p.cores => ram * (c as f64 / p.cores as f64),
+                _ => ram,
+            }
         })
         .collect()
 }
@@ -829,6 +843,10 @@ pub fn run_up(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    if opts.check {
+        return run_check(&manifest);
+    }
+
     // Model shape: read the GGUF locally when the path resolves here (the common
     // case for --dry-run from a machine that has the model). Over-SSH shape
     // fetch for head-only-staged models lands with live launch (Phase 1b).
@@ -864,6 +882,155 @@ pub fn run_up(args: &[String]) -> ExitCode {
     }
 
     run_up_live(&manifest, &config, &opts)
+}
+
+// ---- `up --check`: preflight doctor ----
+
+#[derive(Default)]
+struct NodeCheck {
+    reachable: bool,
+    cores: usize,
+    mem_kb: u64,
+    governor: String,
+    binary_ok: bool,
+    model_ok: bool,
+    free_kb: u64,
+    port_busy: bool,
+}
+
+fn parse_node_check(out: &str) -> NodeCheck {
+    let mut c = NodeCheck {
+        reachable: true,
+        ..Default::default()
+    };
+    for line in out.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let v = v.trim();
+        match k.trim() {
+            "cores" => c.cores = v.parse().unwrap_or(0),
+            "mem_kb" => c.mem_kb = v.parse().unwrap_or(0),
+            "gov" => c.governor = v.to_owned(),
+            "bin" => c.binary_ok = v == "ok",
+            "model" => c.model_ok = v == "ok",
+            "free_kb" => c.free_kb = v.parse().unwrap_or(0),
+            "port" => c.port_busy = v == "busy",
+            _ => {}
+        }
+    }
+    c
+}
+
+/// One SSH round-trip that checks everything `up` needs on a node.
+fn check_node(node: &NodeCfg, cluster: &ClusterCfg, port: u16) -> NodeCheck {
+    let binname = bin(cluster);
+    let bincheck = if binname.contains('/') {
+        format!("test -x '{binname}' && echo ok || echo missing")
+    } else {
+        format!("command -v {binname} >/dev/null && echo ok || echo missing")
+    };
+    let model = node_model_path(node, cluster);
+    let script = format!(
+        "echo cores=$(nproc); \
+         echo mem_kb=$(awk '/^MemTotal:/{{print $2}}' /proc/meminfo); \
+         echo gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown); \
+         echo bin=$({bincheck}); \
+         echo model=$(test -f '{model}' && echo ok || echo missing); \
+         echo free_kb=$(df -Pk \"$(dirname '{model}')\" 2>/dev/null | tail -1 | awk '{{print $4}}'); \
+         echo port=$(ss -ltn 2>/dev/null | grep -qE ':{port}([^0-9]|$)' && echo busy || echo free)"
+    );
+    match ssh_run(node, cluster, &script) {
+        Ok(out) => parse_node_check(&out),
+        Err(_) => NodeCheck::default(), // reachable stays false
+    }
+}
+
+/// `nanocamelid up --check`: SSH every node and report readiness without
+/// launching anything. FAIL on unreachable / missing binary / missing model or a
+/// split the geometry rejects; WARN on non-performance governor or a busy port.
+fn run_check(manifest: &Manifest) -> ExitCode {
+    let cluster = &manifest.cluster;
+    println!("preflight check — cluster model {}", cluster.model);
+    println!(
+        "  {:<14} {:<6} {:<5} {:<9} {:<12} {:<7} {:<7} {:<10} port",
+        "node", "reach", "cores", "ram(MiB)", "governor", "binary", "model", "free(MiB)"
+    );
+    let mut any_fail = false;
+    let mut probes: Vec<Option<NodeProbe>> = Vec::new();
+    for node in &manifest.nodes {
+        let port = if node.role == NodeRole::Head {
+            cluster.serve_port
+        } else {
+            node.worker_port.unwrap_or(cluster.worker_port)
+        };
+        let c = check_node(node, cluster, port);
+        any_fail |= !c.reachable || !c.binary_ok || !c.model_ok;
+        println!(
+            "  {:<14} {:<6} {:<5} {:<9} {:<12} {:<7} {:<7} {:<10} {}",
+            node.name,
+            if c.reachable { "ok" } else { "FAIL" },
+            c.cores,
+            c.mem_kb / 1024,
+            if c.governor.is_empty() {
+                "?"
+            } else {
+                &c.governor
+            },
+            if c.binary_ok { "ok" } else { "FAIL" },
+            if c.model_ok { "ok" } else { "FAIL" },
+            c.free_kb / 1024,
+            if c.port_busy { "BUSY" } else { "free" },
+        );
+        if c.reachable
+            && c.governor != "performance"
+            && !c.governor.is_empty()
+            && c.governor != "unknown"
+        {
+            println!(
+                "    warn {}: governor is `{}` — set `performance` for best throughput",
+                node.name, c.governor
+            );
+        }
+        if c.port_busy {
+            println!(
+                "    warn {}: port {port} already in use — a stale cluster? run `down` first",
+                node.name
+            );
+        }
+        probes.push(c.reachable.then_some(NodeProbe {
+            cores: c.cores,
+            mem_total_kb: c.mem_kb,
+        }));
+    }
+
+    // Preview the shard split when every node probed and the shape is local.
+    if probes.iter().all(Option::is_some) {
+        if let Ok((config, _)) = read_local_shape(&cluster.model) {
+            let real: Vec<NodeProbe> = probes.into_iter().flatten().collect();
+            match plan_and_validate(&live_weights(manifest, &real), &config) {
+                Ok(shares) => println!(
+                    "\nplanned split: {} (sum {})",
+                    shares_arg(&shares),
+                    shares.iter().sum::<usize>()
+                ),
+                Err(e) => {
+                    println!("\nplan would FAIL: {e}");
+                    any_fail = true;
+                }
+            }
+        } else {
+            println!("\n(model not readable locally — shard split not previewed)");
+        }
+    }
+
+    if any_fail {
+        println!("\npreflight: FAIL — fix the items above before `up`.");
+        ExitCode::from(4)
+    } else {
+        println!("\npreflight: OK — `nanocamelid up` should succeed.");
+        ExitCode::SUCCESS
+    }
 }
 
 fn kill_worker_procs(cluster: &ClusterCfg, workers: &[(&NodeCfg, usize)], procs: &[ProcRef]) {
@@ -1076,6 +1243,7 @@ struct UpOpts {
     model: Option<String>,
     name: String,
     dry_run: bool,
+    check: bool,
 }
 
 fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
@@ -1083,6 +1251,7 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
     let mut model = None;
     let mut name = "default".to_owned();
     let mut dry_run = false;
+    let mut check = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1102,6 +1271,10 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
                 dry_run = true;
                 i += 1;
             }
+            "--check" => {
+                check = true;
+                i += 1;
+            }
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -1110,6 +1283,7 @@ fn parse_up_args(args: &[String]) -> Result<UpOpts, String> {
         model,
         name,
         dry_run,
+        check,
     })
 }
 
@@ -1508,6 +1682,22 @@ weight = 1.5
         let w = live_weights(&m, &probes);
         let reserve_kb = m.cluster.reserve_ram_mb * 1024;
         assert_eq!(w[0], (16_000_000u64 - reserve_kb) as f64);
-        assert_eq!(w[2], 1.5); // manual override wins over probed RAM
+        // camelid1 is capped to 2 of 4 cores -> brown-out down-weight to half.
+        assert_eq!(w[1], w[0] * 0.5);
+        assert_eq!(w[2], 1.5); // manual override wins over probed RAM and the cap
+    }
+
+    #[test]
+    fn parse_node_check_reads_probe_lines() {
+        let out = "cores=4\nmem_kb=16218000\ngov=performance\nbin=ok\nmodel=missing\nfree_kb=8000000\nport=busy\n";
+        let c = parse_node_check(out);
+        assert!(c.reachable);
+        assert_eq!(c.cores, 4);
+        assert_eq!(c.mem_kb, 16_218_000);
+        assert_eq!(c.governor, "performance");
+        assert!(c.binary_ok);
+        assert!(!c.model_ok);
+        assert_eq!(c.free_kb, 8_000_000);
+        assert!(c.port_busy);
     }
 }
