@@ -4530,6 +4530,10 @@ mod tests {
         assert_eq!(preloaded, scalar);
     }
 
+    // Pure NEON-vs-scalar parity test: its whole body is only exercised inside
+    // the aarch64 dotprod block, so on x86_64 (the CI runner) every local is
+    // unused. Gate the entire test to aarch64.
+    #[cfg(target_arch = "aarch64")]
     #[test]
     fn q6_k_block_sdot_matches_scalar() {
         let mut ql = [0_u8; 128];
@@ -4551,7 +4555,6 @@ mod tests {
         let x_scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE] =
             core::array::from_fn(|idx| 0.015625 * (1 + (idx % 7)) as f32);
 
-        #[cfg(target_arch = "aarch64")]
         let scalar = block.dot_q8_scaled(&x_i8, &x_scales);
         #[cfg(target_arch = "aarch64")]
         if std::arch::is_aarch64_feature_detected!("dotprod") {
