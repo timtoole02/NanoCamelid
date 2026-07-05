@@ -45,6 +45,15 @@ impl TokenKind {
             other => return Err(format!("unknown tokenizer token type {other}")),
         })
     }
+
+    /// Token kinds that participate in the special-token split when
+    /// `parse_special` is set. Mirrors llama.cpp, whose special-token cache is
+    /// built from CONTROL, USER_DEFINED and UNKNOWN tokens — not CONTROL alone.
+    /// Phi-3 registers its `<|user|>` / `<|end|>` / `<|assistant|>` markers as
+    /// USER_DEFINED, so a CONTROL-only match tokenizes them as literal text.
+    fn is_special_split(self) -> bool {
+        matches!(self, Self::Control | Self::UserDefined | Self::Unknown)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -303,12 +312,15 @@ impl Tokenizer {
             .metadata_u32("tokenizer.ggml.eot_token_id")
             .or_else(|| token_to_id.get("<|eot_id|>").copied());
         let eom = file.metadata_u32("tokenizer.ggml.eom_token_id");
+        // Phi-3 ends every assistant turn with `<|end|>` (id 32007) while its
+        // eos is `<|endoftext|>` (32000); without this the chat never stops.
+        let phi_end = token_to_id.get("<|end|>").copied();
         let sep = file
             .metadata_u32("tokenizer.ggml.separator_token_id")
             .or_else(|| file.metadata_u32("tokenizer.ggml.seperator_token_id"));
         let pad = file.metadata_u32("tokenizer.ggml.padding_token_id");
         let mask = file.metadata_u32("tokenizer.ggml.mask_token_id");
-        let eog = [eos, eot, eom].into_iter().flatten().collect();
+        let eog = [eos, eot, eom, phi_end].into_iter().flatten().collect();
 
         validate_token_id("bos", bos, tokens.len())?;
         validate_token_id("eos", eos, tokens.len())?;
@@ -423,7 +435,7 @@ impl Tokenizer {
                 .tokens
                 .get(*id as usize)
                 .ok_or_else(|| format!("token id {id} out of range"))?;
-            if token.kind == TokenKind::Control && remove_special {
+            if token.kind.is_special_split() && remove_special {
                 continue;
             }
             if let Some(byte) = parse_byte_token(&token.text) {
@@ -505,6 +517,16 @@ impl Tokenizer {
                     add_special: false,
                     parse_special: self.chat_prompt_parse_special(),
                     renderer: "mistral_inst",
+                };
+            }
+            if is_phi3_template(template) {
+                return RenderedChatPrompt {
+                    text: render_phi3_prompt(messages),
+                    add_special: true,
+                    // Phi-3 is SPM but its <|user|>/<|end|>/<|assistant|>
+                    // markers must be parsed as special tokens.
+                    parse_special: true,
+                    renderer: "phi3",
                 };
             }
         }
@@ -627,13 +649,13 @@ impl Tokenizer {
                 .tokens
                 .get(*id as usize)
                 .ok_or_else(|| format!("token id {id} out of range"))?;
-            if remove_special && token.kind == TokenKind::Control {
+            if remove_special && token.kind.is_special_split() {
                 continue;
             }
             for ch in token.text.chars() {
                 if let Some(byte) = bpe_char_to_byte(ch) {
                     bytes.push(byte);
-                } else if !remove_special || token.kind != TokenKind::Control {
+                } else if !remove_special || !token.kind.is_special_split() {
                     return Err(format!(
                         "GPT-2/BPE token {:?} contains non-byte character {ch:?}",
                         token.text
@@ -743,7 +765,7 @@ impl Tokenizer {
 
         self.tokens
             .iter()
-            .filter(|token| token.kind == TokenKind::Control)
+            .filter(|token| token.kind.is_special_split())
             .filter(|token| text[byte_start..].starts_with(&token.text))
             .max_by_key(|token| token.text.len())
             .map(|token| (token.text.as_str(), token.text.len()))
@@ -1195,6 +1217,8 @@ fn detect_chat_template_format(template: &str) -> &'static str {
         "deepseek_r1_qwen"
     } else if is_mistral_inst_template(template) {
         "mistral_inst"
+    } else if is_phi3_template(template) {
+        "phi3"
     } else if is_tinyllama_marker_template(template) {
         "tinyllama_marker"
     } else {
@@ -1212,6 +1236,12 @@ fn is_llama3_instruct_template(template: &str) -> bool {
     template.contains("<|start_header_id|>")
         && template.contains("<|end_header_id|>")
         && template.contains("<|eot_id|>")
+}
+
+fn is_phi3_template(template: &str) -> bool {
+    template.contains("<|user|>")
+        && template.contains("<|assistant|>")
+        && template.contains("<|end|>")
 }
 
 fn is_qwen_im_template(template: &str) -> bool {
@@ -1266,6 +1296,27 @@ fn render_llama3_instruct_prompt(messages: &[ChatMessage<'_>]) -> String {
         .is_none_or(|message| message.role.trim() != "assistant")
     {
         prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+    }
+    prompt
+}
+
+/// Phi-3 chat: `<|{role}|>\n{content}<|end|>\n` per message, then an
+/// `<|assistant|>\n` open turn. The markers are registered special tokens, so
+/// this renderer is used with parse_special = true even though Phi-3 is SPM.
+fn render_phi3_prompt(messages: &[ChatMessage<'_>]) -> String {
+    let mut prompt = String::new();
+    for message in messages {
+        prompt.push_str("<|");
+        prompt.push_str(message.role.trim());
+        prompt.push_str("|>\n");
+        prompt.push_str(message.content);
+        prompt.push_str("<|end|>\n");
+    }
+    if messages
+        .last()
+        .is_none_or(|message| message.role.trim() != "assistant")
+    {
+        prompt.push_str("<|assistant|>\n");
     }
     prompt
 }
@@ -1953,6 +2004,79 @@ mod tests {
                 "<|start_header_id|>{{ role }}<|end_header_id|>{{ content }}<|eot_id|>".to_owned(),
             ),
         }
+    }
+
+    /// A USER_DEFINED special marker (Phi-3 registers `<|end|>` etc. this way,
+    /// not as CONTROL) must be recognized by the special-token split when
+    /// `parse_special` is set, and left as literal text when it is not.
+    #[test]
+    fn spm_parse_special_splits_user_defined_marker() {
+        let tokenizer = Tokenizer::from_gguf(&tokenizer_fixture([
+            (
+                "tokenizer.ggml.tokens",
+                GgufMetadataValue::Array(vec![
+                    GgufMetadataValue::String("<unk>".to_owned()),
+                    GgufMetadataValue::String("<s>".to_owned()),
+                    GgufMetadataValue::String("</s>".to_owned()),
+                    GgufMetadataValue::String("▁hello".to_owned()),
+                    GgufMetadataValue::String("hello".to_owned()),
+                    GgufMetadataValue::String("▁".to_owned()),
+                    GgufMetadataValue::String("<|end|>".to_owned()),
+                ]),
+            ),
+            (
+                "tokenizer.ggml.scores",
+                GgufMetadataValue::Array(vec![
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(0.0),
+                    GgufMetadataValue::F32(10.0),
+                    GgufMetadataValue::F32(2.0),
+                    GgufMetadataValue::F32(1.0),
+                    GgufMetadataValue::F32(0.0),
+                ]),
+            ),
+            (
+                "tokenizer.ggml.token_type",
+                GgufMetadataValue::Array(vec![
+                    GgufMetadataValue::I32(2), // <unk>   UNKNOWN
+                    GgufMetadataValue::I32(3), // <s>     CONTROL
+                    GgufMetadataValue::I32(3), // </s>    CONTROL
+                    GgufMetadataValue::I32(1), // ▁hello  NORMAL
+                    GgufMetadataValue::I32(1), // hello   NORMAL
+                    GgufMetadataValue::I32(1), // ▁       NORMAL
+                    GgufMetadataValue::I32(4), // <|end|> USER_DEFINED
+                ]),
+            ),
+        ]))
+        .expect("fixture tokenizer should load");
+        assert_eq!(tokenizer.model, TokenizerModel::LlamaSpm);
+        let end_id = 6;
+
+        // Added markers carry score 0, so the score-based SPM merge on the
+        // parse_special path would decompose `<|end|>` into its constituent
+        // pieces (here: byte/unk fallback) rather than emit id 6 — unless the
+        // special-token split recognizes the USER_DEFINED marker first. Before
+        // the fix this produced fallback tokens; after, it is the single id.
+        let only_marker = tokenizer
+            .encode("<|end|>", false, true)
+            .expect("encode marker with parse_special");
+        assert_eq!(
+            only_marker,
+            vec![end_id],
+            "USER_DEFINED marker must split to its single special id, got {only_marker:?}",
+        );
+
+        // The split also works mid-text: `hello` merges normally, `<|end|>`
+        // stays a single special id at the tail.
+        let with_text = tokenizer
+            .encode("hello<|end|>", false, true)
+            .expect("encode text + marker with parse_special");
+        assert_eq!(
+            with_text.last().copied(),
+            Some(end_id),
+            "marker must remain a single special id after text, got {with_text:?}",
+        );
     }
 
     fn tokenizer_fixture<const N: usize>(overrides: [(&str, GgufMetadataValue); N]) -> GgufFile {
