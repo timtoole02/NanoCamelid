@@ -520,7 +520,17 @@ fn run() -> Result<(), String> {
             let port: u16 = args.next().and_then(|v| v.parse().ok()).unwrap_or(8090);
             run_master_serve(&model_path, &workers, &shares, port)
         }
-        _ => Err("usage: cluster_tp_node worker|master-chat|reference ...".to_owned()),
+        Some("shape") => {
+            // Print the geometry `nanocamelid up` needs to plan the KV-head split,
+            // so it can size a cluster for a model that lives only on the nodes.
+            let model_path = args.next().ok_or("missing model path")?;
+            let gguf = gguf::read_file(Path::new(&model_path)).map_err(|e| e.to_string())?;
+            let config = model::LlamaModelConfig::from_gguf(&gguf)?;
+            println!("kv_heads={}", config.attention_head_count_kv);
+            println!("ffn_len={}", config.feed_forward_length);
+            Ok(())
+        }
+        _ => Err("usage: cluster_tp_node worker|master-chat|reference|shape ...".to_owned()),
     }
 }
 

@@ -236,12 +236,10 @@ pub fn plan_shares(weights: &[f64], shape: ModelShape) -> Result<Vec<usize>, Str
 }
 
 /// Plan the split and validate it against the real library geometry.
-pub fn plan_and_validate(weights: &[f64], config: &LlamaModelConfig) -> Result<Vec<usize>, String> {
-    let shares = plan_shares(weights, ModelShape::from_config(config))?;
-    for idx in 0..shares.len() {
-        tp::shard_geometry(config, &shares, idx)
-            .map_err(|e| format!("planned shares {shares:?} rejected by shard_geometry: {e}"))?;
-    }
+pub fn plan_and_validate(weights: &[f64], shape: ModelShape) -> Result<Vec<usize>, String> {
+    let shares = plan_shares(weights, shape)?;
+    tp::validate_shares(shape.kv_total, shape.ffn_len, &shares)
+        .map_err(|e| format!("planned shares {shares:?} rejected: {e}"))?;
     Ok(shares)
 }
 
@@ -349,15 +347,49 @@ pub fn master_cmd(manifest: &Manifest, shares: &[usize]) -> String {
     master_cmd_active(manifest.head(), &manifest.cluster, &workers, shares)
 }
 
-/// Read the model shape from a local GGUF (used by `--dry-run` and by the head
-/// when the model path resolves locally).
-fn read_local_shape(model_path: &str) -> Result<(LlamaModelConfig, ModelShape), String> {
+/// Read the model shape from a local GGUF (when the model path resolves here).
+fn read_local_shape(model_path: &str) -> Result<ModelShape, String> {
     let gguf = gguf::read_file(Path::new(model_path))
         .map_err(|e| format!("cannot read model {model_path}: {e}"))?;
     let config = LlamaModelConfig::from_gguf(&gguf)
         .map_err(|e| format!("cannot parse model config from {model_path}: {e}"))?;
-    let shape = ModelShape::from_config(&config);
-    Ok((config, shape))
+    Ok(ModelShape::from_config(&config))
+}
+
+/// Ask a node for the model shape over SSH: `cluster_tp_node shape <model>`
+/// prints `kv_heads=<n>` / `ffn_len=<n>`. Used when the GGUF isn't on the
+/// orchestrator (the flagship case: the model lives only on the Pis).
+fn fetch_remote_shape(node: &NodeCfg, cluster: &ClusterCfg) -> Result<ModelShape, String> {
+    let out = ssh_run(
+        node,
+        cluster,
+        &format!("{} shape {}", bin(cluster), node_model_path(node, cluster)),
+    )?;
+    let field = |key: &str| -> Option<usize> {
+        out.lines()
+            .find_map(|l| l.trim().strip_prefix(key)?.trim().parse().ok())
+    };
+    let kv_total = field("kv_heads=").ok_or("remote shape: missing kv_heads")?;
+    let ffn_len = field("ffn_len=").ok_or("remote shape: missing ffn_len")?;
+    Ok(ModelShape { kv_total, ffn_len })
+}
+
+/// The model shape for planning: read the local GGUF if it's here; otherwise ask
+/// the head node over SSH (`cluster_tp_node shape`).
+fn resolve_shape(manifest: &Manifest) -> Result<ModelShape, String> {
+    match read_local_shape(&manifest.cluster.model) {
+        Ok(shape) => Ok(shape),
+        Err(local_err) => {
+            let head = manifest.head();
+            fetch_remote_shape(head, &manifest.cluster).map_err(|remote_err| {
+                format!(
+                    "could not determine model shape locally ({local_err}) or over SSH from {} ({remote_err}). \
+                     Run `up` from a host with the GGUF, or ensure the node's cluster_tp_node supports `shape`.",
+                    head.name
+                )
+            })
+        }
+    }
 }
 
 /// Node weights for the planner: manual `weight` override, else probed RAM
@@ -861,26 +893,21 @@ pub fn run_up(args: &[String]) -> ExitCode {
         return run_check(&manifest);
     }
 
-    // Model shape: read the GGUF locally when the path resolves here (the common
-    // case for --dry-run from a machine that has the model). Over-SSH shape
-    // fetch for head-only-staged models lands with live launch (Phase 1b).
-    let (config, shape) = match read_local_shape(&manifest.cluster.model) {
-        Ok(cs) => cs,
-        Err(e) => {
-            eprintln!("cannot determine model shape: {e}");
-            eprintln!(
-                "hint: run `up` from a host that has the GGUF, or point --model at a local copy"
-            );
-            return ExitCode::from(3);
-        }
-    };
-
-    let _ = shape;
-
     if opts.dry_run {
-        // No SSH: plan from manual/equal weights and print.
+        // Offline: read the GGUF locally (a dry-run must not SSH) and plan from
+        // manual/equal weights.
+        let shape = match read_local_shape(&manifest.cluster.model) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("cannot determine model shape: {e}");
+                eprintln!(
+                    "hint: --dry-run reads the GGUF locally; run it from a host with the model, or use `up --check` to fetch the shape over SSH"
+                );
+                return ExitCode::from(3);
+            }
+        };
         let weights = planner_weights(&manifest);
-        let shares = match plan_and_validate(&weights, &config) {
+        let shares = match plan_and_validate(&weights, shape) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("planning failed: {e}");
@@ -895,7 +922,7 @@ pub fn run_up(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    run_up_live(&manifest, &config, &opts)
+    run_up_live(&manifest, &opts)
 }
 
 // ---- `up --check`: preflight doctor ----
@@ -1018,11 +1045,12 @@ fn run_check(manifest: &Manifest) -> ExitCode {
         }));
     }
 
-    // Preview the shard split when every node probed and the shape is local.
+    // Preview the shard split when every node probed. Shape comes from the local
+    // GGUF if present, else over SSH from the head (`cluster_tp_node shape`).
     if probes.iter().all(Option::is_some) {
-        if let Ok((config, _)) = read_local_shape(&cluster.model) {
+        if let Ok(shape) = resolve_shape(manifest) {
             let real: Vec<NodeProbe> = probes.into_iter().flatten().collect();
-            match plan_and_validate(&live_weights(manifest, &real), &config) {
+            match plan_and_validate(&live_weights(manifest, &real), shape) {
                 Ok(shares) => println!(
                     "\nplanned split: {} (sum {})",
                     shares_arg(&shares),
@@ -1034,7 +1062,7 @@ fn run_check(manifest: &Manifest) -> ExitCode {
                 }
             }
         } else {
-            println!("\n(model not readable locally — shard split not previewed)");
+            println!("\n(model shape unavailable locally or over SSH — split not previewed)");
         }
     }
 
@@ -1056,9 +1084,19 @@ fn kill_worker_procs(cluster: &ClusterCfg, workers: &[(&NodeCfg, usize)], procs:
     }
 }
 
-fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) -> ExitCode {
+fn run_up_live(manifest: &Manifest, opts: &UpOpts) -> ExitCode {
     let cluster = &manifest.cluster;
     let reserve_kb = cluster.reserve_ram_mb * 1024;
+    // Model shape for the planner — local GGUF if present, else fetched from the
+    // head over SSH (`cluster_tp_node shape`). Lets the flagship 70B (model only
+    // on the Pis) run without a local copy.
+    let shape = match resolve_shape(manifest) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(3);
+        }
+    };
     // How long to wait for a worker to load its shard + listen, and for the head
     // endpoint to answer. Generous by default (a big shard can take minutes to
     // load); overridable, e.g. to fail fast in tests.
@@ -1151,7 +1189,7 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
         let active_workers: Vec<&NodeCfg> = survivors.iter().map(|(n, _)| *n).collect();
         let mut weights = vec![node_weight(head, &head_probe, reserve_kb)];
         weights.extend(survivors.iter().map(|(n, p)| node_weight(n, p, reserve_kb)));
-        let shares = match plan_and_validate(&weights, config) {
+        let shares = match plan_and_validate(&weights, shape) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("planning failed: {e}");
