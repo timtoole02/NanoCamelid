@@ -112,6 +112,45 @@ fn capabilities_json(model_file: &str, role_note: &str) -> String {
     )
 }
 
+/// Live cluster state for the topology dashboard: the head + each worker with
+/// its shard index and KV-head share, plus the cluster's live ok/degraded status.
+fn cluster_live_json(
+    model_file: &str,
+    master_ip: &str,
+    serve_port: u16,
+    worker_addrs: &[String],
+    shares: &[usize],
+    degraded: bool,
+) -> String {
+    let kv_total: usize = shares.iter().sum();
+    let mut nodes = vec![format!(
+        "{{\"role\":\"head\",\"name\":\"master\",\"host\":\"{}\",\"port\":{serve_port},\"shard\":0,\"kv_heads\":{}}}",
+        json_escape(master_ip),
+        shares.first().copied().unwrap_or(0)
+    )];
+    for (i, addr) in worker_addrs.iter().enumerate() {
+        let host = addr.split(':').next().unwrap_or(addr);
+        let port = addr
+            .split(':')
+            .nth(1)
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(5921);
+        nodes.push(format!(
+            "{{\"role\":\"worker\",\"name\":\"worker {}\",\"host\":\"{}\",\"port\":{port},\"shard\":{},\"kv_heads\":{}}}",
+            i + 1,
+            json_escape(host),
+            i + 1,
+            shares.get(i + 1).copied().unwrap_or(0)
+        ));
+    }
+    format!(
+        "{{\"engine\":\"nanocamelid\",\"model\":\"{}\",\"status\":\"{}\",\"kv_heads_total\":{kv_total},\"nodes\":[{}]}}",
+        json_escape(model_file),
+        if degraded { "degraded" } else { "ok" },
+        nodes.join(",")
+    )
+}
+
 /// Best-effort LAN address of this node (the interface that reaches `peer`).
 fn local_ip_toward(peer: &str) -> String {
     std::net::UdpSocket::bind("0.0.0.0:0")
@@ -852,13 +891,84 @@ fn http_chunk<W: Write>(w: &mut W, data: &[u8]) -> Result<(), String> {
     w.flush().map_err(|e| e.to_string())
 }
 
+const CLUSTER_PAGE: &str = r##"<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NanoCamelid cluster</title>
+<style>
+:root{--bg:#0b0f17;--card:#141b26;--edge:#232c3b;--txt:#e6edf3;--dim:#8b98a9;--ok:#34d399;--bad:#f87171;--accent:#60a5fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
+.wrap{max-width:1000px;margin:0 auto;padding:2rem 1rem}
+header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem}
+h1{font-size:1.3rem;margin:0;font-weight:650}
+.sub{color:var(--dim);font-size:.85rem;margin-top:.3rem}
+.pill{display:inline-flex;align-items:center;gap:.5rem;padding:.4rem .9rem;border-radius:999px;font-weight:650;font-size:.9rem}
+.pill.ok{background:rgba(52,211,153,.12);color:var(--ok);border:1px solid rgba(52,211,153,.3)}
+.pill.bad{background:rgba(248,113,113,.12);color:var(--bad);border:1px solid rgba(248,113,113,.35)}
+.dot{width:9px;height:9px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.45)}70%{box-shadow:0 0 0 7px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:1rem}
+.node{background:var(--card);border:1px solid var(--edge);border-radius:14px;padding:1.1rem;transition:.2s}
+.node.head{border-color:rgba(96,165,250,.45);box-shadow:0 0 0 1px rgba(96,165,250,.12) inset}
+.node .role{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:700}
+.node.worker .role{color:var(--dim)}
+.node .name{font-size:1.1rem;font-weight:650;margin:.3rem 0}
+.node .host{color:var(--dim);font-size:.82rem;font-family:ui-monospace,SFMono-Regular,monospace}
+.meta{display:flex;gap:1.4rem;margin-top:.9rem}
+.meta .k{color:var(--dim);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
+.meta .v{font-size:1.15rem;font-weight:650}
+.bar{height:6px;border-radius:3px;background:var(--edge);margin-top:.85rem;overflow:hidden}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,#60a5fa,#34d399)}
+body.degraded .node{border-color:rgba(248,113,113,.35)}
+footer{margin-top:1.5rem;color:var(--dim);font-size:.8rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem}
+a{color:var(--accent);text-decoration:none}
+</style>
+<div class="wrap">
+<header>
+<div><h1>NanoCamelid cluster</h1><div class="sub" id="model">connecting…</div></div>
+<span class="pill ok" id="status"><span class="dot"></span><span id="statustxt">…</span></span>
+</header>
+<div class="grid" id="grid"></div>
+<footer><span id="foot"></span><span><a href="/">→ chat</a></span></footer>
+</div>
+<script>
+async function tick(){
+  try{
+    const d=await (await fetch('/api/cluster',{cache:'no-store'})).json();
+    document.getElementById('model').textContent=d.model+' · '+d.kv_heads_total+' KV-heads across '+d.nodes.length+' nodes';
+    const deg=d.status==='degraded';
+    document.body.classList.toggle('degraded',deg);
+    const s=document.getElementById('status');s.className='pill '+(deg?'bad':'ok');
+    document.getElementById('statustxt').textContent=deg?'DEGRADED':'HEALTHY';
+    const g=document.getElementById('grid');g.innerHTML='';
+    for(const n of d.nodes){
+      const pct=d.kv_heads_total?Math.round(100*n.kv_heads/d.kv_heads_total):0;
+      const el=document.createElement('div');el.className='node '+n.role;
+      el.innerHTML='<div class="role">'+(n.role==='head'?'head · gateway':'worker')+'</div>'+
+        '<div class="name">'+n.name+'</div><div class="host">'+n.host+':'+n.port+'</div>'+
+        '<div class="meta"><div><div class="k">shard</div><div class="v">'+n.shard+'</div></div>'+
+        '<div><div class="k">KV-heads</div><div class="v">'+n.kv_heads+'</div></div></div>'+
+        '<div class="bar"><i style="width:'+pct+'%"></i></div>';
+      g.appendChild(el);
+    }
+    document.getElementById('foot').textContent='updated '+new Date().toLocaleTimeString();
+  }catch(e){
+    const s=document.getElementById('status');s.className='pill bad';
+    document.getElementById('statustxt').textContent='unreachable';
+  }
+}
+tick();setInterval(tick,3000);
+</script>
+"##;
+
 const CHAT_PAGE: &str = r#"<!doctype html><meta charset="utf-8">
 <title>NanoCamelid TP cluster</title>
 <style>body{font-family:system-ui;max-width:720px;margin:2rem auto;padding:0 1rem}
 textarea{width:100%;height:4rem;font-size:1rem}button{font-size:1rem;padding:.4rem 1.2rem;margin:.5rem 0}
 #out{white-space:pre-wrap;border:1px solid #ccc;border-radius:8px;padding:1rem;min-height:6rem;font-size:1.05rem}
-#meta{color:#666;font-size:.85rem}</style>
+#meta{color:#666;font-size:.85rem}a{color:#2563eb;text-decoration:none;font-size:.9rem}</style>
 <h2>Llama 3 70B — three Raspberry Pi 5s, tensor parallel</h2>
+<p><a href="/topology">◇ live cluster topology →</a></p>
 <textarea id="p">Explain in one sentence why the sky appears blue during the day.</textarea><br>
 <button id="go">Generate</button> <span id="meta"></span>
 <div id="out"></div>
@@ -1068,6 +1178,37 @@ fn run_master_serve(
                             p = json_escape(model_path)
                         ),
                     );
+                    continue;
+                }
+                "/api/cluster" => {
+                    let master_ip = local_ip_toward(
+                        worker_addrs
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or("8.8.8.8:80"),
+                    );
+                    write_json_response(
+                        &mut client,
+                        "200 OK",
+                        &cluster_live_json(
+                            &model_file,
+                            &master_ip,
+                            port,
+                            worker_addrs,
+                            shares,
+                            degraded,
+                        ),
+                    );
+                    continue;
+                }
+                "/topology" => {
+                    let body = CLUSTER_PAGE.as_bytes();
+                    let _ = write!(
+                        client,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = client.write_all(body);
                     continue;
                 }
                 p if p.starts_with("/api/") || p.starts_with("/metrics") => {
@@ -1540,4 +1681,38 @@ fn serve_one_request(
         generated.len() as f64 / secs
     );
     Ok(generated.len() as f64 / secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cluster_live_json_shape() {
+        let workers = vec!["10.0.0.2:5921".to_owned(), "10.0.0.3:5921".to_owned()];
+        let shares = vec![8usize, 8, 16];
+        let j = cluster_live_json("llama.gguf", "10.0.0.1", 8090, &workers, &shares, false);
+        // Cluster-level fields.
+        assert!(j.contains("\"engine\":\"nanocamelid\""));
+        assert!(j.contains("\"model\":\"llama.gguf\""));
+        assert!(j.contains("\"status\":\"ok\""));
+        assert!(j.contains("\"kv_heads_total\":32"));
+        // Head is node 0 (shard 0) on the master ip + serve port.
+        assert!(j.contains("\"role\":\"head\",\"name\":\"master\",\"host\":\"10.0.0.1\",\"port\":8090,\"shard\":0,\"kv_heads\":8"));
+        // Workers keep their listen port and take shards 1..N with their share.
+        assert!(j.contains(
+            "\"role\":\"worker\",\"name\":\"worker 1\",\"host\":\"10.0.0.2\",\"port\":5921,\"shard\":1,\"kv_heads\":8"
+        ));
+        assert!(j.contains(
+            "\"role\":\"worker\",\"name\":\"worker 2\",\"host\":\"10.0.0.3\",\"port\":5921,\"shard\":2,\"kv_heads\":16"
+        ));
+    }
+
+    #[test]
+    fn cluster_live_json_degraded_flips_status() {
+        let workers = vec!["10.0.0.2:5921".to_owned()];
+        let shares = vec![4usize, 4];
+        let j = cluster_live_json("m.gguf", "10.0.0.1", 8090, &workers, &shares, true);
+        assert!(j.contains("\"status\":\"degraded\""));
+    }
 }

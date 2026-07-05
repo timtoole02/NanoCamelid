@@ -1324,6 +1324,10 @@ fn run_up_live(manifest: &Manifest, opts: &UpOpts) -> ExitCode {
         "  smoke:    curl -s http://{}:{}/v1/chat/completions -d '{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":16}}'",
         head.host, cluster.serve_port
     );
+    println!(
+        "  dashboard: http://{}:{}/topology",
+        head.host, cluster.serve_port
+    );
     println!("  down:     nanocamelid down --name {}", opts.name);
     ExitCode::SUCCESS
 }
