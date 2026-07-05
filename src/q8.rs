@@ -4551,6 +4551,7 @@ mod tests {
         let x_scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE] =
             core::array::from_fn(|idx| 0.015625 * (1 + (idx % 7)) as f32);
 
+        #[cfg(target_arch = "aarch64")]
         let scalar = block.dot_q8_scaled(&x_i8, &x_scales);
         #[cfg(target_arch = "aarch64")]
         if std::arch::is_aarch64_feature_detected!("dotprod") {

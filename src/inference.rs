@@ -72,6 +72,9 @@ fn q4_1x4_sdot_enabled() -> bool {
     })
 }
 
+// Only referenced from the aarch64 NEON dispatch; on other targets (e.g. the
+// x86_64 CI runner) the call sites are cfg'd out, so gate the fn to match.
+#[cfg(target_arch = "aarch64")]
 fn q6_k_sdot_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -82,6 +85,7 @@ fn q6_k_sdot_enabled() -> bool {
     })
 }
 
+#[cfg(target_arch = "aarch64")]
 fn q4_k_sdot_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -92,6 +96,7 @@ fn q4_k_sdot_enabled() -> bool {
     })
 }
 
+#[cfg(target_arch = "aarch64")]
 fn q5_k_sdot_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
