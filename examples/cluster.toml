@@ -1,0 +1,50 @@
+# NanoCamelid cluster manifest — `nanocamelid up --cluster cluster.toml`
+#
+# Turns a shelf of Raspberry Pis into one OpenAI-compatible endpoint running a
+# model no single board could hold. `up` reads this file, auto-computes the
+# weighted KV-head split (you never hand-tune shard sizes), and launches the
+# proven tensor-parallel star: workers first, head last. Review the plan with
+# `--dry-run` before launching for real.
+
+[cluster]
+# Absolute path to the GGUF ON THE NODES (same path everywhere unless a node
+# overrides it with `remote_model_path`). The model is assumed pre-staged;
+# `up` verifies it exists rather than shipping tens of GB.
+model = "/mnt/nanocamelid/models/llama-70b-q4_0.gguf"
+
+# The OpenAI-compatible endpoint port on the head node.
+serve_port = 8090
+
+# TP data socket the workers bind (head connects here). Default 5921.
+worker_port = 5921
+
+# SSH defaults for reaching the nodes (per-node overrides allowed later).
+ssh_user = "tooleman"
+ssh_key  = "~/.ssh/pi5_cluster_ed25519"
+
+# parity = true pins the scalar Q8 kernel on every node for bit-exact debugging.
+# reserve_ram_mb holds RAM back from the shard-fit budget (OS + staging headroom).
+
+# --- nodes: exactly one head (shard 0, holds the endpoint), one+ workers ---
+# Worker shard indices are assigned by manifest order (first worker = shard 1).
+
+[[node]]
+name = "head-node"          # SSH-reachable hostname or IP (mDNS *.local works)
+host = "head-node"
+role = "head"
+
+[[node]]
+name = "worker-1"
+host = "worker-1"
+role = "worker"
+# max_cores caps this node to N cores (taskset + RAYON_NUM_THREADS=N) — the
+# brown-out mitigation for a board whose PSU can't sustain all cores under load.
+max_cores = 2
+
+[[node]]
+name = "worker-2"
+host = "worker-2"
+role = "worker"
+# weight overrides the auto RAM-weight so you can hand-bias the split toward a
+# beefier node; omit it to let `up` size the shard from probed RAM.
+weight = 1.5

@@ -1,4 +1,5 @@
 pub mod cluster;
+pub mod cluster_up;
 pub mod gguf;
 pub mod inference;
 pub mod model;

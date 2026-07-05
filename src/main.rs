@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocamelid::{gguf, inference, model, q8, speculative, tokenizer};
+use nanocamelid::{cluster_up, gguf, inference, model, q8, speculative, tokenizer};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
@@ -183,6 +183,8 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("up") => cluster_up::run_up(&args[1..]),
+        Some("down") => cluster_up::run_down(&args[1..]),
         Some("inspect") => {
             if args.get(1).is_some_and(|arg| is_help_flag(arg)) {
                 print_help(HelpTopic::Inspect);
