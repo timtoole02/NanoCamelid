@@ -520,9 +520,14 @@ fn ssh_launch_detached(
     log_name: &str,
 ) -> Result<u32, String> {
     let escaped = full_cmd.replace('\'', "'\\''");
+    // `nohup` (not `setsid`) so the shell execs straight through to the real
+    // cluster_tp_node binary — `$!` is then the binary's own pid, not a wrapper
+    // that forks-and-exits (which would leave `down`'s `kill` targeting a corpse).
+    // nohup ignores the SIGHUP that arrives when the SSH session ends, so the
+    // process survives; the outer group redirect closes the channel.
     let launch = format!(
         "mkdir -p ~/.nanocamelid/logs ~/.nanocamelid/pids; \
-         {{ setsid sh -c '{escaped}' > ~/.nanocamelid/logs/{log_name}.log 2>&1 < /dev/null & \
+         {{ nohup sh -c '{escaped}' > ~/.nanocamelid/logs/{log_name}.log 2>&1 < /dev/null & \
          echo $! > ~/.nanocamelid/pids/{log_name}.pid; }} > /dev/null 2>&1 < /dev/null"
     );
     ssh_run(node, cluster, &launch)?;
@@ -626,6 +631,10 @@ struct ProcRef {
     host: String,
     shard_idx: usize,
     pid: u32,
+    /// The model path as it appears on THIS node's process command line (may be
+    /// a per-node `remote_model_path`, not `cluster.model`). Used so `down`'s
+    /// pkill-by-pattern fallback matches the real remote process.
+    model_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -666,7 +675,7 @@ fn proc_node(p: &ProcRef, role: NodeRole) -> NodeCfg {
 }
 
 fn proc_json(p: &ProcRef) -> serde_json::Value {
-    serde_json::json!({ "name": p.name, "host": p.host, "shard_idx": p.shard_idx, "pid": p.pid })
+    serde_json::json!({ "name": p.name, "host": p.host, "shard_idx": p.shard_idx, "pid": p.pid, "model_path": p.model_path })
 }
 
 fn proc_from_json(v: &serde_json::Value) -> Result<ProcRef, String> {
@@ -686,6 +695,11 @@ fn proc_from_json(v: &serde_json::Value) -> Result<ProcRef, String> {
             .and_then(|x| x.as_u64())
             .ok_or("proc.shard_idx")? as usize,
         pid: v.get("pid").and_then(|x| x.as_u64()).ok_or("proc.pid")? as u32,
+        model_path: v
+            .get("model_path")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_owned(),
     })
 }
 
@@ -917,6 +931,7 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
                 host: node.host.clone(),
                 shard_idx: *shard_idx,
                 pid,
+                model_path: node_model_path(node, cluster),
             }),
             Err(e) => {
                 eprintln!("launch failed: {e}");
@@ -981,6 +996,7 @@ fn run_up_live(manifest: &Manifest, config: &LlamaModelConfig, opts: &UpOpts) ->
             host: head.host.clone(),
             shard_idx: 0,
             pid: head_pid,
+            model_path: node_model_path(head, cluster),
         },
         workers: worker_procs,
     };
@@ -1030,7 +1046,7 @@ pub fn run_down(args: &[String]) -> ExitCode {
         &head_node,
         &cluster,
         state.head.pid,
-        &format!("cluster_tp_node master-serve {}", state.model),
+        &format!("cluster_tp_node master-serve {}", state.head.model_path),
         opts.force,
     );
     for w in &state.workers {
@@ -1039,7 +1055,7 @@ pub fn run_down(args: &[String]) -> ExitCode {
             &proc_node(w, NodeRole::Worker),
             &cluster,
             w.pid,
-            &format!("cluster_tp_node worker {}", state.model),
+            &format!("cluster_tp_node worker {}", w.model_path),
             opts.force,
         );
     }
@@ -1436,6 +1452,7 @@ weight = 1.5
                 host: "h.local".into(),
                 shard_idx: 0,
                 pid: 111,
+                model_path: "/mnt/m.gguf".into(),
             },
             workers: vec![
                 ProcRef {
@@ -1443,12 +1460,14 @@ weight = 1.5
                     host: "w1.local".into(),
                     shard_idx: 1,
                     pid: 222,
+                    model_path: "/mnt/m.gguf".into(),
                 },
                 ProcRef {
                     name: "w2".into(),
                     host: "w2.local".into(),
                     shard_idx: 2,
                     pid: 333,
+                    model_path: "/mnt/m.gguf".into(),
                 },
             ],
         };
