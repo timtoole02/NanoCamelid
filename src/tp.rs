@@ -606,6 +606,31 @@ pub struct TpShardGeometry {
 }
 
 /// Validate shares against the model config and compute shard geometry.
+/// Validate a KV-head share vector against a model's geometry. Depends only on
+/// the two numbers a planner can cheaply fetch (locally or over SSH): the total
+/// KV heads and the feed-forward width. `shard_geometry` calls this, so the
+/// planner and the real per-shard geometry share one validation.
+pub fn validate_shares(
+    kv_total: usize,
+    feed_forward_length: usize,
+    shares: &[usize],
+) -> Result<(), String> {
+    if shares.iter().sum::<usize>() != kv_total {
+        return Err(format!("shares {shares:?} must sum to {kv_total} kv heads"));
+    }
+    if shares.contains(&0) {
+        return Err("every shard needs at least one kv head".to_owned());
+    }
+    for &s in shares {
+        if !(feed_forward_length * s).is_multiple_of(kv_total * 32) {
+            return Err(format!(
+                "ffn {feed_forward_length} not 32-block divisible for share {s}/{kv_total}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn shard_geometry(
     config: &LlamaModelConfig,
     shares: &[usize],
@@ -615,21 +640,8 @@ pub fn shard_geometry(
     if shares.is_empty() || shard_idx >= shares.len() {
         return Err("bad shard index".to_owned());
     }
-    if shares.iter().sum::<usize>() != kv_total {
-        return Err(format!("shares {shares:?} must sum to {kv_total} kv heads"));
-    }
-    if shares.contains(&0) {
-        return Err("every shard needs at least one kv head".to_owned());
-    }
+    validate_shares(kv_total, config.feed_forward_length, shares)?;
     let q_per_kv = config.attention_head_count / kv_total;
-    for &s in shares {
-        if !(config.feed_forward_length * s).is_multiple_of(kv_total * 32) {
-            return Err(format!(
-                "ffn {} not 32-block divisible for share {s}/{kv_total}",
-                config.feed_forward_length
-            ));
-        }
-    }
     let kv_start: usize = shares[..shard_idx].iter().sum();
     let ffn_unit = config.feed_forward_length / kv_total;
     // Head rows: proportional to shares, 4-aligned, remainder to the last.
