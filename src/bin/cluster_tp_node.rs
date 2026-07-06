@@ -151,6 +151,36 @@ fn cluster_live_json(
     )
 }
 
+/// Connect to a worker, retrying with a short per-attempt timeout. A single
+/// SYN can be lost on a weak/lossy link (e.g. Wi-Fi), so a one-shot connect
+/// occasionally times out even though the worker is up and listening; retrying
+/// makes bring-up robust. Once established, TCP retransmits keep the reduce
+/// alive over the same link.
+fn connect_worker(addr: &str) -> Result<TcpStream, String> {
+    use std::net::ToSocketAddrs;
+    let sock = addr
+        .to_socket_addrs()
+        .map_err(|e| format!("{addr}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{addr}: no address resolved"))?;
+    let mut last = String::new();
+    for attempt in 1..=40 {
+        match TcpStream::connect_timeout(&sock, Duration::from_secs(4)) {
+            Ok(s) => {
+                if attempt > 1 {
+                    println!("worker {addr} connected on attempt {attempt}");
+                }
+                return Ok(s);
+            }
+            Err(e) => {
+                last = e.to_string();
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+    Err(format!("{addr}: {last} (after 40 attempts)"))
+}
+
 /// Best-effort LAN address of this node (the interface that reaches `peer`).
 fn local_ip_toward(peer: &str) -> String {
     std::net::UdpSocket::bind("0.0.0.0:0")
@@ -735,7 +765,7 @@ fn run_master(
 
     let mut streams = Vec::with_capacity(worker_addrs.len());
     for (i, addr) in worker_addrs.iter().enumerate() {
-        let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
+        let mut stream = connect_worker(addr)?;
         stream.set_nodelay(true).map_err(|e| e.to_string())?;
         let (idx, blocks) = read_msg(&mut stream, HELLO_MAGIC, &mut [])?;
         if idx as usize != i + 1 || blocks as usize != base.config.block_count {
@@ -1023,7 +1053,7 @@ fn run_master_serve(
 
     let mut streams = Vec::with_capacity(worker_addrs.len());
     for (i, addr) in worker_addrs.iter().enumerate() {
-        let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
+        let mut stream = connect_worker(addr)?;
         stream.set_nodelay(true).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(Duration::from_secs(worker_timeout)))
