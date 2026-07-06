@@ -37,10 +37,6 @@ impl TpRuntime {
     }
 }
 
-fn blocks_per_row(cols: usize) -> usize {
-    cols / 32
-}
-
 /// Row slice [r0, r1) of a row-major quantized matrix.
 fn slice_rows(
     matrix: &QuantizedMatrix,
@@ -48,23 +44,39 @@ fn slice_rows(
     r0: usize,
     r1: usize,
 ) -> Result<QuantizedMatrix, String> {
-    let bpr = blocks_per_row(cols);
+    // Rows are contiguous block runs, so a row slice is a plain sub-range — clean
+    // for any block size. 32-value blocks: Q8_0/Q4_0; 256-value K-quant super-blocks.
     match matrix {
-        QuantizedMatrix::Q8_0(blocks) => Ok(QuantizedMatrix::Q8_0(
-            blocks[r0 * bpr..r1 * bpr].to_vec(),
-        )),
-        QuantizedMatrix::Q4_0(blocks) => Ok(QuantizedMatrix::Q4_0(
-            blocks[r0 * bpr..r1 * bpr].to_vec(),
-        )),
+        QuantizedMatrix::Q8_0(b) => Ok(QuantizedMatrix::Q8_0(row_run(b, cols / 32, r0, r1))),
+        QuantizedMatrix::Q4_0(b) => Ok(QuantizedMatrix::Q4_0(row_run(b, cols / 32, r0, r1))),
+        QuantizedMatrix::Q2K(b) => Ok(QuantizedMatrix::Q2K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q3K(b) => Ok(QuantizedMatrix::Q3K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q4K(b) => Ok(QuantizedMatrix::Q4K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q5K(b) => Ok(QuantizedMatrix::Q5K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q6K(b) => Ok(QuantizedMatrix::Q6K(row_run(b, cols / 256, r0, r1))),
         _ => Err(
-            "tensor parallelism requires row-major Q8_0/Q4_0 matrices (load with the 1x4 swizzle disabled)"
+            "tensor parallelism requires row-major Q8_0/Q4_0 or K-quant matrices (load with the 1x4 swizzle disabled)"
                 .to_owned(),
         ),
     }
 }
 
+/// Contiguous row-block sub-range `[r0, r1)` of a row-major block matrix.
+fn row_run<T: Clone>(blocks: &[T], bpr: usize, r0: usize, r1: usize) -> Vec<T> {
+    blocks[r0 * bpr..r1 * bpr].to_vec()
+}
+
+/// Per-row gather of the block sub-range `[b0, b1)` (columns) of a block matrix.
+fn col_gather<T: Clone>(blocks: &[T], rows: usize, bpr: usize, b0: usize, b1: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(rows * (b1 - b0));
+    for r in 0..rows {
+        out.extend_from_slice(&blocks[r * bpr + b0..r * bpr + b1]);
+    }
+    out
+}
+
 /// Column slice [c0, c1) of a row-major quantized matrix; c0/c1 must sit on
-/// 32-value block boundaries.
+/// block boundaries (32 for Q8_0/Q4_0, 256 for K-quants).
 fn slice_cols(
     matrix: &QuantizedMatrix,
     rows: usize,
@@ -72,31 +84,36 @@ fn slice_cols(
     c0: usize,
     c1: usize,
 ) -> Result<QuantizedMatrix, String> {
-    if !c0.is_multiple_of(32) || !c1.is_multiple_of(32) {
-        return Err(format!("column slice {c0}..{c1} not block-aligned"));
+    let block_vals = match matrix {
+        QuantizedMatrix::Q8_0(_) | QuantizedMatrix::Q4_0(_) => 32usize,
+        QuantizedMatrix::Q2K(_)
+        | QuantizedMatrix::Q3K(_)
+        | QuantizedMatrix::Q4K(_)
+        | QuantizedMatrix::Q5K(_)
+        | QuantizedMatrix::Q6K(_) => 256usize,
+        _ => {
+            return Err(
+                "tensor parallelism requires row-major Q8_0/Q4_0 or K-quant matrices (load with the 1x4 swizzle disabled)"
+                    .to_owned(),
+            );
+        }
+    };
+    if !c0.is_multiple_of(block_vals) || !c1.is_multiple_of(block_vals) {
+        return Err(format!(
+            "column slice {c0}..{c1} not aligned to {block_vals}-value blocks"
+        ));
     }
-    let bpr = blocks_per_row(cols);
-    let b0 = c0 / 32;
-    let b1 = c1 / 32;
+    let bpr = cols / block_vals;
+    let (b0, b1) = (c0 / block_vals, c1 / block_vals);
     match matrix {
-        QuantizedMatrix::Q8_0(blocks) => {
-            let mut out = Vec::with_capacity(rows * (b1 - b0));
-            for r in 0..rows {
-                out.extend_from_slice(&blocks[r * bpr + b0..r * bpr + b1]);
-            }
-            Ok(QuantizedMatrix::Q8_0(out))
-        }
-        QuantizedMatrix::Q4_0(blocks) => {
-            let mut out = Vec::with_capacity(rows * (b1 - b0));
-            for r in 0..rows {
-                out.extend_from_slice(&blocks[r * bpr + b0..r * bpr + b1]);
-            }
-            Ok(QuantizedMatrix::Q4_0(out))
-        }
-        _ => Err(
-            "tensor parallelism requires row-major Q8_0/Q4_0 matrices (load with the 1x4 swizzle disabled)"
-                .to_owned(),
-        ),
+        QuantizedMatrix::Q8_0(b) => Ok(QuantizedMatrix::Q8_0(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q4_0(b) => Ok(QuantizedMatrix::Q4_0(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q2K(b) => Ok(QuantizedMatrix::Q2K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q3K(b) => Ok(QuantizedMatrix::Q3K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q4K(b) => Ok(QuantizedMatrix::Q4K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q5K(b) => Ok(QuantizedMatrix::Q5K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q6K(b) => Ok(QuantizedMatrix::Q6K(col_gather(b, rows, bpr, b0, b1))),
+        _ => unreachable!("block_vals match already rejected other variants"),
     }
 }
 
@@ -698,11 +715,26 @@ fn decode_block_run(
         GgufTensorType::Q8_0 => crate::q8::decode_q8_0_blocks(bytes)
             .map(QuantizedMatrix::Q8_0)
             .map_err(|e| format!("{name}: {e}")),
+        // K-quant family (256-value super-blocks). A "Q2_K" GGUF is really a mix
+        // — attention/ffn-down tensors are kept at Q4_K/Q6_K for quality — so the
+        // shard loader must handle the whole family, not just Q2_K.
         GgufTensorType::Q6K => crate::q8::decode_q6_k_blocks(bytes)
             .map(QuantizedMatrix::Q6K)
             .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q2K => crate::q8::decode_q2_k_blocks(bytes)
+            .map(QuantizedMatrix::Q2K)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q3K => crate::q8::decode_q3_k_blocks(bytes)
+            .map(QuantizedMatrix::Q3K)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q4K => crate::q8::decode_q4_k_blocks(bytes)
+            .map(QuantizedMatrix::Q4K)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q5K => crate::q8::decode_q5_k_blocks(bytes)
+            .map(QuantizedMatrix::Q5K)
+            .map_err(|e| format!("{name}: {e}")),
         other => Err(format!(
-            "{name}: shard-direct loading supports Q4_0/Q8_0/Q6_K, got {other:?}"
+            "{name}: shard-direct loading supports Q4_0/Q8_0 and the K-quants (Q2_K/Q3_K/Q4_K/Q5_K/Q6_K), got {other:?}"
         )),
     }
 }
@@ -754,13 +786,20 @@ fn load_cols_direct(
         .tensor_type
         .layout()
         .ok_or_else(|| format!("{name}: no layout"))?;
-    if block_vals != 32 || !c0.is_multiple_of(32) || !c1.is_multiple_of(32) {
-        return Err(format!("{name}: column slice not block-aligned"));
+    // Column slicing gathers whole quant blocks per row, so the slice edges must
+    // land on block boundaries. Q4_0/Q8_0 use 32-value blocks; K-quants (Q2_K,
+    // Q6_K) use 256-value super-blocks — a TP split whose column boundaries are
+    // 256-aligned (e.g. an even head/ffn split of a 70B) slices them cleanly.
+    let block_vals = block_vals as usize;
+    if !c0.is_multiple_of(block_vals) || !c1.is_multiple_of(block_vals) {
+        return Err(format!(
+            "{name}: column slice {c0}..{c1} not aligned to {block_vals}-value blocks"
+        ));
     }
-    let bpr = cols / 32;
+    let bpr = cols / block_vals;
     let bb = block_bytes as usize;
     let bytes = tensor_all_bytes(mmap, desc)?;
-    let (b0, b1) = (c0 / 32, c1 / 32);
+    let (b0, b1) = (c0 / block_vals, c1 / block_vals);
     let mut gathered = Vec::with_capacity(rows * (b1 - b0) * bb);
     for r in 0..rows {
         let start = (r * bpr + b0) * bb;
