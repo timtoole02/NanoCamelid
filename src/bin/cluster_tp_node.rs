@@ -726,7 +726,7 @@ fn run_master(
     )?;
     let emb = base.config.embedding_length;
     println!("Loading embedding table...");
-    let embeddings = tp::load_embeddings_f32(
+    let embeddings = tp::load_embeddings(
         Path::new(model_path),
         &base.gguf,
         base.config.vocab_size,
@@ -763,9 +763,7 @@ fn run_master(
 
     loop {
         let compute_start = Instant::now();
-        let emb_start = token as usize * emb;
-        ws.hidden
-            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        embeddings.row(token as usize, &mut ws.hidden)?;
         // Ship the embedded hidden with the token so workers skip embeddings.
         for stream in streams.iter_mut() {
             write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
@@ -1006,7 +1004,7 @@ fn run_master_serve(
     )?;
     let emb = base.config.embedding_length;
     println!("Loading embedding table...");
-    let embeddings = tp::load_embeddings_f32(
+    let embeddings = tp::load_embeddings(
         Path::new(model_path),
         &base.gguf,
         base.config.vocab_size,
@@ -1453,7 +1451,7 @@ fn extract_last_content(body: &str) -> Option<String> {
 fn serve_completion_collect(
     base: &LoadedBase,
     node: &mut tp::TpNodeShard,
-    embeddings: &[f32],
+    embeddings: &tp::EmbeddingLookup,
     streams: &mut Vec<TcpStream>,
     rt: &mut tp::TpRuntime,
     ws: &mut inference::LlamaWorkspace,
@@ -1463,7 +1461,6 @@ fn serve_completion_collect(
     max_tokens: usize,
     collected: &mut String,
 ) -> Result<(usize, usize), String> {
-    let emb = base.config.embedding_length;
     let prompt_tokens = encode_chat(base, prompt)?;
     let budget = base
         .config
@@ -1476,9 +1473,7 @@ fn serve_completion_collect(
     let total_prompt = prompt_tokens.len();
     let mut step = 0usize;
     loop {
-        let emb_start = token as usize * emb;
-        ws.hidden
-            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        embeddings.row(token as usize, &mut ws.hidden)?;
         for stream in streams.iter_mut() {
             write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
         }
@@ -1567,7 +1562,7 @@ fn extract_json_usize(body: &str, key: &str) -> Option<usize> {
 fn serve_one_request(
     base: &LoadedBase,
     node: &mut tp::TpNodeShard,
-    embeddings: &[f32],
+    embeddings: &tp::EmbeddingLookup,
     streams: &mut Vec<TcpStream>,
     rt: &mut tp::TpRuntime,
     ws: &mut inference::LlamaWorkspace,
@@ -1577,7 +1572,6 @@ fn serve_one_request(
     prompt: &str,
     max_tokens: usize,
 ) -> Result<f64, String> {
-    let emb = base.config.embedding_length;
     let prompt_tokens = encode_chat(base, prompt)?;
     let budget = base
         .config
@@ -1593,9 +1587,7 @@ fn serve_one_request(
     let mut decode_started: Option<Instant> = None;
 
     loop {
-        let emb_start = token as usize * emb;
-        ws.hidden
-            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        embeddings.row(token as usize, &mut ws.hidden)?;
         for stream in streams.iter_mut() {
             write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
         }

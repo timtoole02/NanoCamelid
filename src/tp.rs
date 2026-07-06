@@ -1049,6 +1049,35 @@ pub fn load_tp_shard_direct(
     })
 }
 
+/// The K-quants each expose an inherent `dequantize(&self, &mut [f32; 256])`;
+/// this trait lets one generic helper cover the whole family.
+trait KBlockDeq {
+    fn deq256(&self, out: &mut [f32; 256]);
+}
+macro_rules! impl_kblock_deq {
+    ($t:ty) => {
+        impl KBlockDeq for $t {
+            fn deq256(&self, out: &mut [f32; 256]) {
+                self.dequantize(out);
+            }
+        }
+    };
+}
+impl_kblock_deq!(crate::q8::Q2KBlock);
+impl_kblock_deq!(crate::q8::Q3KBlock);
+impl_kblock_deq!(crate::q8::Q4KBlock);
+impl_kblock_deq!(crate::q8::Q5KBlock);
+impl_kblock_deq!(crate::q8::Q6KBlock);
+
+/// Dequantize a contiguous run of 256-value K-quant super-blocks into `out`.
+fn deq_kblocks<B: KBlockDeq>(blocks: &[B], out: &mut [f32]) {
+    let mut buf = [0.0_f32; 256];
+    for (i, block) in blocks.iter().enumerate() {
+        block.deq256(&mut buf);
+        out[i * 256..(i + 1) * 256].copy_from_slice(&buf);
+    }
+}
+
 fn dequantize_matrix_f32(
     matrix: &QuantizedMatrix,
     rows: usize,
@@ -1073,35 +1102,113 @@ fn dequantize_matrix_f32(
                 }
             }
         }
-        QuantizedMatrix::Q6K(blocks) => {
-            let mut buf = [0.0_f32; 256];
-            for (i, block) in blocks.iter().enumerate() {
-                block.dequantize(&mut buf);
-                out[i * 256..(i + 1) * 256].copy_from_slice(&buf);
-            }
-        }
+        // K-quants all expose the same 256-value super-block dequantize().
+        QuantizedMatrix::Q2K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q3K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q4K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q5K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q6K(b) => deq_kblocks(b, &mut out),
         _ => return Err("dequantize: unsupported matrix class".to_owned()),
     }
     Ok(out)
 }
 
-/// Dequantize a full embedding table to f32 (master-side lookup table).
-pub fn load_embeddings_f32(
+/// Master-side token→embedding lookup. A 70B's embedding table is ~4 GB once
+/// expanded to f32, but a decode only ever touches a few dozen rows — so we keep
+/// it in its stored form and dequantize a row on demand. This is what lets the
+/// head fit its shard + embeddings in 16 GB.
+pub enum EmbeddingLookup {
+    /// F32/F16 source: already dense f32, whole table held.
+    Dense { table: Vec<f32>, emb: usize },
+    /// Quantized source: rows dequantized on demand.
+    Quant { matrix: QuantizedMatrix, emb: usize },
+}
+
+impl EmbeddingLookup {
+    /// Fill `out` (len == emb) with token `t`'s embedding row.
+    pub fn row(&self, t: usize, out: &mut [f32]) -> Result<(), String> {
+        match self {
+            EmbeddingLookup::Dense { table, emb } => {
+                out.copy_from_slice(&table[t * emb..(t + 1) * emb]);
+                Ok(())
+            }
+            EmbeddingLookup::Quant { matrix, emb } => dequantize_row_f32(matrix, t, *emb, out),
+        }
+    }
+}
+
+/// Dequantize a single row `t` of a row-major quantized matrix into `out[0..cols]`.
+fn dequantize_row_f32(
+    matrix: &QuantizedMatrix,
+    t: usize,
+    cols: usize,
+    out: &mut [f32],
+) -> Result<(), String> {
+    match matrix {
+        QuantizedMatrix::Q8_0(b) => {
+            let bpr = cols / 32;
+            for (j, blk) in b[t * bpr..(t + 1) * bpr].iter().enumerate() {
+                let s = blk.scale_f32();
+                for (o, &v) in out[j * 32..(j + 1) * 32].iter_mut().zip(blk.values()) {
+                    *o = s * v as f32;
+                }
+            }
+        }
+        QuantizedMatrix::Q4_0(b) => {
+            let bpr = cols / 32;
+            for (j, blk) in b[t * bpr..(t + 1) * bpr].iter().enumerate() {
+                let s = blk.scale_f32();
+                for (o, &v) in out[j * 32..(j + 1) * 32]
+                    .iter_mut()
+                    .zip(blk.unpack_values().iter())
+                {
+                    *o = s * v as f32;
+                }
+            }
+        }
+        QuantizedMatrix::Q2K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q3K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q4K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q5K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q6K(b) => deq_krow(b, t, cols, out),
+        _ => return Err("embedding: unsupported quant class".to_owned()),
+    }
+    Ok(())
+}
+
+fn deq_krow<B: KBlockDeq>(blocks: &[B], t: usize, cols: usize, out: &mut [f32]) {
+    let bpr = cols / 256;
+    let mut buf = [0.0_f32; 256];
+    for (j, block) in blocks[t * bpr..(t + 1) * bpr].iter().enumerate() {
+        block.deq256(&mut buf);
+        out[j * 256..(j + 1) * 256].copy_from_slice(&buf);
+    }
+}
+
+/// Build a master-side embedding lookup without materializing the whole f32 table.
+pub fn load_embeddings(
     path: &Path,
     gguf: &GgufFile,
     vocab: usize,
     emb: usize,
-) -> Result<Vec<f32>, String> {
+) -> Result<EmbeddingLookup, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
     let desc = find_tensor(gguf, "token_embd.weight")?;
     match desc.tensor_type {
         GgufTensorType::F32 | GgufTensorType::F16 => {
-            load_norm(&mmap, gguf, "token_embd.weight", vocab * emb)
+            let table = load_norm(&mmap, gguf, "token_embd.weight", vocab * emb)?;
+            Ok(EmbeddingLookup::Dense { table, emb })
         }
-        GgufTensorType::Q4_0 | GgufTensorType::Q8_0 | GgufTensorType::Q6K => {
+        GgufTensorType::Q4_0
+        | GgufTensorType::Q8_0
+        | GgufTensorType::Q2K
+        | GgufTensorType::Q3K
+        | GgufTensorType::Q4K
+        | GgufTensorType::Q5K
+        | GgufTensorType::Q6K => {
             let matrix = load_rows_direct(&mmap, gguf, "token_embd.weight", emb, 0, vocab)?;
-            dequantize_matrix_f32(&matrix, vocab, emb)
+            Ok(EmbeddingLookup::Quant { matrix, emb })
         }
         other => Err(format!("token_embd: unsupported type {other:?}")),
     }
