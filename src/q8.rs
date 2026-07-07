@@ -1787,6 +1787,115 @@ pub unsafe fn q5k_dot_preloaded_neon(unpacked: &Q5KUnpacked, x_i8: &[i8], x_scal
     sum
 }
 
+/// SDOT core for one Q2_K "group" (two 16-lane sub-blocks sharing one
+/// activation scale). Returns the four exact integer sums (low Σq·x,
+/// high Σq·x, low Σx, high Σx); the activation sums use a ones vector because
+/// Q8_0 activations carry no bsums. Stable-safe: same `.arch_extension
+/// dotprod` asm idiom as `qk_pair_sdot`.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn q2k_group_sdot(
+    low: std::arch::aarch64::int8x16_t,
+    high: std::arch::aarch64::int8x16_t,
+    xl: std::arch::aarch64::int8x16_t,
+    xh: std::arch::aarch64::int8x16_t,
+    ones: std::arch::aarch64::int8x16_t,
+) -> (i32, i32, i32, i32) {
+    use std::arch::{
+        aarch64::{vaddvq_s32, vdupq_n_s32},
+        asm,
+    };
+    let mut awl = vdupq_n_s32(0);
+    let mut awh = vdupq_n_s32(0);
+    let mut aal = vdupq_n_s32(0);
+    let mut aah = vdupq_n_s32(0);
+    unsafe {
+        asm!(
+            ".arch_extension dotprod",
+            "sdot {awl:v}.4s, {l:v}.16b, {xl:v}.16b",
+            "sdot {awh:v}.4s, {h:v}.16b, {xh:v}.16b",
+            "sdot {aal:v}.4s, {ones:v}.16b, {xl:v}.16b",
+            "sdot {aah:v}.4s, {ones:v}.16b, {xh:v}.16b",
+            awl = inout(vreg) awl,
+            awh = inout(vreg) awh,
+            aal = inout(vreg) aal,
+            aah = inout(vreg) aah,
+            l = in(vreg) low,
+            h = in(vreg) high,
+            xl = in(vreg) xl,
+            xh = in(vreg) xh,
+            ones = in(vreg) ones,
+            options(nostack, preserves_flags),
+        );
+    }
+    (
+        vaddvq_s32(awl),
+        vaddvq_s32(awh),
+        vaddvq_s32(aal),
+        vaddvq_s32(aah),
+    )
+}
+
+/// AArch64 dotprod dot product for a Q2_K super-block, bit-exact with
+/// `Q2KBlock::dot_q8_scaled` / `dot_q8_scaled_preloaded`. Only the integer
+/// inner sums are vectorized (via `q2k_group_sdot`); the f32 scale/min combine
+/// is byte-identical to the scalar path — one combine per 16-lane sub-block,
+/// low then high, groups 0→3 within each 128-lane super-half — so results stay
+/// bit-exact. Quants are unsigned 0..=3 packed 4-per-byte; the same 32 weight
+/// bytes serve all four groups of a super-half via a 2-bit shift per group
+/// (done here with `vshlq_u8` and a negative shift count).
+///
+/// # Safety
+/// Requires an AArch64 CPU with the `dotprod` feature. `x_i8` must hold
+/// `QK_K_BLOCK_SIZE` elements and `x_scales` one f32 per 32-lane sub-block;
+/// `unpacked` must be a fully populated `Q2KUnpacked`.
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn q2k_dot_preloaded_neon(unpacked: &Q2KUnpacked, x_i8: &[i8], x_scales: &[f32]) -> f32 {
+    use std::arch::aarch64::{
+        int8x16_t, vandq_u8, vdupq_n_s8, vdupq_n_u8, vld1q_s8, vld1q_u8, vreinterpretq_s8_u8,
+        vshlq_u8,
+    };
+    debug_assert_eq!(x_i8.len(), QK_K_BLOCK_SIZE);
+    debug_assert_eq!(x_scales.len(), QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE);
+    let mask = vdupq_n_u8(0x03);
+    let ones: int8x16_t = vdupq_n_s8(1);
+    let vptr = unpacked.values.as_ptr();
+    let xptr = x_i8.as_ptr();
+    let mut scale_idx = 0;
+    let mut sum = 0.0_f32;
+    for super_idx in 0..2 {
+        let value_base = super_idx * 32;
+        let x_base = super_idx * 128;
+        // The same 32 packed bytes serve all four groups of this super-half.
+        let v0 = vld1q_u8(vptr.add(value_base));
+        let v1 = vld1q_u8(vptr.add(value_base + 16));
+        for group_idx in 0..4 {
+            // USHL with a negative per-lane count is a logical right shift.
+            let shift = vdupq_n_s8(-(2 * group_idx as i8));
+            let low = vreinterpretq_s8_u8(vandq_u8(vshlq_u8(v0, shift), mask));
+            let high = vreinterpretq_s8_u8(vandq_u8(vshlq_u8(v1, shift), mask));
+
+            let xl = vld1q_s8(xptr.add(x_base + group_idx * 32));
+            let xh = vld1q_s8(xptr.add(x_base + group_idx * 32 + 16));
+
+            let (low_weighted, high_weighted, low_act, high_act) =
+                q2k_group_sdot(low, high, xl, xh, ones);
+
+            let x_scale = x_scales[super_idx * 4 + group_idx];
+            sum += x_scale
+                * (unpacked.scales[scale_idx] * low_weighted as f32
+                    - unpacked.mins[scale_idx] * low_act as f32);
+            sum += x_scale
+                * (unpacked.scales[scale_idx + 1] * high_weighted as f32
+                    - unpacked.mins[scale_idx + 1] * high_act as f32);
+            scale_idx += 2;
+        }
+    }
+    sum
+}
+
 #[inline]
 fn q4_k_scale_min(idx: usize, scales: &[u8; 12]) -> (u8, u8) {
     if idx < 4 {
@@ -3951,8 +4060,6 @@ mod tests {
 
     use crate::gguf::{GgufTensorDescriptor, GgufTensorType};
 
-    #[cfg(target_arch = "aarch64")]
-    use super::dot_q8_scaled_sdot_preloaded;
     use super::{
         IQ4NLBlock, Q2KBlock, Q3KBlock, Q4_0_BLOCK_BYTES, Q4_0Block, Q4_1_BLOCK_BYTES, Q4_1Block,
         Q4KBlock, Q5KBlock, Q6_K_BLOCK_BYTES, Q6KBlock, Q8_0_BLOCK_BYTES, Q8_0Block, Q8_0RowReader,
@@ -3964,6 +4071,8 @@ mod tests {
         dot_q8_0_rows_i32, f16_bits_to_f32, fast_f16_to_f32, fast_f32_to_f16,
         quantize_f32_matrix_to_q4_0_blocks,
     };
+    #[cfg(target_arch = "aarch64")]
+    use super::{dot_q8_scaled_sdot_preloaded, q2k_dot_preloaded_neon};
 
     #[test]
     fn quantize_f32_matrix_to_q4_0_blocks_reconstructs_within_scale() {
@@ -4530,9 +4639,129 @@ mod tests {
         assert_eq!(preloaded, scalar);
     }
 
-    // Pure NEON-vs-scalar parity test: its whole body is only exercised inside
-    // the aarch64 dotprod block, so on x86_64 (the CI runner) every local is
-    // unused. Gate the entire test to aarch64.
+    // Pure NEON-vs-scalar parity tests: their whole bodies are only exercised
+    // inside the aarch64 dotprod block, so on x86_64 (the CI runner) every
+    // local is unused. Gate the entire tests to aarch64.
+    #[cfg(target_arch = "aarch64")]
+    fn q2_k_assert_sdot_bitexact(
+        block: &Q2KBlock,
+        x_i8: &[i8; QK_K_BLOCK_SIZE],
+        x_scales: &[f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE],
+        label: &str,
+    ) {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            return;
+        }
+        let scalar = block.dot_q8_scaled(x_i8, x_scales);
+        let unpacked = block.unpack();
+        let preloaded = Q2KBlock::dot_q8_scaled_preloaded(&unpacked, x_i8, x_scales);
+        let neon = unsafe { q2k_dot_preloaded_neon(&unpacked, x_i8, x_scales) };
+        assert_eq!(
+            preloaded.to_bits(),
+            scalar.to_bits(),
+            "{label}: preloaded={preloaded}, scalar={scalar}"
+        );
+        assert_eq!(
+            neon.to_bits(),
+            scalar.to_bits(),
+            "{label}: neon={neon}, scalar={scalar}"
+        );
+    }
+
+    // Bit-exact SDOT-vs-scalar parity for Q2_K: the scalar already integer-
+    // accumulates per 16-lane sub-block, so the NEON kernel must reproduce it
+    // exactly (compare to_bits, not a tolerance).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn q2_k_sdot_matches_scalar_bitexact_random_blocks() {
+        for seed in 0..8_usize {
+            let scales: [u8; QK_K_BLOCK_SIZE / 16] =
+                core::array::from_fn(|idx| ((seed * 41 + idx * 7 + 11) % 256) as u8);
+            let values: [u8; QK_K_BLOCK_SIZE / 4] =
+                core::array::from_fn(|idx| ((seed * 29 + idx * 13 + 17) % 256) as u8);
+            let scale_bits = [
+                0x3c00, 0xbc00, 0x3800, 0x4200, 0x2e66, 0xb266, 0x4d00, 0x3555,
+            ][seed % 8] as u16;
+            let min_bits = [
+                0x3800, 0x4000, 0xb400, 0x2c00, 0x4a00, 0x38ff, 0xb733, 0x3d9a,
+            ][(seed + 3) % 8] as u16;
+            let block = Q2KBlock::from_parts(scales, values, scale_bits, min_bits);
+            let x_i8: [i8; QK_K_BLOCK_SIZE] =
+                core::array::from_fn(|idx| ((seed * 53 + idx * 13 + 17) % 255) as i8);
+            let x_scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE] = core::array::from_fn(|idx| {
+                0.0117 * (1 + (seed + idx) % 5) as f32 - 0.02 * ((seed + idx) % 3) as f32
+            });
+            q2_k_assert_sdot_bitexact(&block, &x_i8, &x_scales, &format!("seed {seed}"));
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn q2_k_sdot_matches_scalar_bitexact_extreme_scales() {
+        // Extreme f16 super-scales: max finite (±65504), smallest subnormal,
+        // and mixed-sign combos, against saturated activations and huge/tiny
+        // activation scales. Both paths run the identical f32 expression
+        // sequence, so bit equality must hold even when terms overflow.
+        let extreme_bits: [(u16, u16); 6] = [
+            (0x7bff, 0x7bff), // +65504, +65504
+            (0x7bff, 0x0001), // max finite, smallest subnormal
+            (0x0001, 0x7bff),
+            (0xfbff, 0x7bff), // -65504, +65504
+            (0x0000, 0x8000), // +0, -0
+            (0x83ff, 0x03ff), // largest subnormals, both signs
+        ];
+        for (case, &(scale_bits, min_bits)) in extreme_bits.iter().enumerate() {
+            // All scale nibbles at the 0xf ceiling in half the sub-blocks.
+            let scales: [u8; QK_K_BLOCK_SIZE / 16] =
+                core::array::from_fn(|idx| if idx % 2 == 0 { 0xff } else { 0x1f });
+            let values: [u8; QK_K_BLOCK_SIZE / 4] =
+                core::array::from_fn(|idx| ((case * 31 + idx * 13 + 5) % 256) as u8);
+            let block = Q2KBlock::from_parts(scales, values, scale_bits, min_bits);
+            let x_i8: [i8; QK_K_BLOCK_SIZE] =
+                core::array::from_fn(|idx| if idx % 3 == 0 { -128 } else { 127 });
+            let x_scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE] = core::array::from_fn(|idx| {
+                [
+                    3.4e37_f32,
+                    1e-38,
+                    -3.4e37,
+                    65504.0,
+                    -1e-38,
+                    f32::MIN_POSITIVE,
+                    0.0,
+                    -0.0,
+                ][idx % 8]
+            });
+            q2_k_assert_sdot_bitexact(&block, &x_i8, &x_scales, &format!("extreme case {case}"));
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn q2_k_sdot_matches_scalar_bitexact_zero_blocks() {
+        // All-zero weights and scales against non-zero activations, plus
+        // non-zero weights against all-zero activations.
+        let zero_block = Q2KBlock::from_parts(
+            [0_u8; QK_K_BLOCK_SIZE / 16],
+            [0_u8; QK_K_BLOCK_SIZE / 4],
+            0x0000,
+            0x0000,
+        );
+        let x_i8: [i8; QK_K_BLOCK_SIZE] =
+            core::array::from_fn(|idx| ((idx * 13 + 17) % 127) as i8 - 63);
+        let x_scales: [f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE] =
+            core::array::from_fn(|idx| 0.015625 * (1 + (idx % 5)) as f32);
+        q2_k_assert_sdot_bitexact(&zero_block, &x_i8, &x_scales, "zero block");
+
+        let scales: [u8; QK_K_BLOCK_SIZE / 16] =
+            core::array::from_fn(|idx| ((idx * 7 + 11) % 256) as u8);
+        let values: [u8; QK_K_BLOCK_SIZE / 4] =
+            core::array::from_fn(|idx| ((idx * 13 + 17) % 256) as u8);
+        let block = Q2KBlock::from_parts(scales, values, 0x3c00, 0x3800);
+        let zero_x = [0_i8; QK_K_BLOCK_SIZE];
+        let zero_x_scales = [0.0_f32; QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE];
+        q2_k_assert_sdot_bitexact(&block, &zero_x, &zero_x_scales, "zero activations");
+    }
+
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn q6_k_block_sdot_matches_scalar() {
