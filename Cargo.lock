@@ -82,6 +82,7 @@ name = "nanocamelid"
 version = "0.1.0"
 dependencies = [
  "core_affinity",
+ "libc",
  "memmap2",
  "rayon",
  "serde_json",
