@@ -722,8 +722,13 @@ fn run_worker(
     // finishes. master-chat has no read timeout (tolerates this forever);
     // master-serve applies NANOCAMELID_TP_WORKER_TIMEOUT_SECS (default 30s)
     // to the hello read, so set it to cover the load window there.
+    //
+    // IMPORTANT: this early message must NOT contain the phrase "listening
+    // on" — nanocamelid-up's poll_worker_ready (src/cluster_up.rs) greps the
+    // worker log for that exact phrase as its "shard loaded + serving"
+    // readiness gate. It is printed only after the load completes, below.
     let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
-    println!("tp worker (shard {shard_idx}) listening on {bind} (loading shard...)");
+    println!("tp worker (shard {shard_idx}) bound {bind}; loading shard...");
 
     let base = load_base(model_path)?;
     println!("Loading shard {shard_idx} of {shares:?} (direct)...");
@@ -747,7 +752,9 @@ fn run_worker(
         format!("TP worker shard {shard_idx} of {shares:?}"),
     );
 
-    println!("tp worker (shard {shard_idx}) shard loaded; accepting sessions on {bind}");
+    // "listening on" is the readiness marker poll_worker_ready greps for; it
+    // must appear only once the shard is loaded and sessions can be served.
+    println!("tp worker (shard {shard_idx}) shard loaded; listening on {bind} (accepting sessions)");
 
     let oneshot = std::env::var("NANOCAMELID_WORKER_ONESHOT").as_deref() == Ok("1");
     loop {
