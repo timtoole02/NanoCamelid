@@ -1523,6 +1523,9 @@ fn print_bench_usage() {
         "  NANOCAMELID_Q2K_SDOT                      Set to 0 to disable the Q2_K SDOT matmuls"
     );
     println!(
+        "  NANOCAMELID_Q3K_SDOT                      Set to 0 to disable the Q3_K SDOT matmuls"
+    );
+    println!(
         "  NANOCAMELID_ATTENTION_HEAD_PARALLEL       Enable experimental head-parallel attention"
     );
     println!("  NANOCAMELID_KV_CACHE_F16                  Store KV cache entries as f16");
