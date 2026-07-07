@@ -716,6 +716,15 @@ fn run_worker(
     shard_idx: usize,
     shares: &[usize],
 ) -> Result<(), String> {
+    // Bind the data port BEFORE the (30s..5min) shard load so the master's
+    // connect succeeds within ~1s of process start. The connection then just
+    // waits in the listen backlog / on the hello reply until the load
+    // finishes. master-chat has no read timeout (tolerates this forever);
+    // master-serve applies NANOCAMELID_TP_WORKER_TIMEOUT_SECS (default 30s)
+    // to the hello read, so set it to cover the load window there.
+    let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
+    println!("tp worker (shard {shard_idx}) listening on {bind} (loading shard...)");
+
     let base = load_base(model_path)?;
     println!("Loading shard {shard_idx} of {shares:?} (direct)...");
     let mut node = tp::load_tp_shard_direct(
@@ -726,7 +735,6 @@ fn run_worker(
         shard_idx,
         !parity_mode(),
     )?;
-    let emb = base.config.embedding_length;
 
     let status_model = Path::new(model_path)
         .file_name()
@@ -739,11 +747,61 @@ fn run_worker(
         format!("TP worker shard {shard_idx} of {shares:?}"),
     );
 
-    let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
-    println!("tp worker (shard {shard_idx}) listening on {bind}");
-    let (mut stream, peer) = listener.accept().map_err(|e| e.to_string())?;
+    println!("tp worker (shard {shard_idx}) shard loaded; accepting sessions on {bind}");
+
+    let oneshot = std::env::var("NANOCAMELID_WORKER_ONESHOT").as_deref() == Ok("1");
+    loop {
+        let (stream, peer) = match listener.accept() {
+            Ok(pair) => pair,
+            Err(err) => {
+                eprintln!("worker accept failed (continuing): {err}");
+                continue;
+            }
+        };
+        match handle_session(stream, peer, &base, &mut node, shard_idx) {
+            Ok(()) => {
+                if oneshot {
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                // A failed/aborted handshake (port probe, health checker) or
+                // a dropped master must not kill the loaded shard.
+                if oneshot {
+                    return Err(err);
+                }
+                eprintln!("worker session error from {peer} (continuing): {err}");
+            }
+        }
+    }
+}
+
+/// Serve one master session over an accepted connection. All per-session
+/// mutable state (KV cache, shard workspace, runtime scratch, hidden buffer,
+/// head logits, benchmark counters) is constructed fresh here so every
+/// session is bit-identical to a fresh worker process; only the loaded
+/// weights in `node` persist across sessions.
+fn handle_session(
+    mut stream: TcpStream,
+    peer: std::net::SocketAddr,
+    base: &LoadedBase,
+    node: &mut tp::TpNodeShard,
+    shard_idx: usize,
+) -> Result<(), String> {
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
     println!("master connected: {peer}");
+
+    // Reset per-session state to fresh-process values. The KV cache and the
+    // shard workspace are rebuilt exactly as load_tp_shard_direct builds them
+    // (zeroed, same shard config); head logits are scratch but zeroed anyway.
+    node.shard.cache = inference::LlamaKvCache::new(
+        node.shard.config.block_count,
+        node.shard.config.context_length,
+        node.shard.config.kv_width,
+    );
+    node.shard.ws = inference::LlamaWorkspace::new(&node.shard.config);
+    node.head.logits.fill(0.0);
+
     write_msg(
         &mut stream,
         HELLO_MAGIC,
@@ -752,6 +810,7 @@ fn run_worker(
         &[],
     )?;
 
+    let emb = base.config.embedding_length;
     let mut rt = tp::TpRuntime::new(&base.config);
     let mut hidden = vec![0.0_f32; emb];
     let mut head_ws = inference::LlamaWorkspace::new(&base.config);
