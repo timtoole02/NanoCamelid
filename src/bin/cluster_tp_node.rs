@@ -81,48 +81,6 @@ fn normalized_model_id(filename: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
-/// Quant label from a GGUF filename, e.g. `Q4_0`, `Q8_0`, `Q4_K_M`.
-///
-/// The web UI derives its quant key from this and refuses to call a model
-/// supported unless the capability row's quantization matches, so hardcoding
-/// one (this used to always say Q4_0) locks the composer for every other quant.
-/// Longest patterns first so `Q4_K_M` wins over `Q4_K`.
-fn quant_label_from_filename(filename: &str) -> &'static str {
-    const LABELS: &[&str] = &[
-        "Q2_K_S", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_K_S", "Q4_K_M", "Q5_K_S", "Q5_K_M", "IQ2_XXS",
-        "IQ2_XS", "IQ3_XXS", "IQ3_XS", "IQ4_NL", "IQ4_XS", "IQ1_S", "Q2_K", "Q6_K", "Q8_K", "Q4_0",
-        "Q4_1", "Q5_0", "Q5_1", "Q8_0", "BF16", "F16", "F32",
-    ];
-    let upper = filename.to_ascii_uppercase();
-    LABELS
-        .iter()
-        .copied()
-        .find(|label| upper.contains(label))
-        .unwrap_or("Q4_0")
-}
-
-/// GGUF `general.file_type` for a quant label, matching the UI's lookup table.
-fn gguf_file_type_for_quant(label: &str) -> u32 {
-    match label {
-        "F32" => 0,
-        "F16" => 1,
-        "Q4_0" => 2,
-        "Q4_1" => 3,
-        "Q5_0" => 8,
-        "Q5_1" => 9,
-        "Q2_K" => 10,
-        "Q3_K_S" => 11,
-        "Q3_K_M" => 12,
-        "Q3_K_L" => 13,
-        "Q4_K_S" => 14,
-        "Q4_K_M" => 15,
-        "Q5_K_S" => 16,
-        "Q5_K_M" => 17,
-        "Q6_K" => 18,
-        _ => 7,
-    }
-}
-
 fn write_json_response(client: &mut TcpStream, status: &str, body: &str) {
     // CRLF, explicitly. These were bare LFs from a multi-line string literal,
     // which violates RFC 9112 -- browsers and curl are lenient about it, but
@@ -169,16 +127,62 @@ fn health_json(model_file: &str) -> String {
     )
 }
 
-fn capabilities_json(model_file: &str, role_note: &str) -> String {
+fn capabilities_json(model_file: &str, model_path: &str, role_note: &str) -> String {
     let (cpu_model, threads, platform) = host_specs();
+    // A row per model in the served directory, not just the loaded one: the
+    // Models page decides each local model's support state by looking for a
+    // matching capability row, so emitting only the active model's row makes
+    // every other model on the box read as unsupported.
+    let mut rows = String::new();
+    for (i, (filename, _path, _bytes)) in scan_local_models(model_path).iter().enumerate() {
+        if i > 0 {
+            rows.push(',');
+        }
+        let quant = model::quant_label_from_filename(filename).unwrap_or("Q4_0");
+        let note = if filename == model_file {
+            role_note.to_owned()
+        } else {
+            format!("present on {}", platform)
+        };
+        rows.push_str(&format!(
+            "{{\"id\":\"{nid}\",\"family\":\"{fam}\",\"quantization\":\"{q}\",\"status\":\"{st}\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"{note}\"}}",
+            nid = normalized_model_id(filename),
+            fam = model::model_family_from_filename(filename),
+            st = model::capability_status_for_family(model::model_family_from_filename(filename)),
+            q = quant.to_ascii_lowercase(),
+            note = json_escape(&note),
+        ));
+    }
     format!(
-        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{{\"id\":\"{nid}\",\"family\":\"llama_bpe_decoder\",\"quantization\":\"{quant}\",\"status\":\"supported\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"{note}\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
+        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{rows}],\"api_features\":[],\"planned_model_families\":[]}}",
         cpu = json_escape(&cpu_model),
         plat = json_escape(&platform),
-        nid = normalized_model_id(model_file),
-        quant = quant_label_from_filename(model_file).to_ascii_lowercase(),
-        note = json_escape(role_note),
     )
+}
+
+/// Every .gguf sitting alongside the loaded model, as (filename, path, bytes).
+fn scan_local_models(active_model_path: &str) -> Vec<(String, String, u64)> {
+    let dir = match Path::new(active_model_path).parent() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Ok(read) = std::fs::read_dir(dir) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            let filename = match path.file_name().and_then(|f| f.to_str()) {
+                Some(f) => f.to_owned(),
+                None => continue,
+            };
+            if !model::is_model_gguf(&filename) {
+                continue;
+            }
+            let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            out.push((filename, path.to_string_lossy().into_owned(), bytes));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Live cluster state for the topology dashboard: the head + each worker with
@@ -347,7 +351,12 @@ fn cluster_import_json(
 /// Tiny read-only status endpoint every cluster node exposes so the web
 /// UI's topology page can see it as online with real specs. Runs on its own
 /// thread; serves /v1/health and /api/capabilities with permissive CORS.
-fn spawn_status_listener(port: u16, model_file: String, role_note: String) {
+fn spawn_status_listener(
+    port: u16,
+    model_file: String,
+    model_path_for_caps: String,
+    role_note: String,
+) {
     std::thread::spawn(move || {
         let Ok(listener) = TcpListener::bind(("0.0.0.0", port)) else {
             eprintln!("status listener: port {port} unavailable");
@@ -365,7 +374,7 @@ fn spawn_status_listener(port: u16, model_file: String, role_note: String) {
             let body = if first.starts_with("GET /v1/health") {
                 health_json(&model_file)
             } else if first.starts_with("GET /api/capabilities") {
-                capabilities_json(&model_file, &role_note)
+                capabilities_json(&model_file, &model_path_for_caps, &role_note)
             } else if first.starts_with("OPTIONS") {
                 let _ = write!(
                     client,
@@ -696,6 +705,7 @@ fn run_worker(
     spawn_status_listener(
         8181,
         status_model,
+        model_path.to_owned(),
         format!("TP worker shard {shard_idx} of {shares:?}"),
     );
 
@@ -1211,7 +1221,11 @@ fn run_master_serve(
                     write_json_response(
                         &mut client,
                         "200 OK",
-                        &capabilities_json(&model_file, "TP master (coordinator + web UI)"),
+                        &capabilities_json(
+                            &model_file,
+                            model_path,
+                            "TP master (coordinator + web UI)",
+                        ),
                     );
                     continue;
                 }
@@ -1235,22 +1249,38 @@ fn run_master_serve(
                             id = json_escape(&model_file),
                             p = json_escape(model_path),
                             name = json_escape(model_file.trim_end_matches(".gguf")),
-                            ft = gguf_file_type_for_quant(quant_label_from_filename(&model_file)),
-                            q = json_escape(quant_label_from_filename(&model_file)),
+                            ft = model::gguf_file_type_for_quant(
+                                model::quant_label_from_filename(&model_file).unwrap_or("Q4_0")
+                            ),
+                            q = json_escape(
+                                model::quant_label_from_filename(&model_file).unwrap_or("Q4_0")
+                            ),
                         ),
                     );
                     continue;
                 }
                 "/api/models/local" => {
+                    // Every .gguf in the served directory, not just the loaded
+                    // one -- otherwise the Models page can only ever show the
+                    // active model and the rest of the box looks empty.
+                    let mut models = String::new();
+                    for (i, (filename, path, bytes)) in
+                        scan_local_models(model_path).iter().enumerate()
+                    {
+                        if i > 0 {
+                            models.push(',');
+                        }
+                        models.push_str(&format!(
+                            "{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":{bytes},\"quant\":\"{q}\",\"family\":\"llama\",\"status\":\"ready\"}}",
+                            id = json_escape(filename),
+                            p = json_escape(path),
+                            q = json_escape(model::quant_label_from_filename(filename).unwrap_or("Q4_0")),
+                        ));
+                    }
                     write_json_response(
                         &mut client,
                         "200 OK",
-                        &format!(
-                            "{{\"models\":[{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":0,\"quant\":\"{q}\",\"family\":\"llama\",\"status\":\"ready\"}}]}}",
-                            id = json_escape(&model_file),
-                            p = json_escape(model_path),
-                            q = json_escape(quant_label_from_filename(&model_file)),
-                        ),
+                        &format!("{{\"models\":[{models}]}}"),
                     );
                     continue;
                 }

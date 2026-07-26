@@ -15028,6 +15028,11 @@ fn serve_scan_model_dir(dir: &Path) -> Vec<ScanEntry> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            // Model directories also hold vocab-only GGUFs; listing those puts
+            // rows in the UI's model picker that can never be loaded.
+            if !model::is_model_gguf(&filename) {
+                continue;
+            }
             let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             entries.push(ScanEntry {
                 filename,
@@ -15390,135 +15395,31 @@ fn serve_is_public(method: &str, path: &str) -> bool {
         || method == "OPTIONS"
 }
 
-/// Mirror of the web UI's `normalizeExactRowIdentity`
-/// (frontend/src/lib/capabilities.js): lowercase, drop a trailing `.gguf`,
-/// collapse every run of non-alphanumerics to `_`, trim leading/trailing `_`.
+/// One compatibility row per model in the directory, not just the loaded one.
 ///
-/// `findExactCompatibilityRowByIdentity` is the FIRST check in the UI's
-/// `findCompatibilityHint`, and it is the only one that works for an arbitrary
-/// model: it normalises both the model's identity fields and each capability
-/// row id and looks for equality. Emitting a row whose id normalises to the
-/// loaded model's filename is therefore what produces an `exact: true` hint,
-/// which is what `isCompatibilitySupportedForModel` requires before the chat
-/// composer unlocks. Keep this function in step with the frontend's.
-fn capability_row_id(filename: &str) -> String {
-    let stem = filename
-        .strip_suffix(".gguf")
-        .or_else(|| filename.strip_suffix(".GGUF"))
-        .unwrap_or(filename);
-    let mut out = String::with_capacity(stem.len());
-    let mut pending_sep = false;
-    for ch in stem.chars() {
-        if ch.is_ascii_alphanumeric() {
-            if pending_sep && !out.is_empty() {
-                out.push('_');
-            }
-            pending_sep = false;
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            pending_sep = true;
+/// The Models page renders each local model's support state by looking for a
+/// capability row matching it, so emitting only the active model's row makes
+/// every other model on disk read as unsupported -- which is wrong, and hides
+/// models the engine can in fact run.
+fn serve_capabilities_json(entries: &[ScanEntry]) -> String {
+    let mut out = String::from("{\"engine\":\"nanocamelid\",\"model_compatibility\":[");
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
         }
+        let quant = model::quant_label_from_filename(&e.filename).unwrap_or("Q8_0");
+        let family = model::model_family_from_filename(&e.filename);
+        out.push_str(&format!(
+            "{{\"id\":\"{id}\",\"family\":\"{family}\",\"quantization\":\"{quant}\",\"status\":\"{status}\",\"evidence\":\"present in the served model directory\",\"notes\":\"{name} {quant}\"}}",
+            id = json_escape(&model::capability_row_id(&e.filename)),
+            family = json_escape(family),
+            quant = json_escape(quant),
+            status = model::capability_status_for_family(family),
+            name = json_escape(e.filename.trim_end_matches(".gguf")),
+        ));
     }
+    out.push_str("],\"api_features\":[],\"planned_model_families\":[]}");
     out
-}
-
-/// Quant label from the filename, e.g. `Q4_K_M`, `Q8_0`, `F16`.
-///
-/// The UI derives its quant key from `model.quant` first, so this label has to
-/// be right or `targetMatchesQuant` fails and the hint downgrades to
-/// `quant_mismatch` -- still exact, but not `supported`, so the composer stays
-/// locked. Longest patterns first: `Q4_K_M` must win over `Q4_K`.
-fn quant_label_from_filename(filename: &str) -> Option<&'static str> {
-    const LABELS: &[&str] = &[
-        "Q2_K_S", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_K_S", "Q4_K_M", "Q5_K_S", "Q5_K_M", "IQ2_XXS",
-        "IQ2_XS", "IQ3_XXS", "IQ3_XS", "IQ4_NL", "IQ4_XS", "IQ1_S", "Q2_K", "Q6_K", "Q8_K", "Q4_0",
-        "Q4_1", "Q5_0", "Q5_1", "Q8_0", "BF16", "F16", "F32",
-    ];
-    let upper = filename.to_ascii_uppercase();
-    LABELS.iter().copied().find(|label| upper.contains(label))
-}
-
-/// GGUF `general.file_type` for a quant label, matching the UI's
-/// GGUF_FILE_TYPE_QUANT_LABELS table. The UI reads this to render the quant
-/// badge, so a wrong number mislabels the model even when chat works.
-fn gguf_file_type_for_quant(label: &str) -> u32 {
-    match label {
-        "F32" => 0,
-        "F16" => 1,
-        "Q4_1" => 3,
-        "Q5_0" => 8,
-        "Q5_1" => 9,
-        "Q2_K" => 10,
-        "Q3_K_S" => 11,
-        "Q3_K_M" => 12,
-        "Q3_K_L" => 13,
-        "Q4_K_S" => 14,
-        "Q4_K_M" => 15,
-        "Q5_K_S" => 16,
-        "Q5_K_M" => 17,
-        "Q6_K" => 18,
-        "IQ2_XXS" => 19,
-        "IQ2_XS" => 20,
-        "Q2_K_S" => 21,
-        "Q4_0" => 2,
-        // Q8_0 and anything unrecognised fall back to MOSTLY_Q8_0.
-        _ => 7,
-    }
-}
-
-/// Coarse family label from the filename, for display and family-level hints.
-fn model_family_from_filename(filename: &str) -> &'static str {
-    let lower = filename.to_ascii_lowercase();
-    for (needle, family) in [
-        ("tinyllama", "llama_spm_decoder"),
-        ("llama", "llama_bpe_decoder"),
-        ("qwen", "qwen_decoder"),
-        ("gemma", "gemma_decoder"),
-        ("smollm", "smollm_decoder"),
-        ("mistral", "mistral"),
-        ("mixtral", "mixtral_moe"),
-        ("phi", "phi_decoder"),
-        ("deepseek", "deepseek_decoder"),
-        ("lfm2", "lfm2_decoder"),
-    ] {
-        if lower.contains(needle) {
-            return family;
-        }
-    }
-    "unknown_decoder"
-}
-
-/// Is this a row `docs/SUPPORT_MATRIX.md` claims, or merely one that loads?
-///
-/// The UI draws a hard line between a supported row (chat unlocked) and an
-/// experimental one (composer gated, replies stamped unverified), and that line
-/// is the honest part of the product. Claim `supported` only for the families
-/// the support matrix actually promotes; everything else that happens to load
-/// stays `experimental` so the UI gates it correctly rather than over-claiming.
-fn capability_status_for_family(family: &str) -> &'static str {
-    match family {
-        "llama_spm_decoder" | "llama_bpe_decoder" | "qwen_decoder" | "gemma_decoder"
-        | "smollm_decoder" => "supported",
-        _ => "experimental",
-    }
-}
-
-fn serve_capabilities_json(active_id: &str) -> String {
-    if active_id.is_empty() {
-        return String::from(
-            "{\"engine\":\"nanocamelid\",\"model_compatibility\":[],\"api_features\":[],\"planned_model_families\":[]}",
-        );
-    }
-    let quant = quant_label_from_filename(active_id).unwrap_or("Q8_0");
-    let family = model_family_from_filename(active_id);
-    format!(
-        "{{\"engine\":\"nanocamelid\",\"model_compatibility\":[{{\"id\":\"{id}\",\"family\":\"{family}\",\"quantization\":\"{quant}\",\"status\":\"{status}\",\"evidence\":\"nanocamelid loaded this GGUF and served local chat from it\",\"notes\":\"{name} {quant} local chat\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
-        id = json_escape(&capability_row_id(active_id)),
-        family = json_escape(family),
-        quant = json_escape(quant),
-        status = capability_status_for_family(family),
-        name = json_escape(active_id.trim_end_matches(".gguf")),
-    )
 }
 
 fn webui_health_json(active_id: &str, model_dir: &Path) -> String {
@@ -15551,8 +15452,8 @@ fn serve_models_local_json(entries: &[ScanEntry]) -> String {
             json_escape(&e.filename),
             json_escape(&e.path.to_string_lossy()),
             e.bytes,
-            json_escape(quant_label_from_filename(&e.filename).unwrap_or("Q8_0")),
-            json_escape(model_family_from_filename(&e.filename)),
+            json_escape(model::quant_label_from_filename(&e.filename).unwrap_or("Q8_0")),
+            json_escape(model::model_family_from_filename(&e.filename)),
         ));
     }
     out.push_str("]}");
@@ -15560,7 +15461,7 @@ fn serve_models_local_json(entries: &[ScanEntry]) -> String {
 }
 
 fn serve_models_current_json(active: &ScanEntry) -> String {
-    let quant = quant_label_from_filename(&active.filename).unwrap_or("Q8_0");
+    let quant = model::quant_label_from_filename(&active.filename).unwrap_or("Q8_0");
     // `path` as well as `model_path`: the UI's getModelPath reads `.path`, and
     // an empty one makes hasLocalModelPath false -> not runnable -> composer
     // locked with "Loaded, not generation-ready". The gguf.metadata file_type is
@@ -15570,7 +15471,7 @@ fn serve_models_current_json(active: &ScanEntry) -> String {
         id = json_escape(&active.filename),
         name = json_escape(active.filename.trim_end_matches(".gguf")),
         path = json_escape(&active.path.to_string_lossy()),
-        file_type = gguf_file_type_for_quant(quant),
+        file_type = model::gguf_file_type_for_quant(quant),
         quant = json_escape(quant),
     )
 }
@@ -15636,9 +15537,7 @@ fn handle_webui_connection(
         ("GET", "/health") | ("GET", "/v1/health") => {
             write_json(stream, 200, &webui_health_json(active_id, &cfg.model_dir))
         }
-        ("GET", "/api/capabilities") => {
-            write_json(stream, 200, &serve_capabilities_json(active_id))
-        }
+        ("GET", "/api/capabilities") => write_json(stream, 200, &serve_capabilities_json(entries)),
         ("GET", "/v1/models") => write_json(stream, 200, &serve_models_v1_json(active_id)),
         ("GET", "/api/models/local") => write_json(stream, 200, &serve_models_local_json(entries)),
         ("GET", "/api/models/current") => {
