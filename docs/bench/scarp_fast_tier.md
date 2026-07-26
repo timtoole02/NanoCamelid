@@ -124,7 +124,7 @@ env NANOCAMELID_CONTEXT_LIMIT=4096 NANOCAMELID_SPIN_POOL=0 \
   cluster_tp_node worker <model.gguf> 0.0.0.0:5921 1 4,4
 
 # head (camelid2) -- same env prefix
-  cluster_tp_node master-serve <model.gguf> camelid3.local:5921 4,4 8090
+  cluster_tp_node master-serve <model.gguf> <worker-host>:5921 4,4 8090
 ```
 
 Workers first, head last; the head blocks until every worker accepts. Copy models
