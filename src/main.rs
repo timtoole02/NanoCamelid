@@ -513,7 +513,9 @@ fn print_runtime_trace_summary() {
         return;
     }
     println!("\nRuntime trace:");
-    for (stage, stats) in rows.into_iter().take(24) {
+    // Print every stage. The old take(24) silently truncated the table once the
+    // stage count passed 24, which hid whole stages from the profile.
+    for (stage, stats) in rows {
         let total_ms = stats.total.as_secs_f64() * 1000.0;
         let avg_ms = total_ms / stats.calls.max(1) as f64;
         println!(

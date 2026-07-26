@@ -3533,6 +3533,7 @@ pub fn prefill_pass_batch(
         config.context_length
     );
 
+    let stage_started = Instant::now();
     for (token_idx, &token_id) in token_ids.iter().enumerate() {
         let emb_start = token_id as usize * config.embedding_length;
         let hidden_start = token_idx * config.embedding_length;
@@ -3540,6 +3541,7 @@ pub fn prefill_pass_batch(
             &weights.token_embeddings[emb_start..emb_start + config.embedding_length],
         );
     }
+    trace_record("batch.embed_lookup", stage_started.elapsed());
 
     run_layer_range_batch(
         0,
@@ -4276,22 +4278,29 @@ fn forward_pass_inner<'a>(
     ws: &'a mut LlamaWorkspace,
     options: LlamaRuntimeOptions,
 ) -> &'a [f32] {
+    let forward_started = Instant::now();
+
+    let stage_started = Instant::now();
     embed_token(token_id, config, &weights.token_embeddings, ws);
+    trace_record("decode.embed_lookup", stage_started.elapsed());
 
     run_layer_range(0, &weights.layers, pos, config, cache, ws, options);
 
     if !options.compute_logits {
+        trace_record("decode.forward_total", forward_started.elapsed());
         return &ws.logits;
     }
 
-    compute_logits_from_hidden(
+    let logits = compute_logits_from_hidden(
         config,
         &weights.token_embeddings,
         &weights.output_norm,
         weights.output_projection.as_ref(),
         ws,
         options,
-    )
+    );
+    trace_record("decode.forward_total", forward_started.elapsed());
+    logits
 }
 
 pub fn embed_token(
@@ -4591,15 +4600,22 @@ pub fn compute_logits_from_hidden<'a>(
     ws: &'a mut LlamaWorkspace,
     options: LlamaRuntimeOptions,
 ) -> &'a [f32] {
+    let head_started = Instant::now();
+
+    let stage_started = Instant::now();
     rms_norm(
         &mut ws.norm_x,
         &ws.hidden,
         output_norm,
         config.rms_norm_epsilon,
     );
+    trace_record("decode.head_norm", stage_started.elapsed());
 
     if let Some(out_proj) = output_projection {
+        let stage_started = Instant::now();
         quantize_f32_to_q8_0(&ws.norm_x, &mut ws.x_i8, &mut ws.x_scales);
+        trace_record("decode.head_quant", stage_started.elapsed());
+        let stage_started = Instant::now();
         matmul_quantized(
             &mut ws.logits,
             &ws.x_i8,
@@ -4609,8 +4625,10 @@ pub fn compute_logits_from_hidden<'a>(
             config.embedding_length,
             options.q8_selector,
         );
+        trace_record("decode.head", stage_started.elapsed());
     } else {
         // Tied embeddings (multiply norm_x by token_embeddings transposed)
+        let stage_started = Instant::now();
         matmul_f32(
             &mut ws.logits,
             &ws.norm_x,
@@ -4618,8 +4636,10 @@ pub fn compute_logits_from_hidden<'a>(
             config.vocab_size,
             config.embedding_length,
         );
+        trace_record("decode.head", stage_started.elapsed());
     }
 
+    trace_record("decode.head_total", head_started.elapsed());
     &ws.logits
 }
 
