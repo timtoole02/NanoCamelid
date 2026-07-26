@@ -81,16 +81,63 @@ fn normalized_model_id(filename: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
+/// Quant label from a GGUF filename, e.g. `Q4_0`, `Q8_0`, `Q4_K_M`.
+///
+/// The web UI derives its quant key from this and refuses to call a model
+/// supported unless the capability row's quantization matches, so hardcoding
+/// one (this used to always say Q4_0) locks the composer for every other quant.
+/// Longest patterns first so `Q4_K_M` wins over `Q4_K`.
+fn quant_label_from_filename(filename: &str) -> &'static str {
+    const LABELS: &[&str] = &[
+        "Q2_K_S", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_K_S", "Q4_K_M", "Q5_K_S", "Q5_K_M", "IQ2_XXS",
+        "IQ2_XS", "IQ3_XXS", "IQ3_XS", "IQ4_NL", "IQ4_XS", "IQ1_S", "Q2_K", "Q6_K", "Q8_K", "Q4_0",
+        "Q4_1", "Q5_0", "Q5_1", "Q8_0", "BF16", "F16", "F32",
+    ];
+    let upper = filename.to_ascii_uppercase();
+    LABELS
+        .iter()
+        .copied()
+        .find(|label| upper.contains(label))
+        .unwrap_or("Q4_0")
+}
+
+/// GGUF `general.file_type` for a quant label, matching the UI's lookup table.
+fn gguf_file_type_for_quant(label: &str) -> u32 {
+    match label {
+        "F32" => 0,
+        "F16" => 1,
+        "Q4_0" => 2,
+        "Q4_1" => 3,
+        "Q5_0" => 8,
+        "Q5_1" => 9,
+        "Q2_K" => 10,
+        "Q3_K_S" => 11,
+        "Q3_K_M" => 12,
+        "Q3_K_L" => 13,
+        "Q4_K_S" => 14,
+        "Q4_K_M" => 15,
+        "Q5_K_S" => 16,
+        "Q5_K_M" => 17,
+        "Q6_K" => 18,
+        _ => 7,
+    }
+}
+
 fn write_json_response(client: &mut TcpStream, status: &str, body: &str) {
+    // CRLF, explicitly. These were bare LFs from a multi-line string literal,
+    // which violates RFC 9112 -- browsers and curl are lenient about it, but
+    // strict parsers are not (Node's undici rejects the whole response with
+    // HPE_INVALID_HEADER_TOKEN), so any non-browser OpenAI client pointed at a
+    // cluster head would fail on every request.
     let _ = write!(
         client,
-        "HTTP/1.1 {status}
-Content-Type: application/json
-Access-Control-Allow-Origin: *
-Content-Length: {}
-Connection: close
-
-{body}",
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: application/json\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
         body.len()
     );
 }
@@ -125,10 +172,11 @@ fn health_json(model_file: &str) -> String {
 fn capabilities_json(model_file: &str, role_note: &str) -> String {
     let (cpu_model, threads, platform) = host_specs();
     format!(
-        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{{\"id\":\"{nid}\",\"family\":\"llama_bpe_decoder\",\"quantization\":\"q4_0\",\"status\":\"supported\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"{note}\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
+        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{{\"id\":\"{nid}\",\"family\":\"llama_bpe_decoder\",\"quantization\":\"{quant}\",\"status\":\"supported\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"{note}\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
         cpu = json_escape(&cpu_model),
         plat = json_escape(&platform),
         nid = normalized_model_id(model_file),
+        quant = quant_label_from_filename(model_file).to_ascii_lowercase(),
         note = json_escape(role_note),
     )
 }
@@ -321,12 +369,11 @@ fn spawn_status_listener(port: u16, model_file: String, role_note: String) {
             } else if first.starts_with("OPTIONS") {
                 let _ = write!(
                     client,
-                    "HTTP/1.1 204 No Content
-Access-Control-Allow-Origin: *
-Access-Control-Allow-Headers: *
-Connection: close
-
-"
+                    "HTTP/1.1 204 No Content\r\n\
+                     Access-Control-Allow-Origin: *\r\n\
+                     Access-Control-Allow-Headers: *\r\n\
+                     Connection: close\r\n\
+                     \r\n"
                 );
                 continue;
             } else {
@@ -334,13 +381,13 @@ Connection: close
             };
             let _ = write!(
                 client,
-                "HTTP/1.1 200 OK
-Content-Type: application/json
-Access-Control-Allow-Origin: *
-Content-Length: {}
-Connection: close
-
-{}",
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
                 body.len(),
                 body
             );
@@ -1184,9 +1231,12 @@ fn run_master_serve(
                         &mut client,
                         "200 OK",
                         &format!(
-                            "{{\"id\":\"{id}\",\"name\":\"Llama 3 70B Instruct (3-Pi cluster)\",\"filename\":\"{id}\",\"model_path\":\"{p}\",\"path\":\"{p}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":2}}}},\"quant\":\"Q4_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
+                            "{{\"id\":\"{id}\",\"name\":\"{name}\",\"filename\":\"{id}\",\"model_path\":\"{p}\",\"path\":\"{p}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":{ft}}}}},\"quant\":\"{q}\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
                             id = json_escape(&model_file),
-                            p = json_escape(model_path)
+                            p = json_escape(model_path),
+                            name = json_escape(model_file.trim_end_matches(".gguf")),
+                            ft = gguf_file_type_for_quant(quant_label_from_filename(&model_file)),
+                            q = json_escape(quant_label_from_filename(&model_file)),
                         ),
                     );
                     continue;
@@ -1196,9 +1246,10 @@ fn run_master_serve(
                         &mut client,
                         "200 OK",
                         &format!(
-                            "{{\"models\":[{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":0,\"quant\":\"Q4_0\",\"family\":\"llama\",\"status\":\"ready\"}}]}}",
+                            "{{\"models\":[{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":0,\"quant\":\"{q}\",\"family\":\"llama\",\"status\":\"ready\"}}]}}",
                             id = json_escape(&model_file),
-                            p = json_escape(model_path)
+                            p = json_escape(model_path),
+                            q = json_escape(quant_label_from_filename(&model_file)),
                         ),
                     );
                     continue;
