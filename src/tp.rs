@@ -819,6 +819,35 @@ fn load_cols_direct(
     decode_block_run(&gathered, desc.tensor_type, name)
 }
 
+/// Load a shard's slice of an optional attention bias, or None if absent.
+///
+/// Qwen2/Qwen2.5 carry q/k/v biases; Llama does not. The shard-direct loader
+/// used to hardcode these to None, which silently dropped them and produced
+/// coherent-looking garbage (a Qwen2.5-Coder-32B emitted nothing but "0")
+/// while Llama models were unaffected. Slice the same row range as the weight
+/// matrix it belongs to.
+fn load_bias_rows_direct(
+    mmap: &Mmap,
+    gguf: &GgufFile,
+    name: &str,
+    row_start: usize,
+    row_end: usize,
+) -> Result<Option<Vec<f32>>, String> {
+    if find_tensor(gguf, name).is_err() {
+        return Ok(None);
+    }
+    let desc = find_tensor(gguf, name)?;
+    let n: usize = desc.dimensions.iter().map(|d| *d as usize).product();
+    let full = load_norm(mmap, gguf, name, n)?;
+    if row_end > full.len() || row_start > row_end {
+        return Err(format!(
+            "{name}: shard rows {row_start}..{row_end} outside bias of {}",
+            full.len()
+        ));
+    }
+    Ok(Some(full[row_start..row_end].to_vec()))
+}
+
 fn load_norm(mmap: &Mmap, gguf: &GgufFile, name: &str, len: usize) -> Result<Vec<f32>, String> {
     let desc = find_tensor(gguf, name)?;
     let bytes = tensor_all_bytes(mmap, desc)?;
@@ -929,9 +958,9 @@ pub fn load_tp_shard_direct(
             wq: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_q.weight"), emb, q0, q1)?,
             wk: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_k.weight"), emb, k0, k1)?,
             wav: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_v.weight"), emb, k0, k1)?,
-            wq_bias: None,
-            wk_bias: None,
-            wav_bias: None,
+            wq_bias: load_bias_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_q.bias"), q0, q1)?,
+            wk_bias: load_bias_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_k.bias"), k0, k1)?,
+            wav_bias: load_bias_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_v.bias"), k0, k1)?,
             // QK-norm archs are rejected above; wire TP is llama-family only.
             wq_norm: None,
             wk_norm: None,
