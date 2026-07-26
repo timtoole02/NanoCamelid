@@ -341,8 +341,14 @@ on token-identity, and per the sister repo's hardest-won lesson
 projection — which the LM head is, exactly. That is the narrow case where it is
 arguable. It is Tim's call (D-S1/D-S2), not this phase's.
 
-**Nothing here was flipped on.** `NANOCAMELID_Q4_HEAD` remains default-off; this
-section is measurement, not implementation.
+**Nothing was flipped on in this phase.** `NANOCAMELID_Q4_HEAD` was default-off when
+these numbers were taken; this section is measurement, not implementation.
+
+> **Superseded 2026-07-25:** the campaign owner authorised the flip on this evidence.
+> It landed as phase G2a — see `docs/bench/scarp_g2a_q4_head_default.md` for the
+> default-on receipt (+10.0% to +20.4% across the tied rows, untied control
+> unaffected, escape hatch verified bit-exact). The baseline recorded here remains
+> the pre-flip reference.
 
 ---
 

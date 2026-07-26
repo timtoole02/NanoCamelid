@@ -1420,13 +1420,24 @@ fn q4_page_align_1x4_enabled() -> bool {
     })
 }
 
+// Default-ON since the SCARP G0 gate (docs/bench/scarp_phase0_baseline.md §7).
+// The Q4_0-swizzled tied head moves 147.8 MB/token instead of 279.1 MB, worth
+// +10-20% decode on tied models because Pi 5 decode is bandwidth-bound. It is
+// lossier than the Q8_0 head, but both are already re-quantizations of the
+// file's own token_embd table, so this changes the degree and not the kind.
+// `NANOCAMELID_Q4_HEAD=0` restores the Q8_0 head exactly.
 fn q4_head_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(Q4_HEAD_ENV)
             .ok()
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
-            .unwrap_or(false)
+            .map(|value| {
+                !matches!(
+                    value.as_str(),
+                    "0" | "false" | "FALSE" | "off" | "OFF" | "no"
+                )
+            })
+            .unwrap_or(true)
     })
 }
 
