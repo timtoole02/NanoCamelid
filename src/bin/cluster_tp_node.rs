@@ -26,6 +26,27 @@ use std::time::{Duration, Instant};
 
 use nanocamelid::{gguf, inference, model, q8, tokenizer, tp};
 
+/// Print the NANOCAMELID_TRACE stage breakdown, as the main binary does.
+///
+/// Without this a clustered run is a black box: `local_compute_avg_ms` tells
+/// you a node is slow but not which stage, so a TP-only performance defect
+/// cannot be attributed. Same format as `nanocamelid`'s runtime trace.
+fn print_runtime_trace_summary(label: &str) {
+    let rows = inference::trace_snapshot();
+    if rows.is_empty() {
+        return;
+    }
+    println!("\nRuntime trace ({label}):");
+    for (stage, stats) in rows {
+        let total_ms = stats.total.as_secs_f64() * 1000.0;
+        let avg_ms = total_ms / stats.calls.max(1) as f64;
+        println!(
+            "  {stage:<22} calls {:>6} total {:>10.3} ms avg {:>8.4} ms",
+            stats.calls, total_ms, avg_ms
+        );
+    }
+}
+
 const HELLO_MAGIC: u32 = 0x5450_4E32; // "TPN2"
 const TOKEN_MAGIC: u32 = 0x5450_544B; // "TPTK"
 const PARTIAL_MAGIC: u32 = 0x5450_5041; // "TPPA"
@@ -695,6 +716,7 @@ fn run_worker(
         compute_total.as_secs_f64() * 1000.0,
         wait_total.as_secs_f64() * 1000.0,
     );
+    print_runtime_trace_summary(&format!("worker shard {shard_idx}"));
     println!("result: WORKER_DONE");
     Ok(())
 }
@@ -873,6 +895,7 @@ fn run_master(
         sync_total.as_secs_f64() * 1000.0 / steps,
         logits_total.as_secs_f64() * 1000.0 / steps,
     );
+    print_runtime_trace_summary("master");
     println!("result: PASS");
     Ok(())
 }

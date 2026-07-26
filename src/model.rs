@@ -1426,7 +1426,7 @@ fn q4_page_align_1x4_enabled() -> bool {
 // lossier than the Q8_0 head, but both are already re-quantizations of the
 // file's own token_embd table, so this changes the degree and not the kind.
 // `NANOCAMELID_Q4_HEAD=0` restores the Q8_0 head exactly.
-fn q4_head_enabled() -> bool {
+pub(crate) fn q4_head_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(Q4_HEAD_ENV)
