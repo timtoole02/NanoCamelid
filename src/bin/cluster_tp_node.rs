@@ -24,7 +24,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use nanocamelid::{gguf, inference, model, q8, tokenizer, tp};
+use nanocamelid::{catalog, gguf, inference, model, q8, tokenizer, tp};
 
 /// Print the NANOCAMELID_TRACE stage breakdown, as the main binary does.
 ///
@@ -79,6 +79,17 @@ fn normalized_model_id(filename: &str) -> String {
         }
     }
     out.trim_matches('_').to_owned()
+}
+
+/// Map a numeric status to the reason phrase write_json_response expects.
+fn http_status(code: u16) -> &'static str {
+    match code {
+        200 => "200 OK",
+        400 => "400 Bad Request",
+        404 => "404 Not Found",
+        409 => "409 Conflict",
+        _ => "500 Internal Server Error",
+    }
 }
 
 fn write_json_response(client: &mut TcpStream, status: &str, body: &str) {
@@ -154,7 +165,7 @@ fn capabilities_json(model_file: &str, model_path: &str, role_note: &str) -> Str
         ));
     }
     format!(
-        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{rows}],\"api_features\":[],\"planned_model_families\":[]}}",
+        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{rows}],\"api_features\":[],\"planned_model_families\":[],\"model_catalog_install\":true,\"model_downloads\":true,\"hf_catalog_install\":true}}",
         cpu = json_escape(&cpu_model),
         plat = json_escape(&platform),
     )
@@ -1571,6 +1582,19 @@ fn run_master_serve(
                     );
                     continue;
                 }
+                "/api/models/catalog" => {
+                    write_json_response(&mut client, "200 OK", &catalog::catalog_json());
+                    continue;
+                }
+                "/api/models/catalog/downloads" => {
+                    let dir = Path::new(model_path).parent().unwrap_or(Path::new("."));
+                    write_json_response(&mut client, "200 OK", &catalog::downloads_json(dir));
+                    continue;
+                }
+                // Activation is genuinely impossible here: each worker loaded
+                // its shard from argv at process start and there is no wire
+                // message to make it swap. Answer with the typed envelope the
+                // UI renders as a blocker rather than leaving a dead button.
                 "/api/cluster" => {
                     let master_ip = local_ip_toward(
                         worker_addrs
@@ -1632,6 +1656,57 @@ fn run_master_serve(
                     continue;
                 }
             }
+        }
+        if method == "POST"
+            && matches!(
+                path,
+                "/api/models/catalog/install"
+                    | "/api/models/catalog/cancel"
+                    | "/api/models/catalog/ack"
+                    | "/api/models/inspect"
+                    | "/api/models/load"
+            )
+        {
+            let content_length = header_text
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0)
+                .min(8192);
+            let mut body = buf[header_end..].to_vec();
+            while body.len() < content_length {
+                let Ok(n) = client.read(&mut tmp) else { break };
+                if n == 0 {
+                    break;
+                }
+                body.extend_from_slice(&tmp[..n]);
+            }
+            let text = String::from_utf8_lossy(&body).to_string();
+            let dir = Path::new(model_path)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf();
+            let (code, payload) = match path {
+                "/api/models/catalog/install" => catalog::start_download(&text, &dir),
+                "/api/models/catalog/cancel" => catalog::cancel_download(&text),
+                "/api/models/catalog/ack" => catalog::ack_download(&text),
+                // Activation is genuinely impossible on a cluster head: every
+                // node loaded a shard of this model from argv at process start
+                // and no wire message makes them swap. Answer with the typed
+                // envelope the UI renders as a blocker rather than 404ing into
+                // a dead button.
+                _ => (
+                    409,
+                    String::from(
+                        "{\"error\":{\"code\":\"cluster_model_fixed\",\"message\":\"This is a tensor-parallel cluster head. Every node loaded a shard of the current model at startup, so the model cannot be switched from the UI - restart the cluster with the model you want.\"}}",
+                    ),
+                ),
+            };
+            write_json_response(&mut client, http_status(code), &payload);
+            continue;
         }
         if method == "POST" && path == "/__camelid/cluster/probe" {
             let content_length = header_text

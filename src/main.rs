@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocamelid::{cluster_up, gguf, inference, model, q8, speculative, tokenizer};
+use nanocamelid::{catalog, cluster_up, gguf, inference, model, q8, speculative, tokenizer};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
@@ -15185,6 +15185,13 @@ fn run_webui_command(args: &[String]) -> ExitCode {
     // Single-threaded accept loop: model state (KV cache) is not thread-safe and
     // one Pi core-set handles inference. Requests are processed serially.
     let mut session = ChatSession::new(&model.loaded.config);
+    // Mutable so POST /api/models/load can swap the resident model in place.
+    // The swap happens on the accept thread, before the response is written,
+    // because the UI immediately re-reads /api/models/current and /v1/health
+    // and fails the activation if they still name the old model.
+    let mut model = model;
+    let mut entries = entries;
+    let mut active_id = active_id;
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
@@ -15195,10 +15202,11 @@ fn run_webui_command(args: &[String]) -> ExitCode {
                 if let Err(err) = handle_webui_connection(
                     &mut stream,
                     &cfg,
-                    &model,
-                    &entries,
-                    &active_id,
+                    &mut model,
+                    &mut entries,
+                    &mut active_id,
                     &mut session,
+                    selector,
                 ) {
                     eprintln!("serve: connection error: {err}");
                 }
@@ -15424,7 +15432,7 @@ fn serve_capabilities_json(entries: &[ScanEntry]) -> String {
             name = json_escape(e.filename.trim_end_matches(".gguf")),
         ));
     }
-    out.push_str("],\"api_features\":[],\"planned_model_families\":[]}");
+    out.push_str("],\"api_features\":[],\"planned_model_families\":[],\"model_catalog_install\":true,\"model_downloads\":true,\"hf_catalog_install\":true}");
     out
 }
 
@@ -15513,13 +15521,32 @@ fn serve_static(stream: &mut std::net::TcpStream, path: &str) -> std::io::Result
     )
 }
 
+/// Resolve what the UI sent as `models/<file>` (or a bare id) to a scanned entry.
+///
+/// The UI deliberately sends a models-relative path rather than joining the
+/// engine's absolute models_dir, so accept either and never trust it as a path:
+/// only a filename that matches something already scanned is allowed.
+fn resolve_requested_model<'a>(
+    requested: &str,
+    _model_dir: &Path,
+    entries: &'a [ScanEntry],
+) -> Option<&'a ScanEntry> {
+    let wanted = requested.rsplit('/').next().unwrap_or(requested);
+    if wanted.is_empty() || wanted.contains("..") {
+        return None;
+    }
+    entries.iter().find(|e| e.filename == wanted)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_webui_connection(
     stream: &mut std::net::TcpStream,
     cfg: &ServeConfig,
-    model: &ServeModel,
-    entries: &[ScanEntry],
-    active_id: &str,
+    model: &mut ServeModel,
+    entries: &mut Vec<ScanEntry>,
+    active_id: &mut String,
     session: &mut ChatSession,
+    selector: q8::Q8DotKernelSelector,
 ) -> std::io::Result<()> {
     let request = match read_http_request(stream)? {
         Some(r) => r,
@@ -15539,6 +15566,17 @@ fn handle_webui_connection(
         return write_json(stream, 401, "{\"error\":\"unauthorized\"}");
     }
 
+    // Re-scan before anything that reports the model inventory. A model that
+    // just finished downloading must show up in /api/models/local within ~30s
+    // or the UI declares the download failed, and entries would otherwise only
+    // refresh on activation. A readdir costs microseconds.
+    if matches!(
+        (method, path),
+        ("GET", "/api/models/local") | ("GET", "/api/capabilities")
+    ) {
+        *entries = serve_scan_model_dir(&cfg.model_dir);
+    }
+
     match (method, path) {
         ("GET", "/health") | ("GET", "/v1/health") => {
             write_json(stream, 200, &webui_health_json(active_id, &cfg.model_dir))
@@ -15546,8 +15584,101 @@ fn handle_webui_connection(
         ("GET", "/api/capabilities") => write_json(stream, 200, &serve_capabilities_json(entries)),
         ("GET", "/v1/models") => write_json(stream, 200, &serve_models_v1_json(active_id)),
         ("GET", "/api/models/local") => write_json(stream, 200, &serve_models_local_json(entries)),
+        // The UI appends ?query=&cursor= as the user types, so match the prefix.
+        ("GET", p) if p == "/api/models/catalog" || p.starts_with("/api/models/catalog?") => {
+            write_json(stream, 200, &catalog::catalog_json())
+        }
+        ("GET", "/api/models/catalog/downloads") => {
+            write_json(stream, 200, &catalog::downloads_json(&cfg.model_dir))
+        }
+        // Activation is two calls: the UI inspects a model, then loads it. A
+        // dead button is worse than a refusal, so both always answer with a
+        // typed JSON envelope the UI knows how to surface.
+        ("POST", "/api/models/inspect") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let requested = catalog::json_field(&body, "path").unwrap_or_default();
+            match resolve_requested_model(requested, &cfg.model_dir, entries) {
+                Some(entry) => write_json(
+                    stream,
+                    200,
+                    &format!(
+                        "{{\"id\":\"{id}\",\"filename\":\"{id}\",\"path\":\"{p}\",\"quant\":\"{q}\",\"blocker\":null}}",
+                        id = json_escape(&entry.filename),
+                        p = json_escape(&entry.path.to_string_lossy()),
+                        q = json_escape(
+                            model::quant_label_from_filename(&entry.filename).unwrap_or("Q8_0")
+                        ),
+                    ),
+                ),
+                None => write_json(
+                    stream,
+                    404,
+                    "{\"error\":{\"code\":\"invalid_model\",\"message\":\"no such model in the served directory\"}}",
+                ),
+            }
+        }
+        ("POST", "/api/models/load") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let requested = catalog::json_field(&body, "path")
+                .or_else(|| catalog::json_field(&body, "id"))
+                .unwrap_or_default();
+            let Some(entry) = resolve_requested_model(requested, &cfg.model_dir, entries) else {
+                return write_json(
+                    stream,
+                    404,
+                    "{\"error\":{\"code\":\"invalid_model\",\"message\":\"no such model in the served directory\"}}",
+                );
+            };
+            if entry.filename == *active_id {
+                return write_json(stream, 200, "{\"status\":\"already_active\"}");
+            }
+            // Blocking load on the accept thread. The UI serialises activation
+            // behind its own in-flight guard and waits on this response, so the
+            // cost is a stalled dashboard poll rather than a wedged server.
+            println!("webui: loading {} ...", entry.filename);
+            match load_tui_model(&entry.path, selector) {
+                Ok(loaded) => {
+                    *session = ChatSession::new(&loaded.config);
+                    *model = ServeModel { loaded };
+                    *active_id = entry.filename.clone();
+                    *entries = serve_scan_model_dir(&cfg.model_dir);
+                    println!("webui: active model is now {}", active_id);
+                    write_json(stream, 200, "{\"status\":\"loaded\"}")
+                }
+                Err(err) => write_json(
+                    stream,
+                    500,
+                    &format!(
+                        "{{\"error\":{{\"code\":\"load_failed\",\"message\":\"{}\"}}}}",
+                        json_escape(&err.to_string())
+                    ),
+                ),
+            }
+        }
+        ("POST", "/api/models/catalog/install") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let (code, payload) = catalog::start_download(&body, &cfg.model_dir);
+            write_json(stream, code, &payload)
+        }
+        ("POST", "/api/models/catalog/cancel") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let (code, payload) = catalog::cancel_download(&body);
+            write_json(stream, code, &payload)
+        }
+        ("POST", "/api/models/catalog/ack") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let (code, payload) = catalog::ack_download(&body);
+            write_json(stream, code, &payload)
+        }
         ("GET", "/api/models/current") => {
-            let active = serve_active_entry(entries);
+            // Report the model that is actually resident, keyed off active_id.
+            // Re-deriving it with serve_active_entry() returns whatever that
+            // heuristic prefers, so after an activation swap it kept naming the
+            // old model and the UI failed the load with "did not confirm".
+            let active = entries
+                .iter()
+                .find(|e| e.filename == *active_id)
+                .or_else(|| serve_active_entry(entries));
             match active {
                 Some(a) => write_json(stream, 200, &serve_models_current_json(a)),
                 None => write_json(stream, 200, "{}"),

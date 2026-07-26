@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod cluster;
 pub mod cluster_up;
 pub mod gguf;
