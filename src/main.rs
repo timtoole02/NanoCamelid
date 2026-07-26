@@ -15390,9 +15390,134 @@ fn serve_is_public(method: &str, path: &str) -> bool {
         || method == "OPTIONS"
 }
 
-fn serve_capabilities_json() -> String {
-    String::from(
-        "{\"engine\":\"nanocamelid\",\"model_compatibility\":[{\"id\":\"tinyllama_1_1b_chat_v1_0_q8_0\",\"family\":\"llama_spm_decoder\",\"quantization\":\"q8_0\",\"status\":\"supported\",\"evidence\":\"nanocamelid local chat\",\"notes\":\"TinyLlama Q8_0 local chat\"}],\"api_features\":[],\"planned_model_families\":[]}",
+/// Mirror of the web UI's `normalizeExactRowIdentity`
+/// (frontend/src/lib/capabilities.js): lowercase, drop a trailing `.gguf`,
+/// collapse every run of non-alphanumerics to `_`, trim leading/trailing `_`.
+///
+/// `findExactCompatibilityRowByIdentity` is the FIRST check in the UI's
+/// `findCompatibilityHint`, and it is the only one that works for an arbitrary
+/// model: it normalises both the model's identity fields and each capability
+/// row id and looks for equality. Emitting a row whose id normalises to the
+/// loaded model's filename is therefore what produces an `exact: true` hint,
+/// which is what `isCompatibilitySupportedForModel` requires before the chat
+/// composer unlocks. Keep this function in step with the frontend's.
+fn capability_row_id(filename: &str) -> String {
+    let stem = filename
+        .strip_suffix(".gguf")
+        .or_else(|| filename.strip_suffix(".GGUF"))
+        .unwrap_or(filename);
+    let mut out = String::with_capacity(stem.len());
+    let mut pending_sep = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_sep && !out.is_empty() {
+                out.push('_');
+            }
+            pending_sep = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            pending_sep = true;
+        }
+    }
+    out
+}
+
+/// Quant label from the filename, e.g. `Q4_K_M`, `Q8_0`, `F16`.
+///
+/// The UI derives its quant key from `model.quant` first, so this label has to
+/// be right or `targetMatchesQuant` fails and the hint downgrades to
+/// `quant_mismatch` -- still exact, but not `supported`, so the composer stays
+/// locked. Longest patterns first: `Q4_K_M` must win over `Q4_K`.
+fn quant_label_from_filename(filename: &str) -> Option<&'static str> {
+    const LABELS: &[&str] = &[
+        "Q2_K_S", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_K_S", "Q4_K_M", "Q5_K_S", "Q5_K_M", "IQ2_XXS",
+        "IQ2_XS", "IQ3_XXS", "IQ3_XS", "IQ4_NL", "IQ4_XS", "IQ1_S", "Q2_K", "Q6_K", "Q8_K", "Q4_0",
+        "Q4_1", "Q5_0", "Q5_1", "Q8_0", "BF16", "F16", "F32",
+    ];
+    let upper = filename.to_ascii_uppercase();
+    LABELS.iter().copied().find(|label| upper.contains(label))
+}
+
+/// GGUF `general.file_type` for a quant label, matching the UI's
+/// GGUF_FILE_TYPE_QUANT_LABELS table. The UI reads this to render the quant
+/// badge, so a wrong number mislabels the model even when chat works.
+fn gguf_file_type_for_quant(label: &str) -> u32 {
+    match label {
+        "F32" => 0,
+        "F16" => 1,
+        "Q4_1" => 3,
+        "Q5_0" => 8,
+        "Q5_1" => 9,
+        "Q2_K" => 10,
+        "Q3_K_S" => 11,
+        "Q3_K_M" => 12,
+        "Q3_K_L" => 13,
+        "Q4_K_S" => 14,
+        "Q4_K_M" => 15,
+        "Q5_K_S" => 16,
+        "Q5_K_M" => 17,
+        "Q6_K" => 18,
+        "IQ2_XXS" => 19,
+        "IQ2_XS" => 20,
+        "Q2_K_S" => 21,
+        "Q4_0" => 2,
+        // Q8_0 and anything unrecognised fall back to MOSTLY_Q8_0.
+        _ => 7,
+    }
+}
+
+/// Coarse family label from the filename, for display and family-level hints.
+fn model_family_from_filename(filename: &str) -> &'static str {
+    let lower = filename.to_ascii_lowercase();
+    for (needle, family) in [
+        ("tinyllama", "llama_spm_decoder"),
+        ("llama", "llama_bpe_decoder"),
+        ("qwen", "qwen_decoder"),
+        ("gemma", "gemma_decoder"),
+        ("smollm", "smollm_decoder"),
+        ("mistral", "mistral"),
+        ("mixtral", "mixtral_moe"),
+        ("phi", "phi_decoder"),
+        ("deepseek", "deepseek_decoder"),
+        ("lfm2", "lfm2_decoder"),
+    ] {
+        if lower.contains(needle) {
+            return family;
+        }
+    }
+    "unknown_decoder"
+}
+
+/// Is this a row `docs/SUPPORT_MATRIX.md` claims, or merely one that loads?
+///
+/// The UI draws a hard line between a supported row (chat unlocked) and an
+/// experimental one (composer gated, replies stamped unverified), and that line
+/// is the honest part of the product. Claim `supported` only for the families
+/// the support matrix actually promotes; everything else that happens to load
+/// stays `experimental` so the UI gates it correctly rather than over-claiming.
+fn capability_status_for_family(family: &str) -> &'static str {
+    match family {
+        "llama_spm_decoder" | "llama_bpe_decoder" | "qwen_decoder" | "gemma_decoder"
+        | "smollm_decoder" => "supported",
+        _ => "experimental",
+    }
+}
+
+fn serve_capabilities_json(active_id: &str) -> String {
+    if active_id.is_empty() {
+        return String::from(
+            "{\"engine\":\"nanocamelid\",\"model_compatibility\":[],\"api_features\":[],\"planned_model_families\":[]}",
+        );
+    }
+    let quant = quant_label_from_filename(active_id).unwrap_or("Q8_0");
+    let family = model_family_from_filename(active_id);
+    format!(
+        "{{\"engine\":\"nanocamelid\",\"model_compatibility\":[{{\"id\":\"{id}\",\"family\":\"{family}\",\"quantization\":\"{quant}\",\"status\":\"{status}\",\"evidence\":\"nanocamelid loaded this GGUF and served local chat from it\",\"notes\":\"{name} {quant} local chat\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
+        id = json_escape(&capability_row_id(active_id)),
+        family = json_escape(family),
+        quant = json_escape(quant),
+        status = capability_status_for_family(family),
+        name = json_escape(active_id.trim_end_matches(".gguf")),
     )
 }
 
@@ -15417,11 +15542,17 @@ fn serve_models_local_json(entries: &[ScanEntry]) -> String {
         if i > 0 {
             out.push(',');
         }
+        // `id` must be the full .gguf filename: the UI's mergeModelLists keys on
+        // it, and if it is absent the frontend derives filename-minus-.gguf,
+        // which mismatches the backend id and produces two model rows -- one of
+        // them not-ready, which is the one the gate sees.
         out.push_str(&format!(
-            "{{\"id\":\"{0}\",\"filename\":\"{0}\",\"runtime_model_name\":\"{0}\",\"path\":\"{1}\",\"model_path\":\"{1}\",\"bytes\":{2},\"quant\":\"Q8_0\",\"family\":\"tinyllama\",\"status\":\"ready\"}}",
+            "{{\"id\":\"{0}\",\"filename\":\"{0}\",\"runtime_model_name\":\"{0}\",\"path\":\"{1}\",\"model_path\":\"{1}\",\"bytes\":{2},\"quant\":\"{3}\",\"family\":\"{4}\",\"status\":\"ready\"}}",
             json_escape(&e.filename),
             json_escape(&e.path.to_string_lossy()),
-            e.bytes
+            e.bytes,
+            json_escape(quant_label_from_filename(&e.filename).unwrap_or("Q8_0")),
+            json_escape(model_family_from_filename(&e.filename)),
         ));
     }
     out.push_str("]}");
@@ -15429,10 +15560,18 @@ fn serve_models_local_json(entries: &[ScanEntry]) -> String {
 }
 
 fn serve_models_current_json(active: &ScanEntry) -> String {
+    let quant = quant_label_from_filename(&active.filename).unwrap_or("Q8_0");
+    // `path` as well as `model_path`: the UI's getModelPath reads `.path`, and
+    // an empty one makes hasLocalModelPath false -> not runnable -> composer
+    // locked with "Loaded, not generation-ready". The gguf.metadata file_type is
+    // what renders the quant badge.
     format!(
-        "{{\"id\":\"{id}\",\"name\":\"TinyLlama 1.1B Chat\",\"filename\":\"{id}\",\"model_path\":\"{path}\",\"path\":\"{path}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":7}}}},\"quant\":\"Q8_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
+        "{{\"id\":\"{id}\",\"name\":\"{name}\",\"filename\":\"{id}\",\"model_path\":\"{path}\",\"path\":\"{path}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":{file_type}}}}},\"quant\":\"{quant}\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
         id = json_escape(&active.filename),
-        path = json_escape(&active.path.to_string_lossy())
+        name = json_escape(active.filename.trim_end_matches(".gguf")),
+        path = json_escape(&active.path.to_string_lossy()),
+        file_type = gguf_file_type_for_quant(quant),
+        quant = json_escape(quant),
     )
 }
 
@@ -15497,7 +15636,9 @@ fn handle_webui_connection(
         ("GET", "/health") | ("GET", "/v1/health") => {
             write_json(stream, 200, &webui_health_json(active_id, &cfg.model_dir))
         }
-        ("GET", "/api/capabilities") => write_json(stream, 200, &serve_capabilities_json()),
+        ("GET", "/api/capabilities") => {
+            write_json(stream, 200, &serve_capabilities_json(active_id))
+        }
         ("GET", "/v1/models") => write_json(stream, 200, &serve_models_v1_json(active_id)),
         ("GET", "/api/models/local") => write_json(stream, 200, &serve_models_local_json(entries)),
         ("GET", "/api/models/current") => {
@@ -15514,6 +15655,20 @@ fn handle_webui_connection(
         // fetches these (e.g. /api/models/catalog/downloads) and, on a 200, feeds
         // the body straight into array ops; an HTML body there is a TypeError that
         // crashes the dashboard build. [] is the benign value its own catch() uses.
+        // LOAD-BEARING, AND THE ORDER MATTERS: unmatched /api/* GETs must answer
+        // `[]` as JSON *before* the SPA fallback below. The UI's fetchJson
+        // returns the raw body on a 200 whose body will not parse as JSON, and
+        // its `.catch(() => [])` never fires because the status was 200 -- so if
+        // an unmatched /api/* fell through to serve_static it would return
+        // index.html, and `(downloads || []).map(...)` in the dashboard build
+        // would TypeError on that string, throwing away the whole dashboard and
+        // locking the composer. Never move this below the static handler.
+        //
+        // This also keeps the telemetry EventSource safely dead: a JSON
+        // content-type fails it permanently with no reconnect. Do not "fix"
+        // that by answering text/event-stream here -- a stream that opens and
+        // immediately closes reconnects every ~3s against a single-threaded
+        // accept loop.
         ("GET", p) if p.starts_with("/api/") => write_json(stream, 200, "[]"),
         ("GET", _) => serve_static(stream, path),
         _ => write_json(stream, 404, "{\"error\":\"not found\"}"),
