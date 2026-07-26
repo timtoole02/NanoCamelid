@@ -4,6 +4,20 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- **Refreshed the embedded web UI** to the current Camelid frontend build (adds
+  the Workspace view; the previous embed dated from the original port).
+- **Fixed the web UI's chat gate for every model except TinyLlama.**
+  `/api/capabilities` returned a hardcoded `tinyllama_1_1b_chat_v1_0_q8_0`
+  compatibility row, and `/api/models/{current,local}` hardcoded `Q8_0`,
+  `file_type: 7` and the name "TinyLlama 1.1B Chat". The UI unlocks its composer
+  only when a capability row id normalizes-equal to the loaded model's id, so
+  loading anything else showed "NO MATCHING COMPATIBILITY.MD ROW" and the
+  composer stayed locked. The row id, quantization, GGUF `file_type` and family
+  are now derived from the active model, mirroring the frontend's
+  `normalizeExactRowIdentity`. Verified in a real browser against
+  Llama-3.2-1B-Instruct-Q8_0: composer unlocked and a message round-tripped.
+  Rows the support matrix does not promote are reported `experimental` rather
+  than `supported`, so the UI keeps gating them honestly.
 - **Changed the default tied LM head to Q4_0-swizzled**, worth +10-20% decode on
   every tied-embedding model (Llama 3.2, Gemma 3, Qwen3). Pi 5 decode is
   bandwidth-bound, and this moves 147.8 MB/token through the head instead of

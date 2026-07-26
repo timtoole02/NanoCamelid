@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocamelid::{cluster_up, gguf, inference, model, q8, speculative, tokenizer};
+use nanocamelid::{catalog, cluster_up, gguf, inference, model, q8, speculative, tokenizer};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 const DEFAULT_MODEL_GGUF_ENV: &str = "NANOCAMELID_MODEL_GGUF";
@@ -1519,6 +1519,12 @@ fn print_bench_usage() {
         "  NANOCAMELID_Q8_DOT_SDOT                   Enable SDOT candidate benchmarking when supported"
     );
     println!("  NANOCAMELID_Q6K_SDOT                      Enable experimental Q6_K SDOT matmuls");
+    println!(
+        "  NANOCAMELID_Q2K_SDOT                      Set to 0 to disable the Q2_K SDOT matmuls"
+    );
+    println!(
+        "  NANOCAMELID_Q3K_SDOT                      Set to 0 to disable the Q3_K SDOT matmuls"
+    );
     println!(
         "  NANOCAMELID_ATTENTION_HEAD_PARALLEL       Enable experimental head-parallel attention"
     );
@@ -15028,6 +15034,11 @@ fn serve_scan_model_dir(dir: &Path) -> Vec<ScanEntry> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            // Model directories also hold vocab-only GGUFs; listing those puts
+            // rows in the UI's model picker that can never be loaded.
+            if !model::is_model_gguf(&filename) {
+                continue;
+            }
             let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             entries.push(ScanEntry {
                 filename,
@@ -15174,6 +15185,13 @@ fn run_webui_command(args: &[String]) -> ExitCode {
     // Single-threaded accept loop: model state (KV cache) is not thread-safe and
     // one Pi core-set handles inference. Requests are processed serially.
     let mut session = ChatSession::new(&model.loaded.config);
+    // Mutable so POST /api/models/load can swap the resident model in place.
+    // The swap happens on the accept thread, before the response is written,
+    // because the UI immediately re-reads /api/models/current and /v1/health
+    // and fails the activation if they still name the old model.
+    let mut model = model;
+    let mut entries = entries;
+    let mut active_id = active_id;
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
@@ -15184,10 +15202,11 @@ fn run_webui_command(args: &[String]) -> ExitCode {
                 if let Err(err) = handle_webui_connection(
                     &mut stream,
                     &cfg,
-                    &model,
-                    &entries,
-                    &active_id,
+                    &mut model,
+                    &mut entries,
+                    &mut active_id,
                     &mut session,
+                    selector,
                 ) {
                     eprintln!("serve: connection error: {err}");
                 }
@@ -15390,10 +15409,31 @@ fn serve_is_public(method: &str, path: &str) -> bool {
         || method == "OPTIONS"
 }
 
-fn serve_capabilities_json() -> String {
-    String::from(
-        "{\"engine\":\"nanocamelid\",\"model_compatibility\":[{\"id\":\"tinyllama_1_1b_chat_v1_0_q8_0\",\"family\":\"llama_spm_decoder\",\"quantization\":\"q8_0\",\"status\":\"supported\",\"evidence\":\"nanocamelid local chat\",\"notes\":\"TinyLlama Q8_0 local chat\"}],\"api_features\":[],\"planned_model_families\":[]}",
-    )
+/// One compatibility row per model in the directory, not just the loaded one.
+///
+/// The Models page renders each local model's support state by looking for a
+/// capability row matching it, so emitting only the active model's row makes
+/// every other model on disk read as unsupported -- which is wrong, and hides
+/// models the engine can in fact run.
+fn serve_capabilities_json(entries: &[ScanEntry]) -> String {
+    let mut out = String::from("{\"engine\":\"nanocamelid\",\"model_compatibility\":[");
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let quant = model::quant_label_from_filename(&e.filename).unwrap_or("Q8_0");
+        let family = model::model_family_from_filename(&e.filename);
+        out.push_str(&format!(
+            "{{\"id\":\"{id}\",\"family\":\"{family}\",\"quantization\":\"{quant}\",\"status\":\"{status}\",\"evidence\":\"present in the served model directory\",\"notes\":\"{name} {quant}\"}}",
+            id = json_escape(&model::capability_row_id(&e.filename)),
+            family = json_escape(family),
+            quant = json_escape(quant),
+            status = model::capability_status_for_family(family),
+            name = json_escape(e.filename.trim_end_matches(".gguf")),
+        ));
+    }
+    out.push_str("],\"api_features\":[],\"planned_model_families\":[],\"model_catalog_install\":true,\"model_downloads\":true,\"hf_catalog_install\":true}");
+    out
 }
 
 fn webui_health_json(active_id: &str, model_dir: &Path) -> String {
@@ -15417,11 +15457,17 @@ fn serve_models_local_json(entries: &[ScanEntry]) -> String {
         if i > 0 {
             out.push(',');
         }
+        // `id` must be the full .gguf filename: the UI's mergeModelLists keys on
+        // it, and if it is absent the frontend derives filename-minus-.gguf,
+        // which mismatches the backend id and produces two model rows -- one of
+        // them not-ready, which is the one the gate sees.
         out.push_str(&format!(
-            "{{\"id\":\"{0}\",\"filename\":\"{0}\",\"runtime_model_name\":\"{0}\",\"path\":\"{1}\",\"model_path\":\"{1}\",\"bytes\":{2},\"quant\":\"Q8_0\",\"family\":\"tinyllama\",\"status\":\"ready\"}}",
+            "{{\"id\":\"{0}\",\"filename\":\"{0}\",\"runtime_model_name\":\"{0}\",\"path\":\"{1}\",\"model_path\":\"{1}\",\"bytes\":{2},\"quant\":\"{3}\",\"family\":\"{4}\",\"status\":\"ready\"}}",
             json_escape(&e.filename),
             json_escape(&e.path.to_string_lossy()),
-            e.bytes
+            e.bytes,
+            json_escape(model::quant_label_from_filename(&e.filename).unwrap_or("Q8_0")),
+            json_escape(model::model_family_from_filename(&e.filename)),
         ));
     }
     out.push_str("]}");
@@ -15429,10 +15475,18 @@ fn serve_models_local_json(entries: &[ScanEntry]) -> String {
 }
 
 fn serve_models_current_json(active: &ScanEntry) -> String {
+    let quant = model::quant_label_from_filename(&active.filename).unwrap_or("Q8_0");
+    // `path` as well as `model_path`: the UI's getModelPath reads `.path`, and
+    // an empty one makes hasLocalModelPath false -> not runnable -> composer
+    // locked with "Loaded, not generation-ready". The gguf.metadata file_type is
+    // what renders the quant badge.
     format!(
-        "{{\"id\":\"{id}\",\"name\":\"TinyLlama 1.1B Chat\",\"filename\":\"{id}\",\"model_path\":\"{path}\",\"path\":\"{path}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":7}}}},\"quant\":\"Q8_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
+        "{{\"id\":\"{id}\",\"name\":\"{name}\",\"filename\":\"{id}\",\"model_path\":\"{path}\",\"path\":\"{path}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":{file_type}}}}},\"quant\":\"{quant}\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
         id = json_escape(&active.filename),
-        path = json_escape(&active.path.to_string_lossy())
+        name = json_escape(active.filename.trim_end_matches(".gguf")),
+        path = json_escape(&active.path.to_string_lossy()),
+        file_type = model::gguf_file_type_for_quant(quant),
+        quant = json_escape(quant),
     )
 }
 
@@ -15467,13 +15521,32 @@ fn serve_static(stream: &mut std::net::TcpStream, path: &str) -> std::io::Result
     )
 }
 
+/// Resolve what the UI sent as `models/<file>` (or a bare id) to a scanned entry.
+///
+/// The UI deliberately sends a models-relative path rather than joining the
+/// engine's absolute models_dir, so accept either and never trust it as a path:
+/// only a filename that matches something already scanned is allowed.
+fn resolve_requested_model<'a>(
+    requested: &str,
+    _model_dir: &Path,
+    entries: &'a [ScanEntry],
+) -> Option<&'a ScanEntry> {
+    let wanted = requested.rsplit('/').next().unwrap_or(requested);
+    if wanted.is_empty() || wanted.contains("..") {
+        return None;
+    }
+    entries.iter().find(|e| e.filename == wanted)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_webui_connection(
     stream: &mut std::net::TcpStream,
     cfg: &ServeConfig,
-    model: &ServeModel,
-    entries: &[ScanEntry],
-    active_id: &str,
+    model: &mut ServeModel,
+    entries: &mut Vec<ScanEntry>,
+    active_id: &mut String,
     session: &mut ChatSession,
+    selector: q8::Q8DotKernelSelector,
 ) -> std::io::Result<()> {
     let request = match read_http_request(stream)? {
         Some(r) => r,
@@ -15493,15 +15566,119 @@ fn handle_webui_connection(
         return write_json(stream, 401, "{\"error\":\"unauthorized\"}");
     }
 
+    // Re-scan before anything that reports the model inventory. A model that
+    // just finished downloading must show up in /api/models/local within ~30s
+    // or the UI declares the download failed, and entries would otherwise only
+    // refresh on activation. A readdir costs microseconds.
+    if matches!(
+        (method, path),
+        ("GET", "/api/models/local") | ("GET", "/api/capabilities")
+    ) {
+        *entries = serve_scan_model_dir(&cfg.model_dir);
+    }
+
     match (method, path) {
         ("GET", "/health") | ("GET", "/v1/health") => {
             write_json(stream, 200, &webui_health_json(active_id, &cfg.model_dir))
         }
-        ("GET", "/api/capabilities") => write_json(stream, 200, &serve_capabilities_json()),
+        ("GET", "/api/capabilities") => write_json(stream, 200, &serve_capabilities_json(entries)),
         ("GET", "/v1/models") => write_json(stream, 200, &serve_models_v1_json(active_id)),
         ("GET", "/api/models/local") => write_json(stream, 200, &serve_models_local_json(entries)),
+        // The UI appends ?query=&cursor= as the user types, so match the prefix.
+        ("GET", p) if p == "/api/models/catalog" || p.starts_with("/api/models/catalog?") => {
+            write_json(stream, 200, &catalog::catalog_json())
+        }
+        ("GET", "/api/models/catalog/downloads") => {
+            write_json(stream, 200, &catalog::downloads_json(&cfg.model_dir))
+        }
+        // Activation is two calls: the UI inspects a model, then loads it. A
+        // dead button is worse than a refusal, so both always answer with a
+        // typed JSON envelope the UI knows how to surface.
+        ("POST", "/api/models/inspect") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let requested = catalog::json_field(&body, "path").unwrap_or_default();
+            match resolve_requested_model(requested, &cfg.model_dir, entries) {
+                Some(entry) => write_json(
+                    stream,
+                    200,
+                    &format!(
+                        "{{\"id\":\"{id}\",\"filename\":\"{id}\",\"path\":\"{p}\",\"quant\":\"{q}\",\"blocker\":null}}",
+                        id = json_escape(&entry.filename),
+                        p = json_escape(&entry.path.to_string_lossy()),
+                        q = json_escape(
+                            model::quant_label_from_filename(&entry.filename).unwrap_or("Q8_0")
+                        ),
+                    ),
+                ),
+                None => write_json(
+                    stream,
+                    404,
+                    "{\"error\":{\"code\":\"invalid_model\",\"message\":\"no such model in the served directory\"}}",
+                ),
+            }
+        }
+        ("POST", "/api/models/load") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let requested = catalog::json_field(&body, "path")
+                .or_else(|| catalog::json_field(&body, "id"))
+                .unwrap_or_default();
+            let Some(entry) = resolve_requested_model(requested, &cfg.model_dir, entries) else {
+                return write_json(
+                    stream,
+                    404,
+                    "{\"error\":{\"code\":\"invalid_model\",\"message\":\"no such model in the served directory\"}}",
+                );
+            };
+            if entry.filename == *active_id {
+                return write_json(stream, 200, "{\"status\":\"already_active\"}");
+            }
+            // Blocking load on the accept thread. The UI serialises activation
+            // behind its own in-flight guard and waits on this response, so the
+            // cost is a stalled dashboard poll rather than a wedged server.
+            println!("webui: loading {} ...", entry.filename);
+            match load_tui_model(&entry.path, selector) {
+                Ok(loaded) => {
+                    *session = ChatSession::new(&loaded.config);
+                    *model = ServeModel { loaded };
+                    *active_id = entry.filename.clone();
+                    *entries = serve_scan_model_dir(&cfg.model_dir);
+                    println!("webui: active model is now {}", active_id);
+                    write_json(stream, 200, "{\"status\":\"loaded\"}")
+                }
+                Err(err) => write_json(
+                    stream,
+                    500,
+                    &format!(
+                        "{{\"error\":{{\"code\":\"load_failed\",\"message\":\"{}\"}}}}",
+                        json_escape(&err.to_string())
+                    ),
+                ),
+            }
+        }
+        ("POST", "/api/models/catalog/install") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let (code, payload) = catalog::start_download(&body, &cfg.model_dir);
+            write_json(stream, code, &payload)
+        }
+        ("POST", "/api/models/catalog/cancel") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let (code, payload) = catalog::cancel_download(&body);
+            write_json(stream, code, &payload)
+        }
+        ("POST", "/api/models/catalog/ack") => {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            let (code, payload) = catalog::ack_download(&body);
+            write_json(stream, code, &payload)
+        }
         ("GET", "/api/models/current") => {
-            let active = serve_active_entry(entries);
+            // Report the model that is actually resident, keyed off active_id.
+            // Re-deriving it with serve_active_entry() returns whatever that
+            // heuristic prefers, so after an activation swap it kept naming the
+            // old model and the UI failed the load with "did not confirm".
+            let active = entries
+                .iter()
+                .find(|e| e.filename == *active_id)
+                .or_else(|| serve_active_entry(entries));
             match active {
                 Some(a) => write_json(stream, 200, &serve_models_current_json(a)),
                 None => write_json(stream, 200, "{}"),
@@ -15514,6 +15691,20 @@ fn handle_webui_connection(
         // fetches these (e.g. /api/models/catalog/downloads) and, on a 200, feeds
         // the body straight into array ops; an HTML body there is a TypeError that
         // crashes the dashboard build. [] is the benign value its own catch() uses.
+        // LOAD-BEARING, AND THE ORDER MATTERS: unmatched /api/* GETs must answer
+        // `[]` as JSON *before* the SPA fallback below. The UI's fetchJson
+        // returns the raw body on a 200 whose body will not parse as JSON, and
+        // its `.catch(() => [])` never fires because the status was 200 -- so if
+        // an unmatched /api/* fell through to serve_static it would return
+        // index.html, and `(downloads || []).map(...)` in the dashboard build
+        // would TypeError on that string, throwing away the whole dashboard and
+        // locking the composer. Never move this below the static handler.
+        //
+        // This also keeps the telemetry EventSource safely dead: a JSON
+        // content-type fails it permanently with no reconnect. Do not "fix"
+        // that by answering text/event-stream here -- a stream that opens and
+        // immediately closes reconnects every ~3s against a single-threaded
+        // accept loop.
         ("GET", p) if p.starts_with("/api/") => write_json(stream, 200, "[]"),
         ("GET", _) => serve_static(stream, path),
         _ => write_json(stream, 404, "{\"error\":\"not found\"}"),

@@ -37,10 +37,6 @@ impl TpRuntime {
     }
 }
 
-fn blocks_per_row(cols: usize) -> usize {
-    cols / 32
-}
-
 /// Row slice [r0, r1) of a row-major quantized matrix.
 fn slice_rows(
     matrix: &QuantizedMatrix,
@@ -48,23 +44,39 @@ fn slice_rows(
     r0: usize,
     r1: usize,
 ) -> Result<QuantizedMatrix, String> {
-    let bpr = blocks_per_row(cols);
+    // Rows are contiguous block runs, so a row slice is a plain sub-range — clean
+    // for any block size. 32-value blocks: Q8_0/Q4_0; 256-value K-quant super-blocks.
     match matrix {
-        QuantizedMatrix::Q8_0(blocks) => Ok(QuantizedMatrix::Q8_0(
-            blocks[r0 * bpr..r1 * bpr].to_vec(),
-        )),
-        QuantizedMatrix::Q4_0(blocks) => Ok(QuantizedMatrix::Q4_0(
-            blocks[r0 * bpr..r1 * bpr].to_vec(),
-        )),
+        QuantizedMatrix::Q8_0(b) => Ok(QuantizedMatrix::Q8_0(row_run(b, cols / 32, r0, r1))),
+        QuantizedMatrix::Q4_0(b) => Ok(QuantizedMatrix::Q4_0(row_run(b, cols / 32, r0, r1))),
+        QuantizedMatrix::Q2K(b) => Ok(QuantizedMatrix::Q2K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q3K(b) => Ok(QuantizedMatrix::Q3K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q4K(b) => Ok(QuantizedMatrix::Q4K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q5K(b) => Ok(QuantizedMatrix::Q5K(row_run(b, cols / 256, r0, r1))),
+        QuantizedMatrix::Q6K(b) => Ok(QuantizedMatrix::Q6K(row_run(b, cols / 256, r0, r1))),
         _ => Err(
-            "tensor parallelism requires row-major Q8_0/Q4_0 matrices (load with the 1x4 swizzle disabled)"
+            "tensor parallelism requires row-major Q8_0/Q4_0 or K-quant matrices (load with the 1x4 swizzle disabled)"
                 .to_owned(),
         ),
     }
 }
 
+/// Contiguous row-block sub-range `[r0, r1)` of a row-major block matrix.
+fn row_run<T: Clone>(blocks: &[T], bpr: usize, r0: usize, r1: usize) -> Vec<T> {
+    blocks[r0 * bpr..r1 * bpr].to_vec()
+}
+
+/// Per-row gather of the block sub-range `[b0, b1)` (columns) of a block matrix.
+fn col_gather<T: Clone>(blocks: &[T], rows: usize, bpr: usize, b0: usize, b1: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(rows * (b1 - b0));
+    for r in 0..rows {
+        out.extend_from_slice(&blocks[r * bpr + b0..r * bpr + b1]);
+    }
+    out
+}
+
 /// Column slice [c0, c1) of a row-major quantized matrix; c0/c1 must sit on
-/// 32-value block boundaries.
+/// block boundaries (32 for Q8_0/Q4_0, 256 for K-quants).
 fn slice_cols(
     matrix: &QuantizedMatrix,
     rows: usize,
@@ -72,31 +84,36 @@ fn slice_cols(
     c0: usize,
     c1: usize,
 ) -> Result<QuantizedMatrix, String> {
-    if !c0.is_multiple_of(32) || !c1.is_multiple_of(32) {
-        return Err(format!("column slice {c0}..{c1} not block-aligned"));
+    let block_vals = match matrix {
+        QuantizedMatrix::Q8_0(_) | QuantizedMatrix::Q4_0(_) => 32usize,
+        QuantizedMatrix::Q2K(_)
+        | QuantizedMatrix::Q3K(_)
+        | QuantizedMatrix::Q4K(_)
+        | QuantizedMatrix::Q5K(_)
+        | QuantizedMatrix::Q6K(_) => 256usize,
+        _ => {
+            return Err(
+                "tensor parallelism requires row-major Q8_0/Q4_0 or K-quant matrices (load with the 1x4 swizzle disabled)"
+                    .to_owned(),
+            );
+        }
+    };
+    if !c0.is_multiple_of(block_vals) || !c1.is_multiple_of(block_vals) {
+        return Err(format!(
+            "column slice {c0}..{c1} not aligned to {block_vals}-value blocks"
+        ));
     }
-    let bpr = blocks_per_row(cols);
-    let b0 = c0 / 32;
-    let b1 = c1 / 32;
+    let bpr = cols / block_vals;
+    let (b0, b1) = (c0 / block_vals, c1 / block_vals);
     match matrix {
-        QuantizedMatrix::Q8_0(blocks) => {
-            let mut out = Vec::with_capacity(rows * (b1 - b0));
-            for r in 0..rows {
-                out.extend_from_slice(&blocks[r * bpr + b0..r * bpr + b1]);
-            }
-            Ok(QuantizedMatrix::Q8_0(out))
-        }
-        QuantizedMatrix::Q4_0(blocks) => {
-            let mut out = Vec::with_capacity(rows * (b1 - b0));
-            for r in 0..rows {
-                out.extend_from_slice(&blocks[r * bpr + b0..r * bpr + b1]);
-            }
-            Ok(QuantizedMatrix::Q4_0(out))
-        }
-        _ => Err(
-            "tensor parallelism requires row-major Q8_0/Q4_0 matrices (load with the 1x4 swizzle disabled)"
-                .to_owned(),
-        ),
+        QuantizedMatrix::Q8_0(b) => Ok(QuantizedMatrix::Q8_0(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q4_0(b) => Ok(QuantizedMatrix::Q4_0(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q2K(b) => Ok(QuantizedMatrix::Q2K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q3K(b) => Ok(QuantizedMatrix::Q3K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q4K(b) => Ok(QuantizedMatrix::Q4K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q5K(b) => Ok(QuantizedMatrix::Q5K(col_gather(b, rows, bpr, b0, b1))),
+        QuantizedMatrix::Q6K(b) => Ok(QuantizedMatrix::Q6K(col_gather(b, rows, bpr, b0, b1))),
+        _ => unreachable!("block_vals match already rejected other variants"),
     }
 }
 
@@ -709,11 +726,26 @@ fn decode_block_run(
         GgufTensorType::Q8_0 => crate::q8::decode_q8_0_blocks(bytes)
             .map(QuantizedMatrix::Q8_0)
             .map_err(|e| format!("{name}: {e}")),
+        // K-quant family (256-value super-blocks). A "Q2_K" GGUF is really a mix
+        // — attention/ffn-down tensors are kept at Q4_K/Q6_K for quality — so the
+        // shard loader must handle the whole family, not just Q2_K.
         GgufTensorType::Q6K => crate::q8::decode_q6_k_blocks(bytes)
             .map(QuantizedMatrix::Q6K)
             .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q2K => crate::q8::decode_q2_k_blocks(bytes)
+            .map(QuantizedMatrix::Q2K)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q3K => crate::q8::decode_q3_k_blocks(bytes)
+            .map(QuantizedMatrix::Q3K)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q4K => crate::q8::decode_q4_k_blocks(bytes)
+            .map(QuantizedMatrix::Q4K)
+            .map_err(|e| format!("{name}: {e}")),
+        GgufTensorType::Q5K => crate::q8::decode_q5_k_blocks(bytes)
+            .map(QuantizedMatrix::Q5K)
+            .map_err(|e| format!("{name}: {e}")),
         other => Err(format!(
-            "{name}: shard-direct loading supports Q4_0/Q8_0/Q6_K, got {other:?}"
+            "{name}: shard-direct loading supports Q4_0/Q8_0 and the K-quants (Q2_K/Q3_K/Q4_K/Q5_K/Q6_K), got {other:?}"
         )),
     }
 }
@@ -765,19 +797,55 @@ fn load_cols_direct(
         .tensor_type
         .layout()
         .ok_or_else(|| format!("{name}: no layout"))?;
-    if block_vals != 32 || !c0.is_multiple_of(32) || !c1.is_multiple_of(32) {
-        return Err(format!("{name}: column slice not block-aligned"));
+    // Column slicing gathers whole quant blocks per row, so the slice edges must
+    // land on block boundaries. Q4_0/Q8_0 use 32-value blocks; K-quants (Q2_K,
+    // Q6_K) use 256-value super-blocks — a TP split whose column boundaries are
+    // 256-aligned (e.g. an even head/ffn split of a 70B) slices them cleanly.
+    let block_vals = block_vals as usize;
+    if !c0.is_multiple_of(block_vals) || !c1.is_multiple_of(block_vals) {
+        return Err(format!(
+            "{name}: column slice {c0}..{c1} not aligned to {block_vals}-value blocks"
+        ));
     }
-    let bpr = cols / 32;
+    let bpr = cols / block_vals;
     let bb = block_bytes as usize;
     let bytes = tensor_all_bytes(mmap, desc)?;
-    let (b0, b1) = (c0 / 32, c1 / 32);
+    let (b0, b1) = (c0 / block_vals, c1 / block_vals);
     let mut gathered = Vec::with_capacity(rows * (b1 - b0) * bb);
     for r in 0..rows {
         let start = (r * bpr + b0) * bb;
         gathered.extend_from_slice(&bytes[start..start + (b1 - b0) * bb]);
     }
     decode_block_run(&gathered, desc.tensor_type, name)
+}
+
+/// Load a shard's slice of an optional attention bias, or None if absent.
+///
+/// Qwen2/Qwen2.5 carry q/k/v biases; Llama does not. The shard-direct loader
+/// used to hardcode these to None, which silently dropped them and produced
+/// coherent-looking garbage (a Qwen2.5-Coder-32B emitted nothing but "0")
+/// while Llama models were unaffected. Slice the same row range as the weight
+/// matrix it belongs to.
+fn load_bias_rows_direct(
+    mmap: &Mmap,
+    gguf: &GgufFile,
+    name: &str,
+    row_start: usize,
+    row_end: usize,
+) -> Result<Option<Vec<f32>>, String> {
+    if find_tensor(gguf, name).is_err() {
+        return Ok(None);
+    }
+    let desc = find_tensor(gguf, name)?;
+    let n: usize = desc.dimensions.iter().map(|d| *d as usize).product();
+    let full = load_norm(mmap, gguf, name, n)?;
+    if row_end > full.len() || row_start > row_end {
+        return Err(format!(
+            "{name}: shard rows {row_start}..{row_end} outside bias of {}",
+            full.len()
+        ));
+    }
+    Ok(Some(full[row_start..row_end].to_vec()))
 }
 
 fn load_norm(mmap: &Mmap, gguf: &GgufFile, name: &str, len: usize) -> Result<Vec<f32>, String> {
@@ -890,9 +958,9 @@ pub fn load_tp_shard_direct(
             wq: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_q.weight"), emb, q0, q1)?,
             wk: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_k.weight"), emb, k0, k1)?,
             wav: load_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_v.weight"), emb, k0, k1)?,
-            wq_bias: None,
-            wk_bias: None,
-            wav_bias: None,
+            wq_bias: load_bias_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_q.bias"), q0, q1)?,
+            wk_bias: load_bias_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_k.bias"), k0, k1)?,
+            wav_bias: load_bias_rows_direct(&mmap, gguf, &format!("blk.{i}.attn_v.bias"), k0, k1)?,
             // QK-norm archs are rejected above; wire TP is llama-family only.
             wq_norm: None,
             wk_norm: None,
@@ -1006,6 +1074,35 @@ pub fn load_tp_shard_direct(
     })
 }
 
+/// The K-quants each expose an inherent `dequantize(&self, &mut [f32; 256])`;
+/// this trait lets one generic helper cover the whole family.
+trait KBlockDeq {
+    fn deq256(&self, out: &mut [f32; 256]);
+}
+macro_rules! impl_kblock_deq {
+    ($t:ty) => {
+        impl KBlockDeq for $t {
+            fn deq256(&self, out: &mut [f32; 256]) {
+                self.dequantize(out);
+            }
+        }
+    };
+}
+impl_kblock_deq!(crate::q8::Q2KBlock);
+impl_kblock_deq!(crate::q8::Q3KBlock);
+impl_kblock_deq!(crate::q8::Q4KBlock);
+impl_kblock_deq!(crate::q8::Q5KBlock);
+impl_kblock_deq!(crate::q8::Q6KBlock);
+
+/// Dequantize a contiguous run of 256-value K-quant super-blocks into `out`.
+fn deq_kblocks<B: KBlockDeq>(blocks: &[B], out: &mut [f32]) {
+    let mut buf = [0.0_f32; 256];
+    for (i, block) in blocks.iter().enumerate() {
+        block.deq256(&mut buf);
+        out[i * 256..(i + 1) * 256].copy_from_slice(&buf);
+    }
+}
+
 fn dequantize_matrix_f32(
     matrix: &QuantizedMatrix,
     rows: usize,
@@ -1030,25 +1127,96 @@ fn dequantize_matrix_f32(
                 }
             }
         }
-        QuantizedMatrix::Q6K(blocks) => {
-            let mut buf = [0.0_f32; 256];
-            for (i, block) in blocks.iter().enumerate() {
-                block.dequantize(&mut buf);
-                out[i * 256..(i + 1) * 256].copy_from_slice(&buf);
-            }
-        }
+        // K-quants all expose the same 256-value super-block dequantize().
+        QuantizedMatrix::Q2K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q3K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q4K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q5K(b) => deq_kblocks(b, &mut out),
+        QuantizedMatrix::Q6K(b) => deq_kblocks(b, &mut out),
         _ => return Err("dequantize: unsupported matrix class".to_owned()),
     }
     Ok(out)
 }
 
-/// Dequantize a full embedding table to f32 (master-side lookup table).
-pub fn load_embeddings_f32(
+/// Master-side token→embedding lookup. A 70B's embedding table is ~4 GB once
+/// expanded to f32, but a decode only ever touches a few dozen rows — so we keep
+/// it in its stored form and dequantize a row on demand. This is what lets the
+/// head fit its shard + embeddings in 16 GB.
+pub enum EmbeddingLookup {
+    /// F32/F16 source: already dense f32, whole table held.
+    Dense { table: Vec<f32>, emb: usize },
+    /// Quantized source: rows dequantized on demand.
+    Quant { matrix: QuantizedMatrix, emb: usize },
+}
+
+impl EmbeddingLookup {
+    /// Fill `out` (len == emb) with token `t`'s embedding row.
+    pub fn row(&self, t: usize, out: &mut [f32]) -> Result<(), String> {
+        match self {
+            EmbeddingLookup::Dense { table, emb } => {
+                out.copy_from_slice(&table[t * emb..(t + 1) * emb]);
+                Ok(())
+            }
+            EmbeddingLookup::Quant { matrix, emb } => dequantize_row_f32(matrix, t, *emb, out),
+        }
+    }
+}
+
+/// Dequantize a single row `t` of a row-major quantized matrix into `out[0..cols]`.
+fn dequantize_row_f32(
+    matrix: &QuantizedMatrix,
+    t: usize,
+    cols: usize,
+    out: &mut [f32],
+) -> Result<(), String> {
+    match matrix {
+        QuantizedMatrix::Q8_0(b) => {
+            let bpr = cols / 32;
+            for (j, blk) in b[t * bpr..(t + 1) * bpr].iter().enumerate() {
+                let s = blk.scale_f32();
+                for (o, &v) in out[j * 32..(j + 1) * 32].iter_mut().zip(blk.values()) {
+                    *o = s * v as f32;
+                }
+            }
+        }
+        QuantizedMatrix::Q4_0(b) => {
+            let bpr = cols / 32;
+            for (j, blk) in b[t * bpr..(t + 1) * bpr].iter().enumerate() {
+                let s = blk.scale_f32();
+                for (o, &v) in out[j * 32..(j + 1) * 32]
+                    .iter_mut()
+                    .zip(blk.unpack_values().iter())
+                {
+                    *o = s * v as f32;
+                }
+            }
+        }
+        QuantizedMatrix::Q2K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q3K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q4K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q5K(b) => deq_krow(b, t, cols, out),
+        QuantizedMatrix::Q6K(b) => deq_krow(b, t, cols, out),
+        _ => return Err("embedding: unsupported quant class".to_owned()),
+    }
+    Ok(())
+}
+
+fn deq_krow<B: KBlockDeq>(blocks: &[B], t: usize, cols: usize, out: &mut [f32]) {
+    let bpr = cols / 256;
+    let mut buf = [0.0_f32; 256];
+    for (j, block) in blocks[t * bpr..(t + 1) * bpr].iter().enumerate() {
+        block.deq256(&mut buf);
+        out[j * 256..(j + 1) * 256].copy_from_slice(&buf);
+    }
+}
+
+/// Build a master-side embedding lookup without materializing the whole f32 table.
+pub fn load_embeddings(
     path: &Path,
     gguf: &GgufFile,
     vocab: usize,
     emb: usize,
-) -> Result<Vec<f32>, String> {
+) -> Result<EmbeddingLookup, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
     #[cfg(target_os = "linux")]
@@ -1056,11 +1224,18 @@ pub fn load_embeddings_f32(
     let desc = find_tensor(gguf, "token_embd.weight")?;
     match desc.tensor_type {
         GgufTensorType::F32 | GgufTensorType::F16 => {
-            load_norm(&mmap, gguf, "token_embd.weight", vocab * emb)
+            let table = load_norm(&mmap, gguf, "token_embd.weight", vocab * emb)?;
+            Ok(EmbeddingLookup::Dense { table, emb })
         }
-        GgufTensorType::Q4_0 | GgufTensorType::Q8_0 | GgufTensorType::Q6K => {
+        GgufTensorType::Q4_0
+        | GgufTensorType::Q8_0
+        | GgufTensorType::Q2K
+        | GgufTensorType::Q3K
+        | GgufTensorType::Q4K
+        | GgufTensorType::Q5K
+        | GgufTensorType::Q6K => {
             let matrix = load_rows_direct(&mmap, gguf, "token_embd.weight", emb, 0, vocab)?;
-            dequantize_matrix_f32(&matrix, vocab, emb)
+            Ok(EmbeddingLookup::Quant { matrix, emb })
         }
         other => Err(format!("token_embd: unsupported type {other:?}")),
     }

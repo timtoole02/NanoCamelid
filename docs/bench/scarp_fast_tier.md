@@ -94,26 +94,43 @@ runs). It was taken immediately after a 1.9 GB file copy, with a cold page cache
   biggest expansion of what the cluster can serve.
 - **Qwen2.5-Coder-7B has only 4 KV heads**, so a 3-node split would have to be
   `2,1,1` — badly unbalanced. Two nodes at `2,2` is the natural fit.
-- **camelid1 is excluded.** Its 5V rail reads **4.896 V at idle** against 5.136 /
-  5.131 on the other two, and it hard-rebooted under load with
-  `throttled=0x50000` (under-voltage occurred). It needs a PSU or cable, not a
-  config change.
+- **camelid1 was excluded when this was first measured** (5V rail 4.896 V at idle
+  against 5.136 / 5.131, and a hard reboot under load with `throttled=0x50000`).
+  **Its supply was replaced on 2026-07-26 and it is now a full member** — see the
+  update below.
 
-## Why the third board would not help anyway, at 2 cores
+## UPDATE 2026-07-26 — camelid1's supply was replaced; three nodes now
 
-TP time is set by the slowest shard. camelid1 is capped to 2 cores for safety, and
-the 70B core-scaling test measured a 2-core node at **1.93×** the time of a 4-core
-one. Normalising to "share ÷ throughput":
+The section that used to sit here argued the third board could not help. That was
+true of a board capped to 2 cores, and it is now obsolete.
 
-| split (c2, c3, c1) | c2 | c3 | c1 @2 cores | max |
-|---|---|---|---|---|
-| 3,3,2 | 0.75 | 0.75 | **0.97** | 0.97 |
-| 4,3,1 | **1.00** | 0.75 | 0.48 | 1.00 |
-| 4,4 (two nodes) | **1.00** | 1.00 | — | 1.00 |
+**Verified fixed, not assumed.** Idle EXT5V went **4.896-4.931 V -> 5.124 V**
+(siblings 5.147 / 5.136), and the board then survived the *exact* workload that
+used to hard-reboot it inside two minutes — Strand-14B-Q6_K, all four cores,
+unrestricted: peak load 3.82, rail held **5.097 V minimum**, `get_throttled`
+stayed **0x0** for the whole run, output coherent at 1.01 tok/s.
 
-The best 3-node split beats two nodes by ~3%, on a board that browns out under
-load. **A healthy camelid1 at 4 cores is a different story** — it would take the
-3B row to roughly 13 tok/s — which is the return on replacing that supply.
+Cap removed, split rebalanced `[4,3,1]` -> `[3,3,2]`, all three at four cores:
+
+| model | 2 nodes | 3 nodes, capped `[4,3,1]` | **3 nodes, healthy `[3,3,2]`** |
+|---|---|---|---|
+| Llama-3.2-3B Q4_0 | 9.51 | — | **11.54 tok/s** |
+| Qwen2.5-Coder-32B Q4_0 | — | 1.220 | **1.468 tok/s** |
+
+Both ~1.20x, and the 32B's local compute fell 775 -> 596 ms, exactly the
+3/8-vs-4/8 ratio. The one-line fleet health check that found this:
+`vcgencmd pmic_read_adc | grep EXT5V_V` — a board 200+ mV below its siblings at
+idle has a supply fault, because a load transient then takes it under the
+~4.6-4.8 V trip. Idle voltage alone is not proof; confirm under sustained
+four-core load, and read `get_throttled` *after* the run because the flag clears
+on reboot.
+
+**Sync is now the fast tier's ceiling, not compute.** On the 3B at three nodes:
+local compute 60.5 ms, sync 21.7 ms, logits 7.1 ms. Sync is 24% of the token and
+did not shrink when compute did (it was 21.9 ms at two nodes), because it is
+round-trip latency, not transfer — the hidden state is only 12.3 KB. Eight KV
+heads across three nodes also cannot balance: `[3,3,2]` puts 3/8 = 0.375 on the
+busiest node against an ideal 0.333, a structural 12.5% tax.
 
 ## Reproducing
 
@@ -127,7 +144,14 @@ env NANOCAMELID_CONTEXT_LIMIT=4096 NANOCAMELID_SPIN_POOL=0 \
   cluster_tp_node master-serve <model.gguf> <worker-host>:5921 4,4 8090
 ```
 
-Workers first, head last; the head blocks until every worker accepts. Copy models
-between boards with netcat rather than relaying through a workstation — measured
-**60 MB/s vs ~4 MB/s** — and verify the hash afterwards, because a truncated
-stream is silent (one copy landed 33 bytes and reported success).
+Workers first, head last; the head blocks until every worker accepts.
+
+Copying models: **always verify the byte count afterwards**, because a truncated
+stream is silent — one netcat copy landed 33 bytes and reported success. On
+throughput, an early note here claimed a workstation relay ran at ~4 MB/s against
+netcat's 60 MB/s. That was wrong: the relay was slow because the workstation was
+busy compiling at the time. Idle it sustains ~107 MB/s, and a 40 GB copy to a Pi
+averages **~39 MB/s**, which is the Pi's USB-SSD write ceiling and decays to
+~10 MB/s past roughly 35 GB as the drive's SLC cache fills. The destination disk,
+not the path, is the limit — so copying from a peer Pi is no faster than from the
+workstation.

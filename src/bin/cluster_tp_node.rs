@@ -24,7 +24,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use nanocamelid::{gguf, inference, model, q8, tokenizer, tp};
+use nanocamelid::{catalog, gguf, inference, model, q8, tokenizer, tp};
 
 /// Print the NANOCAMELID_TRACE stage breakdown, as the main binary does.
 ///
@@ -81,16 +81,32 @@ fn normalized_model_id(filename: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
+/// Map a numeric status to the reason phrase write_json_response expects.
+fn http_status(code: u16) -> &'static str {
+    match code {
+        200 => "200 OK",
+        400 => "400 Bad Request",
+        404 => "404 Not Found",
+        409 => "409 Conflict",
+        _ => "500 Internal Server Error",
+    }
+}
+
 fn write_json_response(client: &mut TcpStream, status: &str, body: &str) {
+    // CRLF, explicitly. These were bare LFs from a multi-line string literal,
+    // which violates RFC 9112 -- browsers and curl are lenient about it, but
+    // strict parsers are not (Node's undici rejects the whole response with
+    // HPE_INVALID_HEADER_TOKEN), so any non-browser OpenAI client pointed at a
+    // cluster head would fail on every request.
     let _ = write!(
         client,
-        "HTTP/1.1 {status}
-Content-Type: application/json
-Access-Control-Allow-Origin: *
-Content-Length: {}
-Connection: close
-
-{body}",
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: application/json\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
         body.len()
     );
 }
@@ -122,15 +138,62 @@ fn health_json(model_file: &str) -> String {
     )
 }
 
-fn capabilities_json(model_file: &str, role_note: &str) -> String {
+fn capabilities_json(model_file: &str, model_path: &str, role_note: &str) -> String {
     let (cpu_model, threads, platform) = host_specs();
+    // A row per model in the served directory, not just the loaded one: the
+    // Models page decides each local model's support state by looking for a
+    // matching capability row, so emitting only the active model's row makes
+    // every other model on the box read as unsupported.
+    let mut rows = String::new();
+    for (i, (filename, _path, _bytes)) in scan_local_models(model_path).iter().enumerate() {
+        if i > 0 {
+            rows.push(',');
+        }
+        let quant = model::quant_label_from_filename(filename).unwrap_or("Q4_0");
+        let note = if filename == model_file {
+            role_note.to_owned()
+        } else {
+            format!("present on {}", platform)
+        };
+        rows.push_str(&format!(
+            "{{\"id\":\"{nid}\",\"family\":\"{fam}\",\"quantization\":\"{q}\",\"status\":\"{st}\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"{note}\"}}",
+            nid = normalized_model_id(filename),
+            fam = model::model_family_from_filename(filename),
+            st = model::capability_status_for_family(model::model_family_from_filename(filename)),
+            q = quant.to_ascii_lowercase(),
+            note = json_escape(&note),
+        ));
+    }
     format!(
-        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{{\"id\":\"{nid}\",\"family\":\"llama_bpe_decoder\",\"quantization\":\"q4_0\",\"status\":\"supported\",\"evidence\":\"three-Pi tensor-parallel cluster chat\",\"notes\":\"{note}\"}}],\"api_features\":[],\"planned_model_families\":[]}}",
+        "{{\"engine\":\"nanocamelid\",\"cpu_model\":\"{cpu}\",\"thread_count\":{threads},\"platform_label\":\"{plat}\",\"selected_backend\":\"neon_sdot\",\"model_compatibility\":[{rows}],\"api_features\":[],\"planned_model_families\":[],\"model_catalog_install\":true,\"model_downloads\":true,\"hf_catalog_install\":true}}",
         cpu = json_escape(&cpu_model),
         plat = json_escape(&platform),
-        nid = normalized_model_id(model_file),
-        note = json_escape(role_note),
     )
+}
+
+/// Every .gguf sitting alongside the loaded model, as (filename, path, bytes).
+fn scan_local_models(active_model_path: &str) -> Vec<(String, String, u64)> {
+    let dir = match Path::new(active_model_path).parent() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Ok(read) = std::fs::read_dir(dir) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            let filename = match path.file_name().and_then(|f| f.to_str()) {
+                Some(f) => f.to_owned(),
+                None => continue,
+            };
+            if !model::is_model_gguf(&filename) {
+                continue;
+            }
+            let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            out.push((filename, path.to_string_lossy().into_owned(), bytes));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Live cluster state for the topology dashboard: the head + each worker with
@@ -170,6 +233,36 @@ fn cluster_live_json(
         if degraded { "degraded" } else { "ok" },
         nodes.join(",")
     )
+}
+
+/// Connect to a worker, retrying with a short per-attempt timeout. A single
+/// SYN can be lost on a weak/lossy link (e.g. Wi-Fi), so a one-shot connect
+/// occasionally times out even though the worker is up and listening; retrying
+/// makes bring-up robust. Once established, TCP retransmits keep the reduce
+/// alive over the same link.
+fn connect_worker(addr: &str) -> Result<TcpStream, String> {
+    use std::net::ToSocketAddrs;
+    let sock = addr
+        .to_socket_addrs()
+        .map_err(|e| format!("{addr}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{addr}: no address resolved"))?;
+    let mut last = String::new();
+    for attempt in 1..=40 {
+        match TcpStream::connect_timeout(&sock, Duration::from_secs(4)) {
+            Ok(s) => {
+                if attempt > 1 {
+                    println!("worker {addr} connected on attempt {attempt}");
+                }
+                return Ok(s);
+            }
+            Err(e) => {
+                last = e.to_string();
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+    Err(format!("{addr}: {last} (after 40 attempts)"))
 }
 
 /// Best-effort LAN address of this node (the interface that reaches `peer`).
@@ -299,7 +392,12 @@ fn cluster_import_json(
 /// Tiny read-only status endpoint every cluster node exposes so the web
 /// UI's topology page can see it as online with real specs. Runs on its own
 /// thread; serves /v1/health and /api/capabilities with permissive CORS.
-fn spawn_status_listener(port: u16, model_file: String, role_note: String) {
+fn spawn_status_listener(
+    port: u16,
+    model_file: String,
+    model_path_for_caps: String,
+    role_note: String,
+) {
     std::thread::spawn(move || {
         let Ok(listener) = TcpListener::bind(("0.0.0.0", port)) else {
             eprintln!("status listener: port {port} unavailable");
@@ -317,16 +415,15 @@ fn spawn_status_listener(port: u16, model_file: String, role_note: String) {
             let body = if first.starts_with("GET /v1/health") {
                 health_json(&model_file)
             } else if first.starts_with("GET /api/capabilities") {
-                capabilities_json(&model_file, &role_note)
+                capabilities_json(&model_file, &model_path_for_caps, &role_note)
             } else if first.starts_with("OPTIONS") {
                 let _ = write!(
                     client,
-                    "HTTP/1.1 204 No Content
-Access-Control-Allow-Origin: *
-Access-Control-Allow-Headers: *
-Connection: close
-
-"
+                    "HTTP/1.1 204 No Content\r\n\
+                     Access-Control-Allow-Origin: *\r\n\
+                     Access-Control-Allow-Headers: *\r\n\
+                     Connection: close\r\n\
+                     \r\n"
                 );
                 continue;
             } else {
@@ -334,13 +431,13 @@ Connection: close
             };
             let _ = write!(
                 client,
-                "HTTP/1.1 200 OK
-Content-Type: application/json
-Access-Control-Allow-Origin: *
-Content-Length: {}
-Connection: close
-
-{}",
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
                 body.len(),
                 body
             );
@@ -450,6 +547,159 @@ fn read_msg<R: Read>(
 
 fn reduce_tag(layer_idx: usize, phase: tp::ReducePhase) -> u32 {
     ((layer_idx as u32) << 1) | matches!(phase, tp::ReducePhase::Ffn) as u32
+}
+
+/// Poll tick for the worker's between-tokens read: how often the blocked
+/// top-level read wakes up to notice a preempting connection. Short so a real
+/// master stuck behind a silent port-holder gets served well within the
+/// master-serve hello read timeout (default 30s).
+const WORKER_IDLE_TICK: Duration = Duration::from_secs(5);
+
+/// Worker-side socket timeout for everything that must be prompt on a live
+/// session: finishing a partially received frame, the SUM replies inside a
+/// token's reduce loop, and writes. A live master answers these in
+/// milliseconds; this only fires when the peer is gone or broken. Shares the
+/// master-side env knob, but with a much more generous default.
+fn worker_frame_timeout() -> Duration {
+    let secs = std::env::var("NANOCAMELID_TP_WORKER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(60);
+    Duration::from_secs(secs)
+}
+
+/// True if the listener has a completed connection waiting in its accept
+/// queue (non-blocking check).
+#[cfg(unix)]
+fn listener_has_pending(listener: &TcpListener) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut pfd = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut pfd, 1, 0) > 0 && (pfd.revents & libc::POLLIN) != 0 }
+}
+
+#[cfg(not(unix))]
+fn listener_has_pending(_listener: &TcpListener) -> bool {
+    false
+}
+
+/// Best-effort TCP keepalive on an accepted session so a peer that vanishes
+/// without a FIN/RST (network cut, powered-off node) surfaces as a read error
+/// within ~a minute instead of wedging the single-threaded session loop.
+#[cfg(unix)]
+fn enable_keepalive(stream: &TcpStream) {
+    use std::os::fd::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let set = |level: libc::c_int, name: libc::c_int, value: libc::c_int| unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            name,
+            (&raw const value).cast::<libc::c_void>(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    };
+    set(libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1);
+    // Probe after 30s idle, every 10s, declare dead after 3 misses (~60s).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPIDLE, 30);
+    #[cfg(target_os = "macos")]
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPALIVE, 30);
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+    {
+        set(libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, 10);
+        set(libc::IPPROTO_TCP, libc::TCP_KEEPCNT, 3);
+    }
+}
+
+#[cfg(not(unix))]
+fn enable_keepalive(_stream: &TcpStream) {}
+
+/// How a worker session ended without a protocol error.
+enum SessionOutcome {
+    /// Clean SHUTDOWN handshake.
+    Done,
+    /// The peer never sent a frame and another connection is waiting: yield
+    /// so a silent port-holder cannot wedge the accept loop forever.
+    Preempted,
+}
+
+enum TokenFrame {
+    Frame(u32, u32),
+    Preempted,
+}
+
+/// Read one TOKEN frame at a session boundary, tolerating idle: master-serve
+/// legitimately holds the session open (and silent) between HTTP requests, so
+/// pure idle waits forever. What is NOT tolerated: a frame that starts and
+/// then stalls (broken/rogue peer, times out after `frame_timeout`), and a
+/// session that has never produced a frame while another connection is
+/// pending (silent probe holding the port — preempted).
+fn read_token_frame(
+    stream: &mut TcpStream,
+    payload: &mut [f32],
+    got_any_frame: bool,
+    listener: &TcpListener,
+    frame_timeout: Duration,
+) -> Result<TokenFrame, String> {
+    stream
+        .set_read_timeout(Some(WORKER_IDLE_TICK))
+        .map_err(|e| e.to_string())?;
+    let mut header = [0_u8; 12];
+    let mut filled = 0_usize;
+    let mut frame_start: Option<Instant> = None;
+    while filled < header.len() {
+        match stream.read(&mut header[filled..]) {
+            Ok(0) => return Err("connection closed by peer".to_owned()),
+            Ok(n) => {
+                frame_start.get_or_insert_with(Instant::now);
+                filled += n;
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if let Some(start) = frame_start {
+                    if start.elapsed() >= frame_timeout {
+                        return Err(format!(
+                            "timed out mid-frame ({filled}/{} header bytes)",
+                            header.len()
+                        ));
+                    }
+                } else if !got_any_frame && listener_has_pending(listener) {
+                    return Ok(TokenFrame::Preempted);
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    // Frame under way: the payload and the in-token reduce traffic that
+    // follows must be prompt.
+    stream
+        .set_read_timeout(Some(frame_timeout))
+        .map_err(|e| e.to_string())?;
+    let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    if magic != TOKEN_MAGIC {
+        return Err(format!(
+            "expected magic 0x{TOKEN_MAGIC:08X}, got 0x{magic:08X}"
+        ));
+    }
+    let a = u32::from_le_bytes(header[4..8].try_into().unwrap());
+    let b = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    if !payload.is_empty() {
+        let mut bytes = vec![0_u8; payload.len() * 4];
+        stream.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+        for (v, chunk) in payload.iter_mut().zip(bytes.chunks_exact(4)) {
+            *v = f32::from_le_bytes(chunk.try_into().unwrap());
+        }
+    }
+    Ok(TokenFrame::Frame(a, b))
 }
 
 struct LoadedBase {
@@ -630,6 +880,20 @@ fn run_worker(
     shard_idx: usize,
     shares: &[usize],
 ) -> Result<(), String> {
+    // Bind the data port BEFORE the (30s..5min) shard load so the master's
+    // connect succeeds within ~1s of process start. The connection then just
+    // waits in the listen backlog / on the hello reply until the load
+    // finishes. master-chat has no read timeout (tolerates this forever);
+    // master-serve applies NANOCAMELID_TP_WORKER_TIMEOUT_SECS (default 30s)
+    // to the hello read, so set it to cover the load window there.
+    //
+    // IMPORTANT: this early message must NOT contain the phrase "listening
+    // on" — nanocamelid-up's poll_worker_ready (src/cluster_up.rs) greps the
+    // worker log for that exact phrase as its "shard loaded + serving"
+    // readiness gate. It is printed only after the load completes, below.
+    let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
+    println!("tp worker (shard {shard_idx}) bound {bind}; loading shard...");
+
     let base = load_base(model_path)?;
     println!("Loading shard {shard_idx} of {shares:?} (direct)...");
     let mut node = tp::load_tp_shard_direct(
@@ -640,7 +904,6 @@ fn run_worker(
         shard_idx,
         !parity_mode(),
     )?;
-    let emb = base.config.embedding_length;
 
     let status_model = Path::new(model_path)
         .file_name()
@@ -649,14 +912,89 @@ fn run_worker(
     spawn_status_listener(
         8181,
         status_model,
+        model_path.to_owned(),
         format!("TP worker shard {shard_idx} of {shares:?}"),
     );
 
-    let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
-    println!("tp worker (shard {shard_idx}) listening on {bind}");
-    let (mut stream, peer) = listener.accept().map_err(|e| e.to_string())?;
+    // "listening on" is the readiness marker poll_worker_ready greps for; it
+    // must appear only once the shard is loaded and sessions can be served.
+    println!(
+        "tp worker (shard {shard_idx}) shard loaded; listening on {bind} (accepting sessions)"
+    );
+
+    let oneshot = std::env::var("NANOCAMELID_WORKER_ONESHOT").as_deref() == Ok("1");
+    loop {
+        let (stream, peer) = match listener.accept() {
+            Ok(pair) => pair,
+            Err(err) => {
+                eprintln!("worker accept failed (continuing): {err}");
+                continue;
+            }
+        };
+        match handle_session(stream, peer, &base, &mut node, shard_idx, &listener) {
+            Ok(SessionOutcome::Done) => {
+                if oneshot {
+                    return Ok(());
+                }
+            }
+            Ok(SessionOutcome::Preempted) => {
+                // A frameless peer (silent port probe) was holding the
+                // session while someone else was waiting to connect. Not a
+                // clean session (even under ONESHOT): go serve the waiter.
+                eprintln!(
+                    "worker session from {peer} yielded to a pending connection before any frame (continuing)"
+                );
+            }
+            Err(err) => {
+                // A failed/aborted handshake (port probe, health checker) or
+                // a dropped master must not kill the loaded shard.
+                if oneshot {
+                    return Err(err);
+                }
+                eprintln!("worker session error from {peer} (continuing): {err}");
+            }
+        }
+    }
+}
+
+/// Serve one master session over an accepted connection. All per-session
+/// mutable state (KV cache, shard workspace, runtime scratch, hidden buffer,
+/// head logits, benchmark counters) is constructed fresh here so every
+/// session is bit-identical to a fresh worker process; only the loaded
+/// weights in `node` persist across sessions.
+fn handle_session(
+    mut stream: TcpStream,
+    peer: std::net::SocketAddr,
+    base: &LoadedBase,
+    node: &mut tp::TpNodeShard,
+    shard_idx: usize,
+    listener: &TcpListener,
+) -> Result<SessionOutcome, String> {
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
+    // A half-open or silent peer must never wedge the single-threaded accept
+    // loop forever: keepalive surfaces a vanished peer (network cut, powered
+    // off node) as a read error, the write timeout bounds writes to a peer
+    // that stopped reading, and read_token_frame/read_msg run under the read
+    // timeouts it manages (idle tick between tokens, frame timeout inside a
+    // token).
+    let frame_timeout = worker_frame_timeout();
+    enable_keepalive(&stream);
+    stream
+        .set_write_timeout(Some(frame_timeout))
+        .map_err(|e| e.to_string())?;
     println!("master connected: {peer}");
+
+    // Reset per-session state to fresh-process values. The KV cache and the
+    // shard workspace are rebuilt exactly as load_tp_shard_direct builds them
+    // (zeroed, same shard config); head logits are scratch but zeroed anyway.
+    node.shard.cache = inference::LlamaKvCache::new(
+        node.shard.config.block_count,
+        node.shard.config.context_length,
+        node.shard.config.kv_width,
+    );
+    node.shard.ws = inference::LlamaWorkspace::new(&node.shard.config);
+    node.head.logits.fill(0.0);
+
     write_msg(
         &mut stream,
         HELLO_MAGIC,
@@ -665,6 +1003,7 @@ fn run_worker(
         &[],
     )?;
 
+    let emb = base.config.embedding_length;
     let mut rt = tp::TpRuntime::new(&base.config);
     let mut hidden = vec![0.0_f32; emb];
     let mut head_ws = inference::LlamaWorkspace::new(&base.config);
@@ -674,10 +1013,28 @@ fn run_worker(
 
     loop {
         let wait_start = Instant::now();
-        let (pos, _token) = read_msg(&mut stream, TOKEN_MAGIC, &mut hidden)?;
+        let (pos, _token) = match read_token_frame(
+            &mut stream,
+            &mut hidden,
+            tokens > 0,
+            listener,
+            frame_timeout,
+        )? {
+            TokenFrame::Frame(pos, token) => (pos, token),
+            TokenFrame::Preempted => return Ok(SessionOutcome::Preempted),
+        };
         wait_total += wait_start.elapsed();
         if pos == SHUTDOWN_POS {
             break;
+        }
+        // Bounds-check before the forward pass: an out-of-range position from
+        // a buggy/rogue peer would index past the KV cache and panic the
+        // worker process instead of just failing this session.
+        if pos as usize >= node.shard.config.context_length {
+            return Err(format!(
+                "token position {pos} out of range (context_length {})",
+                node.shard.config.context_length
+            ));
         }
         tokens += 1;
         let compute_start = Instant::now();
@@ -718,7 +1075,7 @@ fn run_worker(
     );
     print_runtime_trace_summary(&format!("worker shard {shard_idx}"));
     println!("result: WORKER_DONE");
-    Ok(())
+    Ok(SessionOutcome::Done)
 }
 
 fn run_master(
@@ -748,7 +1105,7 @@ fn run_master(
     )?;
     let emb = base.config.embedding_length;
     println!("Loading embedding table...");
-    let embeddings = tp::load_embeddings_f32(
+    let embeddings = tp::load_embeddings(
         Path::new(model_path),
         &base.gguf,
         base.config.vocab_size,
@@ -757,7 +1114,7 @@ fn run_master(
 
     let mut streams = Vec::with_capacity(worker_addrs.len());
     for (i, addr) in worker_addrs.iter().enumerate() {
-        let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
+        let mut stream = connect_worker(addr)?;
         stream.set_nodelay(true).map_err(|e| e.to_string())?;
         let (idx, blocks) = read_msg(&mut stream, HELLO_MAGIC, &mut [])?;
         if idx as usize != i + 1 || blocks as usize != base.config.block_count {
@@ -785,9 +1142,7 @@ fn run_master(
 
     loop {
         let compute_start = Instant::now();
-        let emb_start = token as usize * emb;
-        ws.hidden
-            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        embeddings.row(token as usize, &mut ws.hidden)?;
         // Ship the embedded hidden with the token so workers skip embeddings.
         for stream in streams.iter_mut() {
             write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
@@ -1029,7 +1384,7 @@ fn run_master_serve(
     )?;
     let emb = base.config.embedding_length;
     println!("Loading embedding table...");
-    let embeddings = tp::load_embeddings_f32(
+    let embeddings = tp::load_embeddings(
         Path::new(model_path),
         &base.gguf,
         base.config.vocab_size,
@@ -1048,7 +1403,7 @@ fn run_master_serve(
 
     let mut streams = Vec::with_capacity(worker_addrs.len());
     for (i, addr) in worker_addrs.iter().enumerate() {
-        let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
+        let mut stream = connect_worker(addr)?;
         stream.set_nodelay(true).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(Duration::from_secs(worker_timeout)))
@@ -1164,7 +1519,11 @@ fn run_master_serve(
                     write_json_response(
                         &mut client,
                         "200 OK",
-                        &capabilities_json(&model_file, "TP master (coordinator + web UI)"),
+                        &capabilities_json(
+                            &model_file,
+                            model_path,
+                            "TP master (coordinator + web UI)",
+                        ),
                     );
                     continue;
                 }
@@ -1184,25 +1543,58 @@ fn run_master_serve(
                         &mut client,
                         "200 OK",
                         &format!(
-                            "{{\"id\":\"{id}\",\"name\":\"Llama 3 70B Instruct (3-Pi cluster)\",\"filename\":\"{id}\",\"model_path\":\"{p}\",\"path\":\"{p}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":2}}}},\"quant\":\"Q4_0\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
+                            "{{\"id\":\"{id}\",\"name\":\"{name}\",\"filename\":\"{id}\",\"model_path\":\"{p}\",\"path\":\"{p}\",\"gguf\":{{\"metadata\":{{\"general.file_type\":{ft}}}}},\"quant\":\"{q}\",\"runtime_model_name\":\"{id}\",\"loaded_now\":true,\"generation_ready\":true}}",
                             id = json_escape(&model_file),
-                            p = json_escape(model_path)
+                            p = json_escape(model_path),
+                            name = json_escape(model_file.trim_end_matches(".gguf")),
+                            ft = model::gguf_file_type_for_quant(
+                                model::quant_label_from_filename(&model_file).unwrap_or("Q4_0")
+                            ),
+                            q = json_escape(
+                                model::quant_label_from_filename(&model_file).unwrap_or("Q4_0")
+                            ),
                         ),
                     );
                     continue;
                 }
                 "/api/models/local" => {
+                    // Every .gguf in the served directory, not just the loaded
+                    // one -- otherwise the Models page can only ever show the
+                    // active model and the rest of the box looks empty.
+                    let mut models = String::new();
+                    for (i, (filename, path, bytes)) in
+                        scan_local_models(model_path).iter().enumerate()
+                    {
+                        if i > 0 {
+                            models.push(',');
+                        }
+                        models.push_str(&format!(
+                            "{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":{bytes},\"quant\":\"{q}\",\"family\":\"llama\",\"status\":\"ready\"}}",
+                            id = json_escape(filename),
+                            p = json_escape(path),
+                            q = json_escape(model::quant_label_from_filename(filename).unwrap_or("Q4_0")),
+                        ));
+                    }
                     write_json_response(
                         &mut client,
                         "200 OK",
-                        &format!(
-                            "{{\"models\":[{{\"id\":\"{id}\",\"filename\":\"{id}\",\"runtime_model_name\":\"{id}\",\"path\":\"{p}\",\"model_path\":\"{p}\",\"bytes\":0,\"quant\":\"Q4_0\",\"family\":\"llama\",\"status\":\"ready\"}}]}}",
-                            id = json_escape(&model_file),
-                            p = json_escape(model_path)
-                        ),
+                        &format!("{{\"models\":[{models}]}}"),
                     );
                     continue;
                 }
+                "/api/models/catalog" => {
+                    write_json_response(&mut client, "200 OK", &catalog::catalog_json());
+                    continue;
+                }
+                "/api/models/catalog/downloads" => {
+                    let dir = Path::new(model_path).parent().unwrap_or(Path::new("."));
+                    write_json_response(&mut client, "200 OK", &catalog::downloads_json(dir));
+                    continue;
+                }
+                // Activation is genuinely impossible here: each worker loaded
+                // its shard from argv at process start and there is no wire
+                // message to make it swap. Answer with the typed envelope the
+                // UI renders as a blocker rather than leaving a dead button.
                 "/api/cluster" => {
                     let master_ip = local_ip_toward(
                         worker_addrs
@@ -1264,6 +1656,57 @@ fn run_master_serve(
                     continue;
                 }
             }
+        }
+        if method == "POST"
+            && matches!(
+                path,
+                "/api/models/catalog/install"
+                    | "/api/models/catalog/cancel"
+                    | "/api/models/catalog/ack"
+                    | "/api/models/inspect"
+                    | "/api/models/load"
+            )
+        {
+            let content_length = header_text
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0)
+                .min(8192);
+            let mut body = buf[header_end..].to_vec();
+            while body.len() < content_length {
+                let Ok(n) = client.read(&mut tmp) else { break };
+                if n == 0 {
+                    break;
+                }
+                body.extend_from_slice(&tmp[..n]);
+            }
+            let text = String::from_utf8_lossy(&body).to_string();
+            let dir = Path::new(model_path)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf();
+            let (code, payload) = match path {
+                "/api/models/catalog/install" => catalog::start_download(&text, &dir),
+                "/api/models/catalog/cancel" => catalog::cancel_download(&text),
+                "/api/models/catalog/ack" => catalog::ack_download(&text),
+                // Activation is genuinely impossible on a cluster head: every
+                // node loaded a shard of this model from argv at process start
+                // and no wire message makes them swap. Answer with the typed
+                // envelope the UI renders as a blocker rather than 404ing into
+                // a dead button.
+                _ => (
+                    409,
+                    String::from(
+                        "{\"error\":{\"code\":\"cluster_model_fixed\",\"message\":\"This is a tensor-parallel cluster head. Every node loaded a shard of the current model at startup, so the model cannot be switched from the UI - restart the cluster with the model you want.\"}}",
+                    ),
+                ),
+            };
+            write_json_response(&mut client, http_status(code), &payload);
+            continue;
         }
         if method == "POST" && path == "/__camelid/cluster/probe" {
             let content_length = header_text
@@ -1476,7 +1919,7 @@ fn extract_last_content(body: &str) -> Option<String> {
 fn serve_completion_collect(
     base: &LoadedBase,
     node: &mut tp::TpNodeShard,
-    embeddings: &[f32],
+    embeddings: &tp::EmbeddingLookup,
     streams: &mut Vec<TcpStream>,
     rt: &mut tp::TpRuntime,
     ws: &mut inference::LlamaWorkspace,
@@ -1486,7 +1929,6 @@ fn serve_completion_collect(
     max_tokens: usize,
     collected: &mut String,
 ) -> Result<(usize, usize), String> {
-    let emb = base.config.embedding_length;
     let prompt_tokens = encode_chat(base, prompt)?;
     let budget = base
         .config
@@ -1499,9 +1941,7 @@ fn serve_completion_collect(
     let total_prompt = prompt_tokens.len();
     let mut step = 0usize;
     loop {
-        let emb_start = token as usize * emb;
-        ws.hidden
-            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        embeddings.row(token as usize, &mut ws.hidden)?;
         for stream in streams.iter_mut() {
             write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
         }
@@ -1590,7 +2030,7 @@ fn extract_json_usize(body: &str, key: &str) -> Option<usize> {
 fn serve_one_request(
     base: &LoadedBase,
     node: &mut tp::TpNodeShard,
-    embeddings: &[f32],
+    embeddings: &tp::EmbeddingLookup,
     streams: &mut Vec<TcpStream>,
     rt: &mut tp::TpRuntime,
     ws: &mut inference::LlamaWorkspace,
@@ -1600,7 +2040,6 @@ fn serve_one_request(
     prompt: &str,
     max_tokens: usize,
 ) -> Result<f64, String> {
-    let emb = base.config.embedding_length;
     let prompt_tokens = encode_chat(base, prompt)?;
     let budget = base
         .config
@@ -1616,9 +2055,7 @@ fn serve_one_request(
     let mut decode_started: Option<Instant> = None;
 
     loop {
-        let emb_start = token as usize * emb;
-        ws.hidden
-            .copy_from_slice(&embeddings[emb_start..emb_start + emb]);
+        embeddings.row(token as usize, &mut ws.hidden)?;
         for stream in streams.iter_mut() {
             write_msg(stream, TOKEN_MAGIC, pos as u32, token, &ws.hidden)?;
         }

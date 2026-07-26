@@ -1564,6 +1564,136 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Web-UI capability contract helpers.
+//
+// Shared by the `nanocamelid webui` router and the cluster head's server so the
+// two cannot drift: a cluster that describes a model differently from a single
+// node is exactly how the UI ends up gating chat on one and not the other.
+
+/// Mirror of the web UI's `normalizeExactRowIdentity`
+/// (frontend/src/lib/capabilities.js): lowercase, drop a trailing `.gguf`,
+/// collapse every run of non-alphanumerics to `_`, trim leading/trailing `_`.
+///
+/// `findExactCompatibilityRowByIdentity` is the FIRST check in the UI's
+/// `findCompatibilityHint`, and it is the only one that works for an arbitrary
+/// model: it normalises both the model's identity fields and each capability
+/// row id and looks for equality. Emitting a row whose id normalises to the
+/// loaded model's filename is therefore what produces an `exact: true` hint,
+/// which is what `isCompatibilitySupportedForModel` requires before the chat
+/// composer unlocks. Keep this function in step with the frontend's.
+pub fn capability_row_id(filename: &str) -> String {
+    let stem = filename
+        .strip_suffix(".gguf")
+        .or_else(|| filename.strip_suffix(".GGUF"))
+        .unwrap_or(filename);
+    let mut out = String::with_capacity(stem.len());
+    let mut pending_sep = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_sep && !out.is_empty() {
+                out.push('_');
+            }
+            pending_sep = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            pending_sep = true;
+        }
+    }
+    out
+}
+
+/// Quant label from the filename, e.g. `Q4_K_M`, `Q8_0`, `F16`.
+///
+/// The UI derives its quant key from `model.quant` first, so this label has to
+/// be right or `targetMatchesQuant` fails and the hint downgrades to
+/// `quant_mismatch` -- still exact, but not `supported`, so the composer stays
+/// locked. Longest patterns first: `Q4_K_M` must win over `Q4_K`.
+pub fn quant_label_from_filename(filename: &str) -> Option<&'static str> {
+    const LABELS: &[&str] = &[
+        "Q2_K_S", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_K_S", "Q4_K_M", "Q5_K_S", "Q5_K_M", "IQ2_XXS",
+        "IQ2_XS", "IQ3_XXS", "IQ3_XS", "IQ4_NL", "IQ4_XS", "IQ1_S", "Q2_K", "Q6_K", "Q8_K", "Q4_0",
+        "Q4_1", "Q5_0", "Q5_1", "Q8_0", "BF16", "F16", "F32",
+    ];
+    let upper = filename.to_ascii_uppercase();
+    LABELS.iter().copied().find(|label| upper.contains(label))
+}
+
+/// GGUF `general.file_type` for a quant label, matching the UI's
+/// GGUF_FILE_TYPE_QUANT_LABELS table. The UI reads this to render the quant
+/// badge, so a wrong number mislabels the model even when chat works.
+pub fn gguf_file_type_for_quant(label: &str) -> u32 {
+    match label {
+        "F32" => 0,
+        "F16" => 1,
+        "Q4_1" => 3,
+        "Q5_0" => 8,
+        "Q5_1" => 9,
+        "Q2_K" => 10,
+        "Q3_K_S" => 11,
+        "Q3_K_M" => 12,
+        "Q3_K_L" => 13,
+        "Q4_K_S" => 14,
+        "Q4_K_M" => 15,
+        "Q5_K_S" => 16,
+        "Q5_K_M" => 17,
+        "Q6_K" => 18,
+        "IQ2_XXS" => 19,
+        "IQ2_XS" => 20,
+        "Q2_K_S" => 21,
+        "Q4_0" => 2,
+        // Q8_0 and anything unrecognised fall back to MOSTLY_Q8_0.
+        _ => 7,
+    }
+}
+
+/// Coarse family label from the filename, for display and family-level hints.
+pub fn model_family_from_filename(filename: &str) -> &'static str {
+    let lower = filename.to_ascii_lowercase();
+    for (needle, family) in [
+        ("tinyllama", "llama_spm_decoder"),
+        ("llama", "llama_bpe_decoder"),
+        ("qwen", "qwen_decoder"),
+        ("gemma", "gemma_decoder"),
+        ("smollm", "smollm_decoder"),
+        ("mistral", "mistral"),
+        ("mixtral", "mixtral_moe"),
+        ("phi", "phi_decoder"),
+        ("deepseek", "deepseek_decoder"),
+        ("lfm2", "lfm2_decoder"),
+    ] {
+        if lower.contains(needle) {
+            return family;
+        }
+    }
+    "unknown_decoder"
+}
+
+/// Is this a row `docs/SUPPORT_MATRIX.md` claims, or merely one that loads?
+///
+/// The UI draws a hard line between a supported row (chat unlocked) and an
+/// experimental one (composer gated, replies stamped unverified), and that line
+/// is the honest part of the product. Claim `supported` only for the families
+/// the support matrix actually promotes; everything else that happens to load
+/// stays `experimental` so the UI gates it correctly rather than over-claiming.
+pub fn capability_status_for_family(family: &str) -> &'static str {
+    match family {
+        "llama_spm_decoder" | "llama_bpe_decoder" | "qwen_decoder" | "gemma_decoder"
+        | "smollm_decoder" => "supported",
+        _ => "experimental",
+    }
+}
+
+/// Is this GGUF an actual model, or a companion artefact?
+///
+/// A model directory usually also holds vocab-only GGUFs (e.g.
+/// `ggml-vocab-llama-bpe.gguf`). Listing those as models puts un-loadable rows
+/// in the UI's model picker.
+pub fn is_model_gguf(filename: &str) -> bool {
+    let lower = filename.to_ascii_lowercase();
+    lower.ends_with(".gguf") && !lower.contains("vocab")
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};

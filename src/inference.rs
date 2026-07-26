@@ -24,6 +24,8 @@ pub const Q4_1X4_SDOT_ENV: &str = "NANOCAMELID_Q4_1X4_SDOT";
 pub const Q6K_SDOT_ENV: &str = "NANOCAMELID_Q6K_SDOT";
 pub const Q4K_SDOT_ENV: &str = "NANOCAMELID_Q4K_SDOT";
 pub const Q5K_SDOT_ENV: &str = "NANOCAMELID_Q5K_SDOT";
+pub const Q2K_SDOT_ENV: &str = "NANOCAMELID_Q2K_SDOT";
+pub const Q3K_SDOT_ENV: &str = "NANOCAMELID_Q3K_SDOT";
 pub const ATTENTION_HEAD_PARALLEL_ENV: &str = "NANOCAMELID_ATTENTION_HEAD_PARALLEL";
 pub const KV_CACHE_F16_ENV: &str = "NANOCAMELID_KV_CACHE_F16";
 pub const KV_CACHE_Q8_ENV: &str = "NANOCAMELID_KV_CACHE_Q8";
@@ -101,6 +103,28 @@ fn q5_k_sdot_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         env::var(Q5K_SDOT_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(true)
+    })
+}
+
+#[cfg(target_arch = "aarch64")]
+fn q2_k_sdot_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q2K_SDOT_ENV)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
+            .unwrap_or(true)
+    })
+}
+
+#[cfg(target_arch = "aarch64")]
+fn q3_k_sdot_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env::var(Q3K_SDOT_ENV)
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON" | "yes"))
             .unwrap_or(true)
@@ -2122,6 +2146,66 @@ pub fn matmul_q2_k_batch(
     let blocks_per_row = cols / QK_K_BLOCK_SIZE;
     let q8_blocks_per_token = cols / Q8_BLOCK_SIZE;
     let out_addr = out.as_mut_ptr() as usize;
+    #[cfg(target_arch = "aarch64")]
+    if q2_k_sdot_enabled() && std::arch::is_aarch64_feature_detected!("dotprod") {
+        for_each_batch_matmul_row(rows, |r| {
+            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+            if batch_size <= MAX_STACK_BATCH_SUMS {
+                let mut sums = [0.0_f32; MAX_STACK_BATCH_SUMS];
+                let sums = &mut sums[..batch_size];
+                for (block_idx, w_block) in w_row.iter().enumerate() {
+                    let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                    let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                    let unpacked = w_block.unpack();
+                    for (token_idx, sum) in sums.iter_mut().enumerate() {
+                        let x_offset = token_idx * cols;
+                        let scale_offset = token_idx * q8_blocks_per_token;
+                        let x_token = &x_i8[x_offset..x_offset + cols];
+                        let x_token_scales =
+                            &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                        *sum += unsafe {
+                            crate::q8::q2k_dot_preloaded_neon(
+                                &unpacked,
+                                &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                            )
+                        };
+                    }
+                }
+                for (token_idx, &sum) in sums.iter().enumerate() {
+                    unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+                }
+            } else {
+                let mut sums = vec![0.0_f32; batch_size];
+                for (block_idx, w_block) in w_row.iter().enumerate() {
+                    let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                    let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                    let unpacked = w_block.unpack();
+                    for (token_idx, sum) in sums.iter_mut().enumerate() {
+                        let x_offset = token_idx * cols;
+                        let scale_offset = token_idx * q8_blocks_per_token;
+                        let x_token = &x_i8[x_offset..x_offset + cols];
+                        let x_token_scales =
+                            &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                        *sum += unsafe {
+                            crate::q8::q2k_dot_preloaded_neon(
+                                &unpacked,
+                                &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                            )
+                        };
+                    }
+                }
+                for (token_idx, &sum) in sums.iter().enumerate() {
+                    unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+                }
+            }
+        });
+        return;
+    }
+
     for_each_batch_matmul_row(rows, |r| {
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
         if batch_size <= MAX_STACK_BATCH_SUMS {
@@ -2313,6 +2397,66 @@ pub fn matmul_q3_k_batch(
     let blocks_per_row = cols / QK_K_BLOCK_SIZE;
     let q8_blocks_per_token = cols / Q8_BLOCK_SIZE;
     let out_addr = out.as_mut_ptr() as usize;
+    #[cfg(target_arch = "aarch64")]
+    if q3_k_sdot_enabled() && std::arch::is_aarch64_feature_detected!("dotprod") {
+        for_each_batch_matmul_row(rows, |r| {
+            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+            if batch_size <= MAX_STACK_BATCH_SUMS {
+                let mut sums = [0.0_f32; MAX_STACK_BATCH_SUMS];
+                let sums = &mut sums[..batch_size];
+                for (block_idx, w_block) in w_row.iter().enumerate() {
+                    let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                    let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                    let unpacked = w_block.unpack();
+                    for (token_idx, sum) in sums.iter_mut().enumerate() {
+                        let x_offset = token_idx * cols;
+                        let scale_offset = token_idx * q8_blocks_per_token;
+                        let x_token = &x_i8[x_offset..x_offset + cols];
+                        let x_token_scales =
+                            &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                        *sum += unsafe {
+                            crate::q8::q3k_dot_preloaded_neon(
+                                &unpacked,
+                                &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                            )
+                        };
+                    }
+                }
+                for (token_idx, &sum) in sums.iter().enumerate() {
+                    unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+                }
+            } else {
+                let mut sums = vec![0.0_f32; batch_size];
+                for (block_idx, w_block) in w_row.iter().enumerate() {
+                    let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                    let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                    let unpacked = w_block.unpack();
+                    for (token_idx, sum) in sums.iter_mut().enumerate() {
+                        let x_offset = token_idx * cols;
+                        let scale_offset = token_idx * q8_blocks_per_token;
+                        let x_token = &x_i8[x_offset..x_offset + cols];
+                        let x_token_scales =
+                            &x_scales[scale_offset..scale_offset + q8_blocks_per_token];
+                        *sum += unsafe {
+                            crate::q8::q3k_dot_preloaded_neon(
+                                &unpacked,
+                                &x_token[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                                &x_token_scales[x_scale_start
+                                    ..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                            )
+                        };
+                    }
+                }
+                for (token_idx, &sum) in sums.iter().enumerate() {
+                    unsafe { write_batch_out(out_addr, token_idx, rows, r, sum) };
+                }
+            }
+        });
+        return;
+    }
+
     for_each_batch_matmul_row(rows, |r| {
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
         if batch_size <= MAX_STACK_BATCH_SUMS {
@@ -2999,6 +3143,28 @@ pub fn matmul_q2_k(
     cols: usize,
 ) {
     let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    if q2_k_sdot_enabled() && std::arch::is_aarch64_feature_detected!("dotprod") {
+        for_each_matmul_row(out, |r, out_val| {
+            let mut sum = 0.0_f32;
+            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+            for (block_idx, w_block) in w_row.iter().enumerate() {
+                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                let unpacked = w_block.unpack();
+                sum += unsafe {
+                    crate::q8::q2k_dot_preloaded_neon(
+                        &unpacked,
+                        &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                        &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                    )
+                };
+            }
+            *out_val = sum;
+        });
+        return;
+    }
+
     for_each_matmul_row(out, |r, out_val| {
         let mut sum = 0.0_f32;
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
@@ -3070,6 +3236,28 @@ pub fn matmul_q3_k(
     cols: usize,
 ) {
     let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    if q3_k_sdot_enabled() && std::arch::is_aarch64_feature_detected!("dotprod") {
+        for_each_matmul_row(out, |r, out_val| {
+            let mut sum = 0.0_f32;
+            let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
+            for (block_idx, w_block) in w_row.iter().enumerate() {
+                let x_block_start = block_idx * QK_K_BLOCK_SIZE;
+                let x_scale_start = x_block_start / Q8_BLOCK_SIZE;
+                let unpacked = w_block.unpack();
+                sum += unsafe {
+                    crate::q8::q3k_dot_preloaded_neon(
+                        &unpacked,
+                        &x_i8[x_block_start..x_block_start + QK_K_BLOCK_SIZE],
+                        &x_scales[x_scale_start..x_scale_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                    )
+                };
+            }
+            *out_val = sum;
+        });
+        return;
+    }
+
     for_each_matmul_row(out, |r, out_val| {
         let mut sum = 0.0_f32;
         let w_row = &w[r * blocks_per_row..(r + 1) * blocks_per_row];
@@ -6063,6 +6251,109 @@ mod tests {
     }
 
     #[test]
+    fn matmul_q2_k_matches_scalar_reference_bitexact_70b_shapes() {
+        // (rows, cols) covering the Llama-3-70B slices — hidden 8192, ffn
+        // 28672, shard row slices 7168/3584 — plus single-block and small odd
+        // shapes. On aarch64 with dotprod the driver takes the SDOT path by
+        // default; the reference below replays the scalar fallback loop
+        // exactly, so this asserts bit-exact NEON-vs-scalar parity.
+        let shapes = [
+            (1_usize, QK_K_BLOCK_SIZE),
+            (5, QK_K_BLOCK_SIZE * 3),
+            (4, 28672),
+            (7168, QK_K_BLOCK_SIZE),
+            (3584, 8192),
+        ];
+        for &(rows, cols) in &shapes {
+            let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+            let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 5 + 3) % 255) as i8).collect();
+            let x_scales: Vec<f32> = (0..cols / Q8_BLOCK_SIZE)
+                .map(|idx| 0.0078125 * (1 + idx % 9) as f32 - 0.015625 * (idx % 4) as f32)
+                .collect();
+            let weights: Vec<Q2KBlock> = (0..rows * blocks_per_row)
+                .map(|idx| {
+                    q2_k_block(
+                        0x2c00 + (idx % 0x1000) as u16,
+                        0x2800 + (idx % 0x1000) as u16,
+                        (idx % 251) as i16,
+                    )
+                })
+                .collect();
+
+            let mut candidate = vec![0.0_f32; rows];
+            matmul_q2_k(&mut candidate, &x_i8, &x_scales, &weights, rows, cols);
+
+            for r in 0..rows {
+                let mut expected = 0.0_f32;
+                for b in 0..blocks_per_row {
+                    let x_start = b * QK_K_BLOCK_SIZE;
+                    let s_start = x_start / Q8_BLOCK_SIZE;
+                    expected += weights[r * blocks_per_row + b].dot_q8_scaled(
+                        &x_i8[x_start..x_start + QK_K_BLOCK_SIZE],
+                        &x_scales[s_start..s_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                    );
+                }
+                assert_eq!(
+                    candidate[r].to_bits(),
+                    expected.to_bits(),
+                    "rows={rows} cols={cols} row {r}: candidate={} expected={}",
+                    candidate[r],
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn matmul_q3_k_matches_scalar_reference_bitexact_70b_shapes() {
+        // (rows, cols) covering the Llama-3-70B Q3_K slices — attn_output and
+        // ffn_down (28672 cols) plus hidden 8192 and shard row slices
+        // 7168/3584 — with single-block and small odd shapes. On aarch64 with
+        // dotprod the driver takes the SDOT path by default; the reference
+        // replays the scalar fallback loop exactly, so this asserts bit-exact
+        // NEON-vs-scalar parity.
+        let shapes = [
+            (1_usize, QK_K_BLOCK_SIZE),
+            (5, QK_K_BLOCK_SIZE * 3),
+            (4, 28672),
+            (7168, QK_K_BLOCK_SIZE),
+            (3584, 8192),
+        ];
+        for &(rows, cols) in &shapes {
+            let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+            let x_i8: Vec<i8> = (0..cols).map(|idx| ((idx * 5 + 3) % 255) as i8).collect();
+            let x_scales: Vec<f32> = (0..cols / Q8_BLOCK_SIZE)
+                .map(|idx| 0.0078125 * (1 + idx % 9) as f32 - 0.015625 * (idx % 4) as f32)
+                .collect();
+            let weights: Vec<Q3KBlock> = (0..rows * blocks_per_row)
+                .map(|idx| q3_k_block(0x2c00 + (idx % 0x1000) as u16, (idx % 251) as i16))
+                .collect();
+
+            let mut candidate = vec![0.0_f32; rows];
+            matmul_q3_k(&mut candidate, &x_i8, &x_scales, &weights, rows, cols);
+
+            for r in 0..rows {
+                let mut expected = 0.0_f32;
+                for b in 0..blocks_per_row {
+                    let x_start = b * QK_K_BLOCK_SIZE;
+                    let s_start = x_start / Q8_BLOCK_SIZE;
+                    expected += weights[r * blocks_per_row + b].dot_q8_scaled(
+                        &x_i8[x_start..x_start + QK_K_BLOCK_SIZE],
+                        &x_scales[s_start..s_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                    );
+                }
+                assert_eq!(
+                    candidate[r].to_bits(),
+                    expected.to_bits(),
+                    "rows={rows} cols={cols} row {r}: candidate={} expected={}",
+                    candidate[r],
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn matmul_q8_k_matches_dequantized_reference() {
         let rows = 2;
         let cols = QK_K_BLOCK_SIZE * 2;
@@ -6805,6 +7096,138 @@ mod tests {
                 &candidate[token_idx * rows..(token_idx + 1) * rows],
                 expected.as_slice()
             );
+        }
+    }
+
+    #[test]
+    fn matmul_q2_k_batch_matches_scalar_reference_bitexact() {
+        // Batch sizes straddling MAX_STACK_BATCH_SUMS (64) so both the
+        // stack-buffered and heap-buffered branches are exercised, plus a row
+        // count above the parallelization threshold. The reference replays the
+        // scalar batch loop (unpack + preloaded dot) per token, so on aarch64
+        // with dotprod this asserts bit-exact NEON-vs-scalar parity.
+        let configs = [
+            (3_usize, 4_usize, 512_usize),
+            (64, 2, QK_K_BLOCK_SIZE),
+            (65, 130, 512),
+        ];
+        for &(batch_size, rows, cols) in &configs {
+            let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+            let q8_blocks_per_token = cols / Q8_BLOCK_SIZE;
+            let x_i8: Vec<i8> = (0..batch_size * cols)
+                .map(|idx| ((idx * 7 + 1) % 255) as i8)
+                .collect();
+            let x_scales: Vec<f32> = (0..batch_size * q8_blocks_per_token)
+                .map(|idx| 0.03125 * (1 + idx % 7) as f32 - 0.0625 * (idx % 3) as f32)
+                .collect();
+            let weights: Vec<Q2KBlock> = (0..rows * blocks_per_row)
+                .map(|idx| {
+                    q2_k_block(
+                        0x3000 + (idx % 64) as u16,
+                        0x2e00 + (idx % 64) as u16,
+                        (idx % 113) as i16 + 1,
+                    )
+                })
+                .collect();
+
+            let mut candidate = vec![0.0_f32; batch_size * rows];
+            matmul_q2_k_batch(
+                &mut candidate,
+                &x_i8,
+                &x_scales,
+                &weights,
+                BatchMatmulShape {
+                    batch_size,
+                    rows,
+                    cols,
+                },
+            );
+
+            for token_idx in 0..batch_size {
+                let x_offset = token_idx * cols;
+                let scale_offset = token_idx * q8_blocks_per_token;
+                for r in 0..rows {
+                    let mut expected = 0.0_f32;
+                    for b in 0..blocks_per_row {
+                        let x_start = x_offset + b * QK_K_BLOCK_SIZE;
+                        let s_start = scale_offset + (b * QK_K_BLOCK_SIZE) / Q8_BLOCK_SIZE;
+                        let unpacked = weights[r * blocks_per_row + b].unpack();
+                        expected += Q2KBlock::dot_q8_scaled_preloaded(
+                            &unpacked,
+                            &x_i8[x_start..x_start + QK_K_BLOCK_SIZE],
+                            &x_scales[s_start..s_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                        );
+                    }
+                    assert_eq!(
+                        candidate[token_idx * rows + r].to_bits(),
+                        expected.to_bits(),
+                        "batch={batch_size} rows={rows} cols={cols} token {token_idx} row {r}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn matmul_q3_k_batch_matches_scalar_reference_bitexact() {
+        // Batch sizes straddling MAX_STACK_BATCH_SUMS (64) so both the
+        // stack-buffered and heap-buffered branches are exercised, plus a row
+        // count above the parallelization threshold. The reference replays the
+        // scalar batch loop (unpack + preloaded dot) per token, so on aarch64
+        // with dotprod this asserts bit-exact NEON-vs-scalar parity.
+        let configs = [
+            (3_usize, 4_usize, 512_usize),
+            (64, 2, QK_K_BLOCK_SIZE),
+            (65, 130, 512),
+        ];
+        for &(batch_size, rows, cols) in &configs {
+            let blocks_per_row = cols / QK_K_BLOCK_SIZE;
+            let q8_blocks_per_token = cols / Q8_BLOCK_SIZE;
+            let x_i8: Vec<i8> = (0..batch_size * cols)
+                .map(|idx| ((idx * 7 + 1) % 255) as i8)
+                .collect();
+            let x_scales: Vec<f32> = (0..batch_size * q8_blocks_per_token)
+                .map(|idx| 0.03125 * (1 + idx % 7) as f32 - 0.0625 * (idx % 3) as f32)
+                .collect();
+            let weights: Vec<Q3KBlock> = (0..rows * blocks_per_row)
+                .map(|idx| q3_k_block(0x3000 + (idx % 64) as u16, (idx % 113) as i16 + 1))
+                .collect();
+
+            let mut candidate = vec![0.0_f32; batch_size * rows];
+            matmul_q3_k_batch(
+                &mut candidate,
+                &x_i8,
+                &x_scales,
+                &weights,
+                BatchMatmulShape {
+                    batch_size,
+                    rows,
+                    cols,
+                },
+            );
+
+            for token_idx in 0..batch_size {
+                let x_offset = token_idx * cols;
+                let scale_offset = token_idx * q8_blocks_per_token;
+                for r in 0..rows {
+                    let mut expected = 0.0_f32;
+                    for b in 0..blocks_per_row {
+                        let x_start = x_offset + b * QK_K_BLOCK_SIZE;
+                        let s_start = scale_offset + (b * QK_K_BLOCK_SIZE) / Q8_BLOCK_SIZE;
+                        let unpacked = weights[r * blocks_per_row + b].unpack();
+                        expected += Q3KBlock::dot_q8_scaled_preloaded(
+                            &unpacked,
+                            &x_i8[x_start..x_start + QK_K_BLOCK_SIZE],
+                            &x_scales[s_start..s_start + (QK_K_BLOCK_SIZE / Q8_BLOCK_SIZE)],
+                        );
+                    }
+                    assert_eq!(
+                        candidate[token_idx * rows + r].to_bits(),
+                        expected.to_bits(),
+                        "batch={batch_size} rows={rows} cols={cols} token {token_idx} row {r}"
+                    );
+                }
+            }
         }
     }
 
