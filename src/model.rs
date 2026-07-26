@@ -462,6 +462,8 @@ impl LlamaWeights {
         validate_model_tensors(gguf, config)?;
         let file = File::open(path).map_err(|e| e.to_string())?;
         let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+        #[cfg(target_os = "linux")]
+        let _ = mmap.advise(memmap2::Advice::HugePage);
 
         let token_embeddings = load_f32_or_f16(&mmap, gguf, "token_embd.weight")?;
         let output_norm = load_f32_or_f16(&mmap, gguf, "output_norm.weight")?;
@@ -553,6 +555,8 @@ impl LlamaWeights {
         validate_distributed_layer_range(config, start_layer, end_layer)?;
         let file = File::open(path).map_err(|e| e.to_string())?;
         let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+        #[cfg(target_os = "linux")]
+        let _ = mmap.advise(memmap2::Advice::HugePage);
 
         let is_first = start_layer == 0;
         let is_last = end_layer == config.block_count;

@@ -92,7 +92,8 @@ fn run() -> Result<(), String> {
     let mut ref_ws = inference::LlamaWorkspace::new(&config);
 
     // TP: shards plus a full workspace for the replicated embedding/head.
-    let mut shards = tp::build_tp_shards(&config, &weights.layers, shard_count)?;
+    let shares = vec![1; shard_count];
+    let mut shards = tp::build_tp_shards(&config, &weights.layers, &shares)?;
     let mut rt = tp::TpRuntime::new(&config);
     let mut tp_ws = inference::LlamaWorkspace::new(&config);
     let emb = config.embedding_length;

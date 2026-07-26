@@ -104,54 +104,39 @@ fn slice_bias(bias: &Option<Vec<f32>>, r0: usize, r1: usize) -> Option<Vec<f32>>
     bias.as_ref().map(|values| values[r0..r1].to_vec())
 }
 
-/// Build `shard_count` tensor-parallel shards from full dense weights.
+/// Build tensor-parallel shards from full dense weights according to `shares`.
 pub fn build_tp_shards(
     config: &LlamaModelConfig,
     layers: &[LlamaLayerWeights],
-    shard_count: usize,
+    shares: &[usize],
 ) -> Result<Vec<TpShard>, String> {
-    if shard_count < 2 {
+    if shares.len() < 2 {
         return Err("tensor parallelism needs at least 2 shards".to_owned());
-    }
-    if !config.attention_head_count.is_multiple_of(shard_count)
-        || !config.attention_head_count_kv.is_multiple_of(shard_count)
-    {
-        return Err(format!(
-            "head counts {}q/{}kv not divisible by {shard_count} shards",
-            config.attention_head_count, config.attention_head_count_kv
-        ));
-    }
-    if !config.feed_forward_length.is_multiple_of(shard_count * 32) {
-        return Err(format!(
-            "feed_forward_length {} not block-divisible by {shard_count} shards",
-            config.feed_forward_length
-        ));
     }
     if config.expert_count != 0 {
         return Err("tensor parallelism MVP covers dense models only".to_owned());
     }
 
-    let q_heads = config.attention_head_count / shard_count;
-    let kv_heads = config.attention_head_count_kv / shard_count;
+    let mut shards = Vec::with_capacity(shares.len());
     let head_dim = config.head_dim;
-    let ffn = config.feed_forward_length / shard_count;
     let emb = config.embedding_length;
 
-    let mut shards = Vec::with_capacity(shard_count);
-    for s in 0..shard_count {
-        let mut shard_config = config.clone();
-        shard_config.attention_head_count = q_heads;
-        shard_config.attention_head_count_kv = kv_heads;
-        shard_config.attention_output_width = q_heads * head_dim;
-        shard_config.kv_width = kv_heads * head_dim;
-        shard_config.feed_forward_length = ffn;
+    for s in 0..shares.len() {
+        let geo = shard_geometry(config, shares, s)?;
 
-        let q0 = s * q_heads * head_dim;
-        let q1 = (s + 1) * q_heads * head_dim;
-        let k0 = s * kv_heads * head_dim;
-        let k1 = (s + 1) * kv_heads * head_dim;
-        let f0 = s * ffn;
-        let f1 = (s + 1) * ffn;
+        let mut shard_config = config.clone();
+        shard_config.attention_head_count = geo.q_heads;
+        shard_config.attention_head_count_kv = geo.kv_heads;
+        shard_config.attention_output_width = geo.q_heads * head_dim;
+        shard_config.kv_width = geo.kv_heads * head_dim;
+        shard_config.feed_forward_length = geo.ffn_len;
+
+        let q0 = geo.q_start * head_dim;
+        let q1 = (geo.q_start + geo.q_heads) * head_dim;
+        let k0 = geo.kv_start * head_dim;
+        let k1 = (geo.kv_start + geo.kv_heads) * head_dim;
+        let f0 = geo.ffn_start;
+        let f1 = geo.ffn_start + geo.ffn_len;
 
         let mut shard_layers = Vec::with_capacity(layers.len());
         for layer in layers {
@@ -860,6 +845,8 @@ pub fn load_tp_shard_direct(
     let geo = shard_geometry(config, shares, shard_idx)?;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+    #[cfg(target_os = "linux")]
+    let _ = mmap.advise(memmap2::Advice::HugePage);
     let emb = config.embedding_length;
     let head_dim = config.head_dim;
 
@@ -1055,6 +1042,8 @@ pub fn load_embeddings_f32(
 ) -> Result<Vec<f32>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+    #[cfg(target_os = "linux")]
+    let _ = mmap.advise(memmap2::Advice::HugePage);
     let desc = find_tensor(gguf, "token_embd.weight")?;
     match desc.tensor_type {
         GgufTensorType::F32 | GgufTensorType::F16 => {
