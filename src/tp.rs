@@ -438,6 +438,42 @@ pub fn swizzle_shards(shards: &mut [TpShard]) {
     }
 }
 
+/// Build one shard of a tied LM head from its f32 rows.
+///
+/// Single-node `LlamaWeights::load` and the TP head shards must agree on the
+/// head's quantization, or a cluster silently runs a different (slower, and
+/// differently-rounded) head than the same model does on one board. Both now
+/// route through `model::q4_head_enabled()`, so `NANOCAMELID_Q4_HEAD` means the
+/// same thing everywhere. Q4_0 halves the head bytes; the 1x4 swizzle needs a
+/// row count divisible by 4, and a ragged final shard falls back to row-major.
+fn build_tied_head_matrix(f32_rows: &[f32], rows: usize, emb: usize) -> QuantizedMatrix {
+    if crate::model::q4_head_enabled() {
+        let row_major = crate::q8::quantize_f32_matrix_to_q4_0_blocks(f32_rows, rows, emb);
+        if rows.is_multiple_of(4) {
+            QuantizedMatrix::Q4_0Swizzled1x4(crate::model::Q4_0Swizzled1x4Matrix {
+                swizzled_1x4: crate::q8::swizzle_q4_0_1x4(&row_major, rows, emb / 32),
+                page_aligned_1x4: None,
+                rows,
+                cols: emb,
+            })
+        } else {
+            QuantizedMatrix::Q4_0(row_major)
+        }
+    } else {
+        let row_major = crate::q8::quantize_f32_matrix_to_q8_0_blocks(f32_rows, rows, emb);
+        if rows.is_multiple_of(4) {
+            QuantizedMatrix::Q8_0Swizzled1x4(crate::model::Q8_0Swizzled1x4Matrix {
+                swizzled_1x4: crate::q8::swizzle_q8_0_1x4(&row_major, rows, emb / 32),
+                page_aligned_1x4: None,
+                rows,
+                cols: emb,
+            })
+        } else {
+            QuantizedMatrix::Q8_0(row_major)
+        }
+    }
+}
+
 fn swizzle_matrix(matrix: &mut QuantizedMatrix, rows: usize, cols: usize) {
     if !rows.is_multiple_of(4) || !cols.is_multiple_of(32) {
         return;
@@ -504,17 +540,7 @@ pub fn build_tp_head_shards(
             base
         };
         let slice = &embeddings[start * emb..(start + rows) * emb];
-        let row_major = crate::q8::quantize_f32_matrix_to_q8_0_blocks(slice, rows, emb);
-        let matrix = if rows.is_multiple_of(4) {
-            QuantizedMatrix::Q8_0Swizzled1x4(crate::model::Q8_0Swizzled1x4Matrix {
-                swizzled_1x4: crate::q8::swizzle_q8_0_1x4(&row_major, rows, emb / 32),
-                page_aligned_1x4: None,
-                rows,
-                cols: emb,
-            })
-        } else {
-            QuantizedMatrix::Q8_0(row_major)
-        };
+        let matrix = build_tied_head_matrix(slice, rows, emb);
         shards.push(TpHeadShard {
             matrix: TpHeadMatrix::Quantized(matrix),
             row_start: start,
@@ -960,24 +986,7 @@ pub fn load_tp_shard_direct(
         )?;
         let f32_rows = dequantize_matrix_f32(&table, geo.head_rows, emb)?;
         if fast {
-            let row_major =
-                crate::q8::quantize_f32_matrix_to_q8_0_blocks(&f32_rows, geo.head_rows, emb);
-            if geo.head_rows.is_multiple_of(4) {
-                TpHeadMatrix::Quantized(QuantizedMatrix::Q8_0Swizzled1x4(
-                    crate::model::Q8_0Swizzled1x4Matrix {
-                        swizzled_1x4: crate::q8::swizzle_q8_0_1x4(
-                            &row_major,
-                            geo.head_rows,
-                            emb / 32,
-                        ),
-                        page_aligned_1x4: None,
-                        rows: geo.head_rows,
-                        cols: emb,
-                    },
-                ))
-            } else {
-                TpHeadMatrix::Quantized(QuantizedMatrix::Q8_0(row_major))
-            }
+            TpHeadMatrix::Quantized(build_tied_head_matrix(&f32_rows, geo.head_rows, emb))
         } else {
             TpHeadMatrix::F32(f32_rows)
         }

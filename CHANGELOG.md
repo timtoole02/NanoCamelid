@@ -4,6 +4,22 @@ All notable NanoCamelid changes are tracked here.
 
 ## [Unreleased]
 
+- **Changed the default tied LM head to Q4_0-swizzled**, worth +10-20% decode on
+  every tied-embedding model (Llama 3.2, Gemma 3, Qwen3). Pi 5 decode is
+  bandwidth-bound, and this moves 147.8 MB/token through the head instead of
+  279.1 MB. Generated tokens change: the Q4_0 head is lossier than the Q8_0 one,
+  though both are already re-quantizations of the file's own `token_embd` table.
+  Set `NANOCAMELID_Q4_HEAD=0` to restore the previous Q8_0 head, which is
+  bit-exact with prior releases. Evidence in
+  `docs/bench/scarp_phase0_baseline.md` §7.
+- Added `decode.head`, `decode.head_total`, `decode.head_norm`,
+  `decode.head_quant`, `decode.embed_lookup`, `batch.embed_lookup` and
+  `decode.forward_total` to `NANOCAMELID_TRACE`. The LM head — the single most
+  expensive operation in the decode step — previously had no trace stage at all,
+  and the trace summary silently truncated to 24 rows against 37 stages.
+- Added `scripts/pi/scarp-guard.sh`, a benchmark regression guard that records
+  tok/s, peak and decode-window RSS, the head trace stages, and a hash of the
+  generated token stream, and diffs a run against a recorded baseline.
 - Added validation coverage for the GitHub release workflow runner, explicit
   aarch64 target install, release packaging script, release-notes body, and
   `SHA256SUMS` upload contract.

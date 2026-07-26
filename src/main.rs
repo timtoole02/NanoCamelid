@@ -21,6 +21,7 @@ const WORKER_CORES_ENV: &str = "NANOCAMELID_WORKER_CORES";
 const PREFILL_BATCH_ENV: &str = "NANOCAMELID_PREFILL_BATCH";
 const CONTEXT_LIMIT_ENV: &str = "NANOCAMELID_CONTEXT_LIMIT";
 const ROPE_CACHE_ENV: &str = inference::ROPE_CACHE_ENV;
+const Q4_HEAD_ENV: &str = model::Q4_HEAD_ENV;
 const TRACE_ENV: &str = inference::TRACE_ENV;
 const READY_CHAT_ENV: &str = "NANOCAMELID_READY_CHAT";
 const SMOKE_KIND_ENV: &str = "NANOCAMELID_SMOKE_KIND";
@@ -513,7 +514,9 @@ fn print_runtime_trace_summary() {
         return;
     }
     println!("\nRuntime trace:");
-    for (stage, stats) in rows.into_iter().take(24) {
+    // Print every stage. The old take(24) silently truncated the table once the
+    // stage count passed 24, which hid whole stages from the profile.
+    for (stage, stats) in rows {
         let total_ms = stats.total.as_secs_f64() * 1000.0;
         let avg_ms = total_ms / stats.calls.max(1) as f64;
         println!(
@@ -1238,6 +1241,9 @@ fn print_generate_usage() {
         "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings"
     );
     println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
+    println!(
+        "  {Q4_HEAD_ENV}                          Set to 0 to use the larger, slightly more accurate Q8_0 tied LM head"
+    );
     println!();
     println!(
         "When {DEFAULT_MODEL_GGUF_ENV} is set, the first positional argument is treated as the prompt unless it looks like a .gguf path or a 1b/3b alias."
@@ -1288,6 +1294,9 @@ fn print_chat_usage() {
         "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings"
     );
     println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
+    println!(
+        "  {Q4_HEAD_ENV}                          Set to 0 to use the larger, slightly more accurate Q8_0 tied LM head"
+    );
     println!();
     println!(
         "Chat uses recognized tokenizer chat templates when present: {CHAT_TEMPLATE_FAMILIES}."
@@ -1341,6 +1350,9 @@ fn print_tui_usage() {
         "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings after each turn"
     );
     println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
+    println!(
+        "  {Q4_HEAD_ENV}                          Set to 0 to use the larger, slightly more accurate Q8_0 tied LM head"
+    );
     println!();
     println!(
         "TUI chat uses recognized tokenizer chat templates when present: {CHAT_TEMPLATE_FAMILIES}."
@@ -1515,6 +1527,9 @@ fn print_bench_usage() {
         "  {TRACE_ENV}                            Set to 1 to print stage-level inference timings"
     );
     println!("  {ROPE_CACHE_ENV}                       Set to 0 to disable RoPE angle caching");
+    println!(
+        "  {Q4_HEAD_ENV}                          Set to 0 to use the larger, slightly more accurate Q8_0 tied LM head"
+    );
     println!(
         "  {RAYON_THREADS_ENV}                         Rayon worker count; defaults to up to 4 pinned workers"
     );

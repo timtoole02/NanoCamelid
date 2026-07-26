@@ -47,17 +47,24 @@ an `aliases` field for rows that currently resolve from those aliases.
 
 These rows have been loaded and generated on Raspberry Pi-class ARM64 hardware.
 
+The RSS figures in the Evidence column are a performance signal, not just a capacity
+note: on a Pi 5 decode is memory-bandwidth-bound, so resident bytes and tok/s move
+together. Read a surprising RSS number as a bug lead — that is how SCARP G0 found the
+f32 embedding table (`docs/bench/scarp_phase0_baseline.md` §5). Newer rows quote
+**decode-resident** RSS (what is resident while tokens are produced) rather than the
+process high-water mark, which peaks during weight load and overstates the footprint.
+
 | Model | GGUF row | Architecture | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | Qwen2.5 0.5B Instruct | `Qwen/Qwen2.5-0.5B-Instruct-GGUF`, `qwen2.5-0.5b-instruct-q4_0.gguf` | `qwen2` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected parity; 512/1024/2048/4096/8192 context packs pass |
 | Qwen2.5-Coder 0.5B Instruct | `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF`, `qwen2.5-coder-0.5b-instruct-q4_0.gguf` | `qwen2` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected parity; 512/1024/2048/4096/8192 context packs pass |
 | Qwen2.5-Coder 0.5B Instruct | `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF`, `qwen2.5-coder-0.5b-instruct-q5_k_m.gguf` | `qwen2` | Supported end-to-end | `ready`; `qwen_im`; mixed `Q5_1`, `Q5_K`, `Q6_K`, and `Q8_0` tensors load; direct generation produced 8 tokens at `9.98 tok/sec`; chat generation produced 8 tokens at `9.71 tok/sec` |
-| Qwen3 0.6B Instruct | `Qwen/Qwen3-0.6B-GGUF`, `qwen3-0.6b-q8_0.gguf` | `qwen3` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `1.41 GiB`; per-head QK-norm applied (fixed 2026-07-04) |
+| Qwen3 0.6B Instruct | `Qwen/Qwen3-0.6B-GGUF`, `qwen3-0.6b-q8_0.gguf` | `qwen3` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; decode-resident RSS about `1.27 GiB`; per-head QK-norm applied (fixed 2026-07-04); Q4_0 tied head default-on since 2026-07-25 (`18.31 tok/sec` on a Pi 5, was `16.35`) |
 | Qwen3 1.7B Instruct | `Qwen/Qwen3-1.7B-GGUF`, `qwen3-1.7b-q8_0.gguf` | `qwen3` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `3.56 GiB`; per-head QK-norm applied (fixed 2026-07-04) |
 | Qwen3 4B Instruct | `miku552/Qwen3-4B-Q4_0-GGUF`, `qwen3-4b-q4_0.gguf` | `qwen3` | Supported | `ready`; `qwen_im`; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `5.50 GiB`; per-head QK-norm applied (fixed 2026-07-04) |
 | SmolLM3 3B | `jpohhhh/SmolLM3-3B-Q4_0-GGUF`, `smollm3-3b-q4_0.gguf` | `smollm3` | Supported | `ready`; ChatML token fallback renderer; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `3.94 GiB` |
 | SmolLM2 1.7B Instruct | `Maites/SmolLM2-1.7B-Instruct-Q4_0-GGUF`, `smollm2-1.7b-instruct-q4_0.gguf` | `llama` | Supported | `ready`; `qwen_im`; chat generation passes; direct prompt ended immediately; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `2.02 GiB` |
-| Gemma 3 1B IT | `unsloth/gemma-3-1b-it-GGUF`, `gemma-3-1b-it-q4_0.gguf` | `gemma3` | Supported | `ready`; `gemma_turn`; Q4_1 feed-forward tensors supported; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; sampled RSS about `2.20 GiB`; per-head QK-norm applied (fixed 2026-07-04) |
+| Gemma 3 1B IT | `unsloth/gemma-3-1b-it-GGUF`, `gemma-3-1b-it-q4_0.gguf` | `gemma3` | Supported | `ready`; `gemma_turn`; Q4_1 feed-forward tensors supported; direct and chat generation pass; exact scalar-vs-selected chat parity; 512/1024/2048/4096/8192 context packs pass; decode-resident RSS about `1.74 GiB`; per-head QK-norm applied (fixed 2026-07-04); Q4_0 tied head default-on since 2026-07-25 (`17.12 tok/sec` on a Pi 5, was `14.22`) |
 | DeepSeek-R1-Distill-Qwen 1.5B | `ggml-org/DeepSeek-R1-Distill-Qwen-1.5B-Q4_0-GGUF`, `deepseek-r1-distill-qwen-1.5b-q4_0.gguf` | `qwen2` | Supported | `ready`; `deepseek_r1_qwen`; direct and chat generation pass; exact scalar-vs-selected parity; 512/1024/2048/4096/8192 context packs pass |
 | Llama 3.2 1B Instruct | `Llama-3.2-1B-Instruct-Q4_0.gguf` | `llama` | Supported | `ready`; `llama3_instruct`; direct and chat generation pass; exact scalar-vs-selected parity; 512/1024/2048/4096/8192 context packs pass |
 | Llama 3.2 1B Instruct | `Llama-3.2-1B-Instruct-Q8_0.gguf` | `llama` | Supported end-to-end | `ready`; `llama3_instruct`; `llama32_1b_shape: ok`; forced Pi readiness run passes host probe, inspect, scalar-vs-SDOT chat smoke, and direct chat generation of `"Hello!"` at about `3.20 tok/sec`; 512/1024/2048/4096/8192 context packs pass |
